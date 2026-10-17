@@ -1,0 +1,22 @@
+include ../../config/Makefile.conf
+
+TARGET = synth
+
+SRCS = $(TARGET).c
+CFLAGS = -O2
+
+# Built with PSn00bSDK (see ../../psn00b_tool.mk)
+include ../../psn00b_tool.mk
+
+
+# ps1transfer looks for the synth next to its own executable ("-synth" option)
+all: ../../ps1transfer/$(TARGET).ps-exe
+
+../../ps1transfer/$(TARGET).ps-exe: $(TARGET).ps-exe
+	cp $(TARGET).ps-exe ../../ps1transfer/$(TARGET).ps-exe
+
+clean:
+	rm -f $(OBJS) $(TARGET).elf $(TARGET).ps-exe $(TARGET).map $(TARGET).ld ../../ps1transfer/$(TARGET).ps-exe
+
+
+.PHONY: all clean

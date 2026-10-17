@@ -1,0 +1,22 @@
+include ../../config/Makefile.conf
+
+# PsyQ build of the link cable tester with the libcomb mode ("make psyq"), needs PSXDIR (PsyQ, see
+# config/Makefile.conf). "ps1transfer -link" uses linktest_psyq.ps-exe when it is next to ps1transfer.
+TARGET = linktest_psyq
+
+SRCS = $(TARGET).c
+CFLAGS = -O2 -I..
+
+include $(PSXDIR)/common.mk
+
+
+all: ../../ps1transfer/$(TARGET).ps-exe
+
+../../ps1transfer/$(TARGET).ps-exe: $(TARGET).ps-exe
+	cp $(TARGET).ps-exe ../../ps1transfer/$(TARGET).ps-exe
+
+clean:
+	rm -f $(OBJS) $(BINDIR)$(TARGET).elf $(BINDIR)$(TARGET).ps-exe $(BINDIR)$(TARGET).map $(DEPS) ../../ps1transfer/$(TARGET).ps-exe
+
+
+.PHONY: all clean

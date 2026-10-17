@@ -1,0 +1,26 @@
+# Build outputs (the ROM, the tools' .ps-exe next to ps1transfer and ps1transfer.exe are kept: ready to use)
+*.o
+*.elf
+*.map
+*.dep
+*.ld.tmp
+kernel_hook.bin
+monitor_ram.bin
+monitor_rom.bin
+ps1devcart.ps-exe
+cartrom/rom_rounder/rom_rounder
+cartrom/rom_rounder/rom_rounder.exe
+ps1-tools/ar_flash/ar_flash.bin
+ps1-tools/ar_flash/ar_flash.cue
+
+# Python
+__pycache__/
+*.pyc
+
+# GUI executable build (PyInstaller): publish gui/dist/ps1devcart_gui.exe as a release download instead
+gui/build/
+gui/dist/
+
+# Local configuration and Sony license data (never published)
+config/Makefile.conf
+config/LICENSE*.DAT

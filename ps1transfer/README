@@ -1,0 +1,391 @@
+ps1transfer, the computer tool of PS1 DEV CART
+
+PS1 DEV CART is an alternative firmware for the PS1 DEV CART development cartridge for the Playstation 1, which allows data
+transfer between your computer and your Playstation 1 over USB (see the README of the repository).
+This cartridge must be used with a USB mini-B cable and the provided "ps1transfer" tool available for Windows 32/64bits and Linux 64bits.
+It is recommended to plug the USB cable to your computer whenever and before you boot your Playstation 1 with the cartridge in ON position.
+
+The ps1transfer tool must be executed with parameters in a command line environment.
+(under windows use "cmd" or "PowerShell", under Linux use a shell like "bash")
+Windows users must install FTDI D2xx USB driver: https://ftdichip.com/wp-content/uploads/2021/08/CDM212364_Setup.zip
+Linux users must install libftdi1 (Under Debian: sudo apt-get install libftdi1)
+
+v1.4 update: New software reset feature and kernel_hook contributed by david4599 https://github.com/david4599/ps1usb/
+
+Parameters:
+-u Command to Upload a specified file from your computer to a specified address in the Playstation 1 memory.
+-d Command to Download a file from a specified address and size in the Playstation 1 memory to your computer in the specified file.
+-v Command to Download the Video RAM content of the Playstation 1 to a PNG image on your computer using the following parameters: x_position y_position width height
+   While a program runs, it is a live screenshot read from the GPU. At the PS1 DEV CART menu, it is the VRAM saved at the last boot
+   (e.g. the last screen of your program after a reset or a crash).
+-e Command to Transfer and Execute a specified Playstation 1 executable (PS-X EXE)
+-r Reset the PS1 (will be done first if combined with actions above)
+-f Specify the file name on your computer
+-a Specify the target address in the Playstation 1 memory in hexadecimal
+-s Specify the size of the data to transfer in decimal (only for the Download "-d" command)
+-c Command to Switch in TTY console mode & PC file server after the "Execute" command.
+-c off (or -coff) Execute without redirecting printf/TTY to USB, the BIOS "tty" device is kept (e.g. for serial link play)
+-c sio (or -csio) Execute with a serial port "tty" driver installed, like the Net Yaroze boot disc does (open("tty:"), SIO ioctls, e.g. for link play)
+-c link (or -clink) The same "tty" driver on the USB link instead of the serial port: link play without a cable,
+   through the cartridges and this computer (run the program on both consoles, then -relay, see "USB link" below)
+-live With -v at the menu: download the screen as it is now (by default, the VRAM saved at boot, e.g. the last screen
+   of a program before a reset; while a program runs, -v is always live)
+-p Specify the path of the files for the file server, require "-c" command.
+   The PS1 can only open files in that folder (or the current folder without -p): absolute paths, drive names and
+   ".." are refused, with a "PCDRV: ... refused" message
+-pcdrvany The file server opens any path of the computer (as before the folder restriction)
+-pcdrvlog The file server activity as lines (for the GUI): pcdrv=init, pcdrv=open|create fd=N mode=... name="...",
+   pcdrv=close fd=N name="..." read=R written=W, pcdrv=error op=... mode=... name="..." reason="..."
+-z Set device id (only relevant if you have multiple PS1 DEV CART devices connected to the PC) - the id follows the USB enumeration order and may change
+-n Open the PS1 DEV CART device with the specified USB serial number (stable when using multiple PS1 DEV CART devices)
+-l List the connected USB devices with their device id and serial number
+   (PS1 DEV CART firmware: the serial number is also shown on the cartridge menu as "Device ID", sent by ps1transfer
+   when it connects to the menu and remembered in the cartridge flash)
+-m Display a TMD model with the model viewer (tmdviewer.ps-exe, built from the "tmdviewer" folder, must be next to ps1transfer)
+-t TIM texture for the model viewer, can be used several times (up to 8)
+-snd Sound file for the sound tester (soundtest.ps-exe next to ps1transfer): VH, VB, VAB, SEQ or VAG, up to 8 files
+-tim TIM file for the TIM and VRAM viewer (timviewer.ps-exe next to ps1transfer), up to 16 files
+-mcbackup Save a memory card to a 128KB image file (cardtool.ps-exe next to ps1transfer)
+-mcrestore Write a memory card image (128KB raw or DexDrive .gme) to a memory card, confirmation on the PS1
+-slot Memory card slot 1 or 2 for -mcbackup/-mcrestore (default 1)
+-link [yaroze] Link cable tester (linktest.ps-exe next to ps1transfer), run it on both consoles. The serial port is
+   used like a game using the link cable library (libcomb), or with "yaroze" like a Net Yaroze game ("tty:" driver,
+   as -c sio), or with "usb" no serial port: psxcomb on the USB link, the consoles are linked through their
+   cartridges and this computer (see -relay)
+-relay SERIAL2 USB link relay between the cartridge of -n and the cartridge SERIAL2, until stopped (Ctrl+C)
+-net host:port Connects the USB link of the running program (psxcomb USB link, or -c link) to a TCP server, until
+   stopped (Ctrl+C); with -e -f program.ps-exe: executes it first, printf kept on the BIOS device (unless -c).
+   Example: ps1-tools/audiostreamer/ (radio and audio files): python audio_server.py, then
+   ps1transfer -r -e -f audiostreamer.ps-exe -net 127.0.0.1:7777
+-netlink :port | host:port Netplay: links the USB link of the running program (a Net Yaroze game run with -c link,
+   or a program using psxcomb's USB link) to the console of another computer running -netlink, over UDP, until
+   stopped. One computer waits (:port, the host; its router must forward this UDP port to it), the other one
+   connects (host:port). Units numbered, every packet carries the ones not acknowledged yet (a lost packet is covered
+   by the next one), sent as soon as the console gives them. Prints the round trip time every second.
+   Example: ps1transfer -n SERIAL -r -y libps.exe -e -f game.exe -c link -netlink :7010   (host)
+            ps1transfer -n SERIAL -r -y libps.exe -e -f game.exe -c link -netlink 1.2.3.4:7010   (guest)
+-netkey hex With -netlink: the game's link key, 32 hex digits, the same on both computers (the Netplay lobby gives
+   one for each game). Every packet ends with an 8-byte tag (HMAC-SHA256 of the packet with the key), packets
+   without the right tag are ignored: another computer can't link in, send units or stop the link. Without -netkey
+   (packets version 1) anyone can link in first.
+-netdelay ms[,jitter[,loss%]] With -netlink: the packets sent are delayed (and dropped), to try a far connection
+-prof [rate[,counter]] Profiler of the running program, until stopped (Ctrl+C): every second CPU load (time outside
+   VSync/DrawSync/CdSync...), GPU busy, frames, DMA, CD-ROM busy, lowest stack pointer, RAM used, SPU voices, and the
+   functions where the time goes (symbols: .elf/.map next to the program, or -sym); at the end, the functions with
+   their share of the time. With -e -f program.ps-exe: executed first, its free RAM filled to measure what it uses.
+   rate: samples a second (default 1000, about 4% of the program's time), counter: root counter used (default 0).
+   Needs the debug monitor version 3; not during a -gdb session (works with -c sio / -c link: link play).
+-nofill With -prof -e: the free RAM is not filled (RAM use not measured), e.g. data uploaded there with -u
+-json With -prof: "PROF {...}" lines (PS1 Dev Cart Manager) instead of the text summary
+-csv file With -prof: one line per second in a CSV file
+-idle f1,f2 With -prof: more functions where the program waits (not CPU load), names or addresses as shown
+-gdb [port] Debug the executable given with -f with GDB or VS Code (GDB server on localhost, default port 3333)
+-hot file[@where] Hot reload a file into the running program (VRAM, SPU RAM or RAM), can be used several times
+-watch With -hot: send each file again when it changes on disk, and show the printf of the program
+-flash rom.rom Flash a cartridge ROM: checked first (128KB, cartridge boot header), uploaded to RAM, flashed by the
+   flasher (ar_flash.ps-exe next to ps1transfer, it shows its progress on the TV and reports here), then the PS1 is
+   reset and the flash is read back and compared. Exit code 0 only if the readback is identical.
+-info Cartridge state as key=value lines: device, state (menu, running, stopped, crashed), firmware, features, monitor,
+   monitor_version, escaped_answers (1: answers after a DLE, text a program prints can't be taken for them)
+-progress Transfer progress as progress=done/total lines instead of the "bytes remaining" text
+-synth SPU synth (synth.ps-exe next to ps1transfer): 16 sample slots played over MIDI, commands read on the input
+   (see "SPU synth" below). Combined with -r, the synth is started again even if it already runs.
+The exit code is 0 on success and 1 after an error. The gui folder has a window for ps1transfer.
+
+Developer notes:
+Transfered data are secured using a CRC8 checksum each 2kbytes packet.
+The available memory to upload your data or an executable in the Playstation 1 with PS1 DEV CART is from 0x80010000 to 0x801EEFFF included.
+A debugging screen with registers and stack dump will show up on your Playstation 1 whenever your program crash.
+The psxpcdrv folder is a library and an example to read and write files of your computer acting as a file server
+(the PCDRV functions PCinit, PCopen, PCcreat, PClseek, PCread, PCwrite, PCclose over USB).
+You can deactivate the cartridge by toggling the top switch to off (right position),
+the Playstation 1 will then boot normally but the USB hardware will remain usable,
+once the Playstation 1 booted you can switch the cartridge back on to allow the flash chip to be updated by a custom program (for example if you bricked your cartridge).
+
+
+Net Yaroze compatibility:
+You can upload Net Yaroze executable to your PS1 using the cartridge, you just need to get the "libps.exe" file from your Net Yaroze CD-ROM and strip its 2048 bytes exe header to raw data.
+Linux command: dd bs=1 skip=2048 if=libps.exe of=libps.bin
+
+Then convert your Net Yaroze COFF exe to standard PS-X EXE using the tool "eco2exe"
+Command: eco2exe -p main.exe
+
+Then upload libps.bin to 0x80010000 and upload/execute your main executable on the cartridge:
+ps1transfer -u -f libps.bin -a 0x80010000
+ps1transfer -e -f main.exe
+
+Or do both in one command with "-y", which also accepts the original libps.exe (its header is skipped automatically):
+ps1transfer -e -f main.exe -y libps.exe
+With -y, the start code of the library (libps.exe + 0x30: callbacks, pads...) runs before the program, like with the
+Net Yaroze boot disc: a small stub just below the program calls it, then jumps to the program entry point. Without it
+the pads read "no controller" (the program only gets the pad buffers with GetPadBuf, the start code gives them to the
+BIOS).
+
+The Net Yaroze library has to be uploaded again after each reset of the PS1 (the cartridge flash is only 128KB, so it
+can not be stored in the firmware, and the PS1 DEV CART firmware uses this memory area at boot).
+
+The Net Yaroze boot disc also installs its own "tty" driver on the serial port (used by printf and by open("tty:"),
+e.g. for link play between two consoles). Use "-c sio" to get the same behaviour with the cartridge:
+ps1transfer -e -f main.exe -y libps.exe -c sio
+With "-c sio", printf text is sent to the serial port like on a Net Yaroze, not to your computer.
+
+
+Live debugging (while your program runs, no reset needed):
+Read memory, e.g. a variable at 0x800A1234:	ps1transfer -d -f var.bin -a 0x800A1234 -s 4
+Write memory (poke):						ps1transfer -u -f value.bin -a 0x800A1234
+Live screenshot of the displayed buffer:	ps1transfer -v 0 0 320 240 -f screen.png
+The program is paused during the transfer (it runs in the kernel hook). Transfers use 2KB packets, a screenshot of
+320x240 takes about 0.5s (full VRAM 2.3s). The GPU must not be receiving a command from the CPU when the program is interrupted
+(programs drawing with DMA ordering tables, like libgs/libgpu DrawOTag, are fine).
+
+
+Symbols:
+The executable run with -e is remembered, and the symbol file with the same name next to it (.map, .sym or .elf)
+is loaded automatically by -crash, -peek/-poke and @names. -sym file gives another one.
+Symbol files: GNU ld map file (-Wl,-Map=game.map), nm output (nm game.elf > game.sym), or the ELF file itself.
+Addresses can be given as @symbol or @symbol+offset (-a, -peek, -poke):
+ps1transfer -peek @player -s 32        hexadecimal dump with symbol names (live while the program runs)
+ps1transfer -poke @lives 3 -s 1        write a 1, 2 or 4 bytes value
+ps1transfer -d -f table.bin -a @table -s 1024
+
+
+Crash reports:
+When your program crashes, the PS1 DEV CART crash screen is displayed and still answers USB commands. Then:
+ps1transfer -crash [game.map]
+shows the crash cause, PC and RA with function names, the registers, and the call stack:
+  Crash: Address error on load (CAUSE 30000010)
+  PC  80010094  UpdatePlayer + 0xC
+  RA  800100B4  UpdateGame + 0x14
+  ...
+  Call stack (from the function prologues, most recent first, callers shown at their call):
+    #0  80010094  UpdatePlayer + 0xC
+    #1  800100AC  UpdateGame + 0xC
+    #2  80010100  GameLoop + 0x3C
+    #3  80010080  main + 0x1C
+The call stack is unwound with the function prologues read from the PS1: frame size ("addiu sp,sp,-N") and the
+place where ra is saved ("sw ra,off(sp)"). If it stops early (unusual prologue), the stack is scanned for return
+addresses instead: with symbols each one must follow a "jal" to the function found before it (calls through
+function pointers, jalr, are marked "?").
+You can also read the memory of the crashed program with -d/-peek, take a screenshot with -v, and reset with -r.
+
+
+Debugging with GDB (PS1 DEV CART firmware with the debug monitor):
+ps1transfer -gdb -f game.exe          (Net Yaroze: the psx.exe made by yarexe, which includes libps)
+loads the program stopped at its entry point (the PS1 is reset first if a program runs), then serves the GDB remote
+protocol on localhost:3333 (-gdb 1234 for another port), with the same registers description as PCSX-Redux's GDB server:
+gdb-multiarch game.elf
+(gdb) target remote localhost:3333
+(gdb) break main
+(gdb) continue
+- Breakpoints (any number), step/next/finish, backtrace, registers, memory, variables.
+- Breakpoints also work in code run by interrupts (e.g. VSync callbacks): the monitor handles break instructions
+  before the BIOS exception handler, so the registers of the interrupted program are kept.
+- One hardware breakpoint (hbreak, also on code that can't be written) and one watchpoint (watch, rwatch, awatch,
+  up to 4KB) with the COP0 debug registers. GDB checks that a watched value has really changed.
+- Pause (Ctrl+C in GDB, pause in VS Code): the program stops at its next interrupt (not while interrupts are disabled).
+- printf of the program is shown by ps1transfer and sent to GDB (VS Code Debug Console).
+- Detach (or GDB closed): breakpoints removed, the program runs on. Kill: the PS1 is reset.
+Works with -c sio / -c off (printf then goes to the serial port / BIOS device) and -n serial.
+The Net Yaroze VS Code extension (https://github.com/logi-26/Net-Yaroze-WSL-Build-Environment) starts it with its
+"Debug on PS1 (PS1 DEV CART)" configuration.
+How it works: ps1transfer writes a break instruction at the entry point and executes the program with a debug flag.
+The kernel hook then patches the exception vectors 0x80000080 (break instructions) and 0x80000040 (COP0 hardware
+breakpoints). When the program stops, the debug monitor (monitor folder, in the cartridge flash) sends a request with
+the address of the saved registers, and answers memory reads/writes until ps1transfer tells it to continue (the
+instruction cache is flushed then). Software breakpoints are written in the program when it resumes, only what changed.
+Note: the hardware breakpoints need DCIC bit 29 as well as bit 30 to trigger (tested on a console).
+
+
+Hot reload (PS1 DEV CART firmware with the debug monitor, version 1):
+Send textures, sounds or data to the running program, without restarting it:
+ps1transfer -hot car.tim                      VRAM, at the position stored in the TIM (image and CLUT)
+ps1transfer -hot car.tim@512,0                image at another VRAM position (the CLUT stays at its position)
+ps1transfer -hot engine.vag@0x1010            SPU RAM address (the 48 bytes VAG header is skipped)
+ps1transfer -hot bank.vb@0x1010               VAB body, or any data, in SPU RAM (address < 0x80000)
+ps1transfer -hot level.bin@0x80100000         RAM (address 0x80000000...)
+Several -hot files can be given. With -watch, ps1transfer keeps running: it sends a file again each time it changes
+(e.g. saved by your paint program or sound editor) and shows the printf of the program, Ctrl+C to stop:
+ps1transfer -hot car.tim -hot engine.vag@0x1010 -watch
+The SPU address is where your program loaded the sound (e.g. the address returned by SsVabTransBody/SpuMalloc,
+printed once by your program). The new data must not be bigger than the old one.
+The program is paused during each transfer (in the kernel hook, at its next interrupt), the debug monitor writes the
+data straight from USB to the GPU or the SPU (waiting for a running GPU/SPU DMA transfer to end first).
+
+
+Link cable tester:
+ps1transfer -n SERIAL1 -link
+ps1transfer -n SERIAL2 -link
+runs the tester on both consoles, using the serial port like a game using the link cable library libcomb (AddCOMB,
+open("sio:") with O_NOWAIT, asynchronous reads and writes ended by the SIO events). The tester uses psxcomb
+(psxcomb folder), our library compatible with libcomb, which gives the same signals on the cable as the PlayStation library: one byte per handshake
+(the receiver toggles DTR for each byte, the sender waits for DSR to change), so it also links with a game or
+program built with the original library. The reads are of the size sent each frame, so set the same packets and size
+on both consoles. "BLOCKED" counts the frames whose packets were not sent because the previous write was still
+waiting for the other console (flow control). A write without progress for 15 frames restarts the read and the write
+("RESYNC"; the original library could stop for ever when a byte was lost, ours checks the acknowledge on a timer).
+Measured at 115200 bps: about 4 KB/s each way with our library on both consoles (the original library: about
+1.6 KB/s).
+ps1transfer -n SERIAL1 -link yaroze
+ps1transfer -n SERIAL2 -link yaroze
+uses it like a Net Yaroze game instead: the serial port "tty" driver is installed ("-c sio"), then open("tty:") and
+the same ioctls as YarIO. The TV shows which one runs. Each console sends numbered packets every frame (sequence, echo of the last
+sequence received, test pattern, checksum) and shows: link state, CTS/DSR lines, packets sent/received/lost,
+corrupted packets, throughput, round trip time (frames and ms).
+Controls: Up/Down packets per frame (1-8), Left/Right packet size (8-64 bytes), L1/R1 baud rate 9600-230400
+(set the same on both consoles), Cross pause sending, Start reset statistics.
+Note: CTS/DSR read ON when nothing is connected (the inputs are not pulled down), only received packets prove the link.
+
+USB link (no serial cable): both consoles linked through their cartridges and this computer:
+ps1transfer -n SERIAL1 -link usb
+ps1transfer -n SERIAL2 -link usb
+ps1transfer -n SERIAL1 -relay SERIAL2          (runs until stopped, prints the throughput every second)
+The tester uses psxcomb with CombSetLink(COMB_LINK_USB): each console has a send ring and a receive ring in RAM
+(ps1-tools/linktest/usblink.h), the relay copies one console's sent bytes into the other's receive ring with the live memory
+access of the kernel hook. The library publishes the address of its rings at 0x8000DF38 for the relay, and keeps the
+kernel hook answering with a 1kHz timer interrupt. Measured with two consoles: 400 B/s at 8 bytes per frame, about
+23 KB/s each way with the tester (4-8 x 255 bytes per frame), about 46 KB/s each way with bigger reads; round trip
+about 3 frames when the relay keeps up. Bytes sent before the relay starts are dropped.
+Your own programs can do the same: build them with psxcomb (PSn00bSDK), call CombSetLink(COMB_LINK_USB) before
+AddCOMB() (or at any time), and use open("sio:")/read/write as with the cable.
+
+Net Yaroze programs (e.g. games using YarIO) can use the USB link unmodified: run them with "-c link" instead of
+"-c sio", on both consoles, then start the relay:
+ps1transfer -n SERIAL1 -y libps.exe -e -f game.exe -c link
+ps1transfer -n SERIAL2 -y libps.exe -e -f game.exe -c link
+ps1transfer -n SERIAL1 -relay SERIAL2
+open("tty:"), read, write and the ioctls work like with the serial port driver. The relay drives each console from its
+own thread, with one "exchange" transfer (kernel hook command 'X': the computer's half of the driver buffers written,
+the PS1's half read) each time the kernel hook answers; the driver lets the hook answer before each read and after each
+write of the program, so bytes written leave at once and bytes arriving are read in the same frame.
+Frame pacing, the timing of a serial cable: each write of the program is a unit, given to the other program one unit
+per frame (counted at the vertical blanks). Programs like YarIO keep only the last packet received in a frame, so two
+packets arriving in the same frame would lose one and desynchronise the consoles (USB delivery isn't as regular as a
+cable). Tested with a YarIO game on two consoles: stays in sync like with the cable, round trip about 3 frames
+(link tester: 3.2 frames, the cable 2). The Net Yaroze pad driver's start message goes to the tty, so to the other
+console (like on a real Net Yaroze, where the tty is the serial port): YarIO skips it.
+The relay stops at the end of a turn on Ctrl+C or when a line is written to its input (the GUI's Stop task), never in
+the middle of a transfer.
+
+Live screenshots ("-v" while a program runs) go through the debug monitor with this firmware (monitor version 2,
+'M' service), to leave kernel space for the USB link; ps1transfer chooses automatically.
+
+
+Memory card backup/restore:
+ps1transfer -mcbackup save.mcd [-slot 2]
+reads the 1024 sectors of the card (about 12s) and writes a raw 128KB image (as used by emulators), then lists the saves.
+ps1transfer -mcrestore save.mcd [-slot 2]
+lists the saves of the image and writes it to the card after a confirmation on the PS1 (Cross: write, Circle: cancel).
+The backup file is written by the PS1 program with the PCDRV file server, ps1transfer stops when the program has finished.
+
+Memory card image tools (on the computer, no PS1 needed, a .bak copy is kept when an image is modified):
+ps1transfer -mclist card.mcd [-icons dir]      saves with blocks, file name, title (Shift-JIS converted), icons as PNG
+ps1transfer -mcexport card.mcd SAVE out.mcs    one save to a .mcs file (directory frame + blocks, PSXGameEdit format)
+ps1transfer -mcimport card.mcd in.mcs          inject a save in the free blocks (directory links and checksums written)
+ps1transfer -mcdelete card.mcd SAVE            delete a save (marked deleted like the PS1 does)
+ps1transfer -mccopy src.mcd SAVE dst.mcd       copy a save from an image to another
+ps1transfer -mcformat new.mcd                  blank formatted image
+SAVE is the save file name (e.g. BESLES-12345GAME) or its first block number.
+Example, inject a save in the card of slot 1 for a regression test:
+ps1transfer -mcbackup slot1.mcd
+ps1transfer -mcimport slot1.mcd before_bug.mcs
+ps1transfer -mcrestore slot1.mcd
+
+Saves on the card itself (PS1 DEV CART firmware): "slot1" or "slot2" in place of the image file of the commands above:
+ps1transfer -mclist slot1 [-icons dir]             saves of the card in slot 1 (directory and title/icon sectors only)
+ps1transfer -mcexport slot1 SAVE out.mcs           reads only the blocks of the save
+ps1transfer -mcimport slot2 in.mcs                 writes only the save's blocks and the directory
+ps1transfer -mcdelete slot1 SAVE                   writes only the directory frames
+ps1transfer -mccopy slot1 SAVE slot2               (source and destination: a slot or an image file)
+The memory card tool runs in server mode and stays running, so the next commands start at once. Writes are
+confirmed on the PS1 (Cross: write, Circle: cancel). A save is imported into never used blocks first, then into the
+blocks of deleted saves (they can't be undeleted any more once reused). Give -n before the command.
+
+
+TIM and VRAM viewer:
+ps1transfer -tim car.tim -tim font.tim -tim sky.tim ...
+The TIM files are loaded in VRAM at their own position. Select changes the view:
+- VRAM map: the whole VRAM, image and CLUT of each TIM outlined (selected in yellow), overlaps in red,
+  viewer screen/font in grey, details and warnings of the selected TIM below
+- TIM view: the selected TIM with its color depth and CLUT, palette swatches (Triangle/Cross zoom,
+  L2/R2 CLUT row, D-pad scroll). Square draws it with the CLUT of another loaded TIM of the same CLUT width
+  (press again for the next one, back to its own CLUT at the end). Circle opens the palette editor.
+- VRAM 1:1: scroll in the raw VRAM (D-pad, R2 faster)
+L1/R1 select the TIM, Start resets scroll/zoom.
+Palette editor (TIM view, Circle): the image is redrawn live while the colors change.
+- D-pad: entry (up/down: 16 entries), L2/R2: red/green/blue, Triangle/Cross: +/- (held: repeats)
+- Square: restore the original colors of the row, Circle: exit
+- Start: save the TIM with its edited palette as NAME_edit.tim, Select: reload NAME.tim (e.g. after
+  editing it in a paint program; it must not be bigger than the space it had in memory)
+Save and reload need the file server: add -c, the files are in the directory of the first TIM (or -p path):
+ps1transfer -tim c:\tims\car.tim -tim c:\tims\sky.tim -c
+Warnings: overlaps between images/CLUTs, CLUT x not multiple of 16, CLUT width not matching 4-bit (16) / 8-bit (256),
+4/8-bit image crossing a texture page, outside VRAM. The viewer places its screen and font in free VRAM areas
+(single buffer if only one is free), a message is shown if it has to overwrite TIM data.
+
+
+Sound tester:
+Play a VAB sound bank (VH + VB files, or one VAB file) and optionally SEQ music:
+ps1transfer -snd bank.vh -snd bank.vb -snd music.seq
+Play a VAG sample at different notes (C4 = original sample rate):
+ps1transfer -snd sample.vag
+Controls: Left/Right program, Up/Down note, L1/R1 octave, Cross play (while held), Circle SEQ start/stop,
+Triangle/Square volume, Start stop all sounds. The file types are detected from their header (VB files: ".vb" extension).
+The files are uploaded to 0x80100000 (max 896KB, the VB must also fit in the 512KB SPU RAM), "-snd" resets the PS1 first.
+
+
+SPU synth:
+The PS1 as a sample synth with 16 slots: slot n plays on MIDI channel n (24 voices, pitch bend +/-2 semitones,
+volume CC7, pan CC10, sustain pedal CC64, all notes off CC123). Samples are loaded while it plays.
+ps1transfer -synth
+starts the synth (or connects to it if it already runs, the slots are kept), then reads commands, one per line:
+  midi 90 3c 64          MIDI messages in hexadecimal, several per line (here: note on, channel 1, C4, velocity 100)
+  load 1 sample.vag      VAG sample to slot 1 (an optional name can follow after a tab)
+  clear 1                frees slot 1
+  set 1 release 40       slot setting: root (MIDI note played at the sample rate, default 60), volume, pan (0-127),
+                         attack, decay, sustain, release (0-99), reverb (0/1), tune (0-100, 50 = none, in cents)
+  reset                  all notes off, all slots cleared
+  state                  the slots and the free SPU RAM ("slot ..." lines, "spu ...", then "end")
+  quit                   (the synth keeps running on the PS1)
+Each command except midi answers "ok" or "error <reason>". The GUI (Synth page) uses it for its keyboard, MIDI input
+from a MIDI interface, SysEx sample upload and kits; gui/vag.py converts WAV files to VAG.
+The PS1 shows the slots, the settings of the selected one and a keyboard with the notes playing. Controls: Up/Down
+slot, L1/R1 setting, Left/Right change it, Cross/Triangle/Square play the slot (root, +12, -12).
+How it works: the synth keeps a mailbox at 0x80100000 (MIDI ring, command, state, see ps1-tools/synth/synth.h) that
+ps1transfer reads and writes with the live memory access of the kernel hook. A 1kHz timer interrupt keeps the hook
+answering. A sample goes to 0x80110000 first, then the synth sends it to SPU RAM by DMA.
+
+
+TMD model viewer:
+Display a TMD model with its TIM textures (loaded in VRAM at the position stored in each TIM, as the TMD expects):
+ps1transfer -m model.tmd -t texture1.tim -t texture2.tim
+Controls: D-pad rotate X/Y, L1/R1 rotate Z, Triangle/Cross zoom in/out, Start reset view, Select hide/show the text.
+The model and textures are uploaded to 0x80100000 (max 896KB). "-m" resets the PS1 first, so models can be displayed
+one after the other, "ps1transfer -r" goes back to the PS1 DEV CART menu.
+
+Any "local dload" commands from your batch transfer file can be adapted like this:
+local dload bullet2.tim 800e4000 => ps1transfer -u -f bullet2.tim -a 0x800e4000
+
+
+Usage examples:
+
+Upload and execute the Playstation 1 executable "program.ps-exe":
+ps1transfer -e -f program.ps-exe
+
+Reset the Playstation 1 then Upload and execute "program2.ps-exe":
+ps1transfer -r -e -f program2.ps-exe
+
+Upload and execute a Playstation 1 executable and redirect the "printf" text of your Playstation program to your computer:
+ps1transfer -c -e -f program.ps-exe
+
+Upload and execute a a program, redirect the "printf" text and specify the path "gamedata" for the program data files for the file server:
+ps1transfer -c -e -f program.ps-exe -p ./gamedata/
+
+Upload the file "data.bin" to the address 0x80100000 in the Playstation 1 ram:
+ps1transfer -u -f data.bin -a 0x80100000
+
+Download the bios memory from the Playstation 1 and save it to the file "bios.bin":
+ps1transfer -d -f bios.bin -a 0x1FC00000 -s 524288
+
+Download the entire Video RAM from the Playstation 1 and export it as a PNG image named "vram.png":
+ps1transfer -v 0 0 1024 512 -f vram.png
+

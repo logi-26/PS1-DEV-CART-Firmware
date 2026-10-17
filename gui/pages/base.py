@@ -1,0 +1,63 @@
+"""
+PS1 DEV CART GUI: base class of the pages shown next to the sidebar.
+
+This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+If a copy of the MPL was not distributed with this file,
+You can obtain one at https://mozilla.org/MPL/2.0/.
+"""
+import ttkbootstrap as tb
+
+
+class Page(tb.Frame):
+    title = ""          # Sidebar text
+    phase = 1           # Pages of later phases are shown as "coming soon"
+
+    def __init__(self, master, app):
+        super().__init__(master, padding=12)
+        self.app = app
+        self.action = None      # Name of the action shown in the command preview (pages with several actions)
+        self.build()
+
+    def build(self):
+        pass
+
+    def args(self):
+        """ps1transfer arguments of the current action (without the program, -n serial and -progress), for the
+        command preview. None: nothing to show."""
+        return None
+
+    def on_show(self):
+        pass
+
+    def on_device_changed(self):
+        """Another cartridge was chosen at the top of the window (the page may show the previous one's state)."""
+        pass
+
+    def section(self, text, master=None):
+        """A titled frame (call track() on it once filled, for pages with several actions)."""
+        return tb.Labelframe(master or self, text=text, padding=10)
+
+    def select_action(self, action):
+        self.action = action
+
+    def track(self, widget, action):
+        """Selects the action when the widget (or a child) gets the focus or a click."""
+        for event in ("<FocusIn>", "<Button-1>"):
+            widget.bind(event, lambda e, a=action: self.select_action(a), add="+")
+        for child in widget.winfo_children():
+            self.track(child, action)
+
+
+class PlaceholderPage(Page):
+    """Page of a later phase: what it will do and the ps1transfer parameters to use meanwhile."""
+    description = ""
+    cli = ""
+
+    def build(self):
+        tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w")
+        tb.Label(self, text="Coming in phase %d of the GUI." % self.phase, bootstyle="warning").pack(anchor="w",
+                                                                                                    pady=(4, 12))
+        tb.Label(self, text=self.description, wraplength=640, justify="left").pack(anchor="w")
+        if self.cli:
+            tb.Label(self, text="Meanwhile, with ps1transfer:", font=("", 10, "bold")).pack(anchor="w", pady=(16, 4))
+            tb.Label(self, text=self.cli, justify="left", font=("Consolas", 10)).pack(anchor="w")

@@ -1,0 +1,7 @@
+# Path to ABelliqueux's nolibgs_hello_worlds repository (https://github.com/ABelliqueux/nolibgs_hello_worlds/)
+# The root folder can be renamed as wanted e.g. psyq_sdk
+PSXDIR = /path/to/nolibgs_hello_worlds
+
+# Path to PSn00bSDK (https://github.com/Lameguy64/PSn00bSDK, release package with its GCC toolchain),
+# used to build the firmware (open source instead of PsyQ)
+PSN00BSDK = /opt/psn00bsdk
