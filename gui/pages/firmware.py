@@ -5,7 +5,9 @@ This Source Code Form is subject to the terms of the Mozilla Public License, v. 
 If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
+import glob
 import os
+import sys
 
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
@@ -23,6 +25,16 @@ INFO_ROWS = (("device", "Cartridge (USB serial)"), ("state", "State"), ("firmwar
              ("firmware_version", "Firmware version"), ("features", "Features"), ("monitor", "Debug monitor"),
              ("monitor_version", "Monitor version"), ("escaped_answers", "Escaped answers"),
              ("debug_session", "Debug session"), ("tty_mode", "TTY mode"))
+
+
+def default_rom():
+    """The firmware ROM: next to the Manager's executable (release zip: ps1devcart-x.y.rom, the newest name first), or
+    the repository's cartrom/ps1devcart.rom. "" if none."""
+    places = [os.path.join(GUI_DIR, "..", "cartrom", "ps1devcart.rom")]
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        places = sorted(glob.glob(os.path.join(exe_dir, "ps1devcart*.rom")), reverse=True) +             [os.path.join(exe_dir, "..", "..", "cartrom", "ps1devcart.rom")]
+    return next((os.path.normpath(p) for p in places if os.path.isfile(p)), "")
 
 
 def describe_rom(path):
@@ -71,9 +83,9 @@ class FirmwarePage(Page):
                  wraplength=780, justify="left", bootstyle="warning").pack(anchor="w", pady=(0, 6))
         self.rom = FileField(box, self.app, "fw.rom", "ROM file", filetypes=ROM_TYPES,
                              on_change=self._check)
-        if not self.rom.get():
-            default = os.path.normpath(os.path.join(GUI_DIR, "..", "cartrom", "ps1devcart.rom"))
-            if os.path.isfile(default):
+        if not self.rom.get() or not os.path.isfile(self.rom.get()):
+            default = default_rom()
+            if default:
                 self.rom.set(default)
         self.rom.pack(fill="x", pady=2)
         self.rom_text = tb.Label(box, text="", bootstyle="secondary")

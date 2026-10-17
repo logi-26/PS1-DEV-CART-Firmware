@@ -254,7 +254,7 @@ stopped (Ctrl+C, or a line on its input), and prints the throughput every second
 
 ### PS1 DEV CART AUDIO STREAMER
 
-The `audiostreamer` folder plays internet radio stations and audio files streamed by the computer (a sample of -net).
+The `ps1-tools/audiostreamer` folder plays internet radio stations and audio files streamed by the computer (a sample of -net).
 - `audio_server.py` (on the computer, `pip install miniaudio numpy av`) plays a playlist of station links and audio
   files: by default six UK stations (Smooth, Capital London, Heart, Classic FM, Heart 80s and Radio X Classic Rock).
   Icecast/SHOUTcast MP3 stations are decoded with miniaudio (with the song titles of the stream); local files of any
@@ -275,7 +275,7 @@ Measured: 12.3 to 13.4 KB/s steady through the bridge (the stream's real time ra
 
 ### PS1 DEV CART VIDEO STREAMER
 
-The `videostreamer` folder plays videos streamed by the computer, with the PlayStation's own video hardware (the MDEC,
+The `ps1-tools/videostreamer` folder plays videos streamed by the computer, with the PlayStation's own video hardware (the MDEC,
 as the FMVs of the games) and sound (SPU ADPCM).
 - `video_server.py` (on the computer, `pip install av numpy miniaudio`) opens any video file or stream FFmpeg can open
   (PyAV), fits the picture in a 320x240 screen (full resolution, `--size 160x120` for a smaller stream shown 2x) and
@@ -425,7 +425,7 @@ happens, it can be repaired with the flasher CD image (below).
 
 - **From the computer:** with the cartridge on its menu, run `ps1transfer -flash cartrom/ps1devcart.rom`, or use the
   Firmware page of the GUI. The ROM is checked first, flashed, then read back and compared.
-- **Repair or install from a CD:** `make` in the `ar_flash` folder also builds `ar_flash.bin`/`ar_flash.cue`, a CD image
+- **Repair or install from a CD:** `make` in the `ps1-tools/ar_flash` folder also builds `ar_flash.bin`/`ar_flash.cue`, a CD image
   with the flasher. Burn it to a CD-R or use a CD emulator. Then:
   1. Start the console with the cartridge switch **OFF**.
   2. Boot the CD.
