@@ -45,14 +45,17 @@ The Manager doesn't use the encoders: they are only there because FFmpeg is buil
 Source code
 -----------
 These libraries are used unmodified, as distributed in PyAV's wheel for Windows (pip install av==18.1.0).
-The source code of the GPL and LGPL ones (x264, x265, FFmpeg, LAME, libiconv) and PyAV's build
-scripts for this build (pyav-ffmpeg 8.1.2-1) are published with the PS1 DEV CART release, in
-"third-party-sources" (with their SHA-256 checksums). They can also be found upstream:
-- FFmpeg: https://ffmpeg.org/download.html (release 8.1.2, https://ffmpeg.org/releases/)
-- PyAV and the scripts that build its FFmpeg and the libraries above, with the exact source versions:
-  https://github.com/PyAV-Org/PyAV and https://github.com/PyAV-Org/pyav-ffmpeg
-- x264: https://code.videolan.org/videolan/x264   x265: https://bitbucket.org/multicoreware/x265_git
-- LAME: https://lame.sourceforge.io   libiconv: https://www.gnu.org/software/libiconv/
+The exact source code of the GPL and LGPL ones, as used for this build:
+- x264 (commit b35605ac):
+  https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
+- x265 4.2: https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.2.tar.gz
+- FFmpeg 8.1.2: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+- LAME 3.100: http://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz
+- GNU libiconv 1.19: https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz (the Windows DLL comes from the
+  MSYS2 package: https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst)
+- How they were built (configure options, patches, SHA-256 of each archive above): PyAV's build scripts,
+  https://github.com/PyAV-Org/pyav-ffmpeg/tree/8.1.2-1 (scripts/build-ffmpeg.py)
+- PyAV: https://github.com/PyAV-Org/PyAV (release 18.1.0)
 
 Replacing the libraries (LGPL)
 ------------------------------
