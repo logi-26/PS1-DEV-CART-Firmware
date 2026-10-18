@@ -78,7 +78,7 @@ class ProfilerPage(Page):
         for key, text in (("cpu", "CPU"), ("gpu", "GPU"), ("fps", "Frames/s"), ("ram", "RAM used"),
                           ("stack", "Stack"), ("spu", "SPU voices"), ("dropped", "Dropped")):
             cell = tb.Frame(stats, padding=(0, 0, 18, 0))
-            cell.pack(side="left")
+            cell.pack(side="left", anchor="n")     # (top: the RAM cell has a third line)
             tb.Label(cell, text=text, bootstyle="secondary").pack(anchor="w")
             self.values[key] = tb.Label(cell, text="-", font=("", 15, "bold"))
             self.values[key].pack(anchor="w")
