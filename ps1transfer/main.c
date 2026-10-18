@@ -2179,12 +2179,19 @@ void	LoadSymbols(char *filename)
 	{
 		while (fgets(line, sizeof(line), f))
 		{
+			char	whole[1024];
+
+			strcpy(whole, line);
 			for (n = 0, tok[0] = strtok(line, " \t\r\n"); tok[n] && (n < 3); tok[++n] = strtok(NULL, " \t\r\n"))
 				;
 			if ((n == 2) && !strncmp(tok[0], "0x", 2) && strncmp(tok[1], "0x", 2))	// map: "0x80010000  main"
 				name = tok[1];
-			else if ((n == 3) && !tok[3] && (strlen(tok[1]) == 1) && isalpha((unsigned char)tok[1][0]))	// nm: "80010000 T main"
-				name = tok[2];
+			else if ((n == 3) && (strlen(tok[1]) == 1) && isalpha((unsigned char)tok[1][0]))	// nm: "80010000 T main"
+			{
+				// The rest of the line: C++ names from "nm -C" have spaces ("Game::draw(int, int)")
+				name = whole + (tok[2] - line);
+				name[strcspn(name, "\r\n")] = 0;
+			}
 			else
 				continue;
 			AddSymbol((uint32_t)strtoull(tok[0], NULL, 16), name);

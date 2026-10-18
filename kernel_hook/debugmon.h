@@ -27,7 +27,9 @@ MonitorState	mon_state __attribute__ ((section (".monitor_state"), used));
 uint32_t		mon_regs[MON_REGS] __attribute__ ((used));		// Registers saved by MonSave
 uint32_t		mon_stack[MON_STACK_SIZE / 4] __attribute__ ((used));
 
-extern void		(* ReturnFromExceptionOld)(void);
+// The BIOS ReturnFromException the hook calls at the end, at a fixed address: kept for the uninstall by the firmware,
+// and replaced for a moment by a program calling the hook from a BIOS interrupt handler (psxdevcart, PsyQo programs)
+#define	ReturnFromExceptionOld	(*(void (* volatile *)(void))0x8000DF7C)
 void			MonBreakVector(void);
 void			MonDebugVector(void);
 

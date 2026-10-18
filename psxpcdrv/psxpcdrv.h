@@ -4,9 +4,12 @@
 * The computer side is ps1transfer in console mode ("ps1transfer -e -f game.exe -c", files in the folder given with
 * -p, else the current folder). The functions have the usual PCDRV names, so programs written for a PCDRV file server
 * build unchanged: libsn_usb.h and libsn.h in this folder include this file.
-* With PSn00bSDK, whose psxapi library has its own PCDRV functions (for emulators and debuggers), the functions of
-* this library are renamed USB_PC... by the macros below: programs keep using the PC... names.
-* Needs the PS1 DEV CART firmware (kernel hook) and a program started from the cartridge.
+* PSn00bSDK (psxapi) and PsyQo/nugget (common/kernel/pcdrv.h) have their own PCDRV functions (break instructions,
+* for emulators and debuggers), so the functions of this library are renamed USB_PC... by the macros below: programs
+* keep using the PC... names (don't include nugget's pcdrv.h in the same source file).
+* Plain C, no SDK library: works with PSn00bSDK, PsyQ and PsyQo (C++: the declarations are extern "C").
+* Needs the PS1 DEV CART firmware (kernel hook) and a program started from the cartridge (PsyQo: without
+* takeOverKernel(), which removes the kernel hook).
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 * If a copy of the MPL was not distributed with this file,
@@ -16,7 +19,6 @@
 #ifndef _PSXPCDRV_H_
 #define _PSXPCDRV_H_
 
-#ifdef PSN00BSDK
 #define	PCinit	USB_PCinit
 #define	PCopen	USB_PCopen
 #define	PCcreat	USB_PCcreat
@@ -24,7 +26,6 @@
 #define	PCread	USB_PCread
 #define	PCwrite	USB_PCwrite
 #define	PCclose	USB_PCclose
-#endif
 
 // PCopen modes
 #define	PCDRV_READ			0		// Existing file, read only

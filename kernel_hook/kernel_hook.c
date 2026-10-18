@@ -10,7 +10,6 @@
 #include "siotty.h"
 #include "debugmon.h"
 
-void	(* ReturnFromExceptionOld)(void);
 bool	is_tty_enabled;
 
 typedef struct
@@ -25,9 +24,6 @@ typedef struct
 // Kernel hook params are defined at the end of some available reserved kernel space
 // See linker script in the current folder
 static KernelHookParams	kernel_hook_params __attribute__ ((section (".kernel_hook_params")));
-
-// Location is hardcoded at the end of unused kernel space to make sure the original function address is valid so the hook can be uninstalled
-static uint32_t	*p_ReturnFromExceptionOld = (uint32_t *)0x8000DF7C;
 
 static inline void	**GetB0Table(void);
 void	ReturnFromExceptionHook(void);
@@ -90,7 +86,6 @@ void	InstallUSBHook(void)
 
 	kernel_hook_params.p_USB_Process = &USB_Process;
 
-	ReturnFromExceptionOld = b0table[0x17];
+	ReturnFromExceptionOld = b0table[0x17];		// (0x8000DF7C, see debugmon.h)
 	b0table[0x17] = ReturnFromExceptionHook;
-	*p_ReturnFromExceptionOld = (uint32_t)ReturnFromExceptionOld;
 }

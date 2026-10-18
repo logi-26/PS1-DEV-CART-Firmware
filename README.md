@@ -228,6 +228,7 @@ than building the development tools for it. The aim of this project is to give t
 | **printf / TTY redirect** | Yes (to the PC only) | Yes (PC, BIOS device, serial, or USB) |
 | **PCDRV file server** | Yes (`libsn_usb`) | Yes (`psxpcdrv`: same functions, `libsn_usb.h`/`libsn.h` still work) |
 | **Net Yaroze support** | No | Yes (the `auto` script and ECOFF executable as they are, `libps` uploaded and started, serial `tty` driver) |
+| **PsyQo support** | No (the hook doesn't run under PsyQo) | Yes (`psxdevcart`: every feature; `psxcomb` gives PsyQo link play) |
 | **Live memory access** | No (upload/download from the menu only) | Yes, while the program runs: peek/poke/upload/download, with symbols from `.map`/`.elf` |
 | **Live screenshots / VRAM** | From the menu only (VRAM saved at boot) | Yes (live while the program runs, or the saved VRAM from the menu) |
 | **Hot reload** (TIM, sounds, data) | No | Yes (TIM to VRAM, sounds to SPU RAM, data to RAM; sent again on each save) |
@@ -261,6 +262,7 @@ than building the development tools for it. The aim of this project is to give t
 - [Firmware features](#firmware-features)
 - [Tools run on the PlayStation](#tools-run-on-the-playstation)
 - [Link cable library (psxcomb)](#link-cable-library-psxcomb)
+- [Using the cartridge with PsyQo](#using-the-cartridge-with-psyqo)
 - [Internet through the computer (-net), audio and video streamers](#internet-through-the-computer--net-audio-and-video-streamers)
 - [Netplay](#netplay)
 - [Profiler](#profiler)
@@ -444,6 +446,35 @@ the cable.
     read(fd_read, buffer, size);        // ends with the event, like write()
 
 It uses root counter 2 while a serial write is in progress, and all the time with the USB link.
+
+## Using the cartridge with PsyQo
+
+[PsyQo](https://github.com/pcsx-redux/nugget/tree/main/psyqo) (the C++ framework of the PCSX-Redux project) programs
+work with the cartridge, with three small C libraries compiled with your program (no SDK library needed):
+
+- **`psxdevcart`**: call `DevCartInit()` once, at the start of your application's `createScene()`. The cartridge's
+  kernel hook normally runs when a program's interrupt handlers end with the BIOS `ReturnFromException`, as PsyQ,
+  PSn00bSDK and Net Yaroze programs do. PsyQo lets the BIOS handle the interrupts, so without it the hook wouldn't
+  run. With it: printf on the computer, live memory access and screenshots, hot reload, the profiler, the GDB
+  debugger, crash reports (with the last frame) and the USB link all work, as with the other SDKs.
+- **`psxpcdrv`**: files of the computer (`PCopen`, `PCread`...), with `ps1transfer -c`.
+- **`psxcomb`**: **link play**, which PsyQo doesn't have: over the link cable, over USB through the cartridges
+  (`ps1transfer -relay`), or over the internet (Netplay). Same functions as the PlayStation link cable library:
+  `AddCOMB()`, then `open("sio:")` and asynchronous `read`/`write` (`syscall_open`/`syscall_read`/`syscall_write` of
+  nugget), `CombSetLink(COMB_LINK_USB)` for the USB link.
+
+`psxdevcart/example` is a PsyQo program using the three: `make NUGGET=path/to/nugget` (add `LINK_MODE=0` for the
+cable). It needs a C++20 MIPS toolchain with its C++ headers (the PCSX-Redux one, see nugget's
+`psyqo/GETTING_STARTED.md`; PSn00bSDK's GCC has no C++ library headers).
+
+Rules:
+- don't call `psyqo::Kernel::takeOverKernel()`: it replaces the BIOS kernel, and the cartridge's hook with it;
+- don't link the program into the kernel's RAM (`TLOAD_ADDR=0x80001000`): the hook lives there;
+- `psxdevcart` needs this firmware (monitor version 6); with an older one, or without the cartridge (an emulator, a
+  CD), `DevCartInit()` does nothing and returns 0.
+
+Symbols for crash reports and the profiler: `mipsel-none-elf-nm -C program.elf > program.sym` (demangled C++
+names). In the profiler, mark `psyqo::GPU::pumpCallbacks()` as waiting: PsyQo waits for the next frame there.
 
 ## Internet through the computer (-net), audio and video streamers
 
@@ -654,10 +685,11 @@ happens, it can be repaired with the flasher CD image (below).
 
 **Build steps**
 
-    make                    firmware (ps1devcart.ps-exe), kernel hook, debug monitor
-    make -C cartrom         cartridge ROM (cartrom/ps1devcart.rom)
-    make -C ar_flash        flasher, with the ROM built in, and its CD image
-    make -C tmdviewer       (same for soundtest, timviewer, cardtool, synth, linktest)
+    make                            firmware (ps1devcart.ps-exe), kernel hook, debug monitor
+    make -C cartrom                 cartridge ROM (cartrom/ps1devcart.rom)
+    make -C ps1-tools/ar_flash      flasher, with the ROM built in, and its CD image
+    make -C ps1-tools/tmdviewer     (same for soundtest, timviewer, cardtool, synth, linktest, audiostreamer,
+                                    videostreamer)
 
 `build.sh` / `build.bat` build everything. `ps1transfer` has Makefiles for Windows and Linux
 (`Makefile_win`, `Makefile_linux`) and Code::Blocks projects.
@@ -674,6 +706,18 @@ included.
 
 ## Technical notes
 
+- **What each part is built with:**
+  - **No SDK** (plain GCC, no library linked): the **kernel hook** (`kernel_hook/`, resident in the BIOS's unused
+    kernel RAM while a program runs) and the **debug monitor** (`monitor/`, run from the cartridge flash: crash
+    screen, GDB server, profiler, hot reload, live screenshots). The profiler's sampler and the hook's debug exception
+    vectors are hand written MIPS assembly. These are the parts where size and timing matter most, and they work
+    whatever SDK your program uses.
+  - **PSn00bSDK**: the **menu firmware** (`ps1devcart.c`) and the **PlayStation tools** (`ps1-tools/`: TMD, TIM and
+    sound viewers, SPU synth, memory card tool, link tester, audio and video streamers, flasher), for the GPU, the
+    debug font, pads, SPU, MDEC and memory cards.
+  - **Libraries for your programs**: `psxpcdrv` (files on the computer), `psxcomb` (link play) and `psxdevcart`
+    (PsyQo programs) are plain C compiled with your program, no SDK library; they work with PSn00bSDK and PsyQo (see
+    [Using the cartridge with PsyQo](#using-the-cartridge-with-psyqo)).
 - The menu runs from RAM at 0x801EF000: it is copied there from the cartridge flash at boot (`cartrom`, based on
   PSn00bSDK's cartrom example), as the original PS1USB firmware does at the same address. It takes 34.1 KB there
   (0x801EF000 to 0x801F7854, code, data and variables), the original firmware 65.2 KB (up to 0x801FF4E8). This RAM

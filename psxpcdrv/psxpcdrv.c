@@ -14,7 +14,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <string.h>
 #include <stdbool.h>
 #include "psxpcdrv.h"
 
@@ -31,6 +30,16 @@ static KernelHookParams	*kernel_hook_params = (KernelHookParams *)0x8000DF70;
 
 /****************************************/
 
+// (no C library needed: PsyQo's toolchain has none)
+static uint32_t	NameSize(const char *name)
+{
+	uint32_t	n = 0;
+
+	while (name[n])
+		n++;
+	return (n + 1);
+}
+
 int	PCinit(void)
 {
 	if (!kernel_hook_params->p_USB_Process('I', 0, NULL, 0, NULL))
@@ -43,7 +52,7 @@ int	PCopen(char *name, int mode, int perms)
 {
 	int	ret;
 
-	if (!kernel_hook_params->p_USB_Process('O', mode, name, strlen(name)+1, (uint32_t *)&ret))
+	if (!kernel_hook_params->p_USB_Process('O', mode, name, NameSize(name), (uint32_t *)&ret))
 		return (-1);
 	return (ret);
 }
@@ -52,7 +61,7 @@ int	PCcreat(char *name, int perms)
 {
 	int	ret;
 
-	if (!kernel_hook_params->p_USB_Process('C', 0, name, strlen(name)+1, (uint32_t *)&ret))
+	if (!kernel_hook_params->p_USB_Process('C', 0, name, NameSize(name), (uint32_t *)&ret))
 		return (-1);
 	return (ret);
 }

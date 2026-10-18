@@ -1,8 +1,11 @@
 /*
-* PS1 DEV CART psxcomb: link cable library for PSn00bSDK, compatible with the PlayStation link cable library libcomb
-* (same functions and macros, "sio:" device, asynchronous read/write ended by events, same signals on the cable),
-* plus a USB link: two consoles linked through their cartridges and the computer ("ps1transfer -relay").
+* PS1 DEV CART psxcomb: link cable library for PSn00bSDK and PsyQo, compatible with the PlayStation link cable library
+* libcomb (same functions and macros, "sio:" device, asynchronous read/write ended by events, same signals on the
+* cable), plus a USB link: two consoles linked through their cartridges and the computer ("ps1transfer -relay").
 * PsyQ code including <libcomb.h> builds unchanged: libcomb.h in this folder includes this file.
+* Without PSn00bSDK (PsyQo, or any program keeping the BIOS kernel), psxcomb.c uses the BIOS itself (psxcomb_bios.h):
+* compile psxcomb.c with your program as a C file. PsyQo: don't call takeOverKernel() (the BIOS devices, events and
+* the cartridge's kernel hook are needed); the events can be waited for with psyqo::Kernel::openEvent.
 *
 * Use: AddCOMB(), then open("sio:", O_RDONLY | O_NOWAIT) / open("sio:", O_WRONLY | O_NOWAIT), read()/write(), and the
 * events HwSIO EvSpIOER (read ended), EvSpIOEW (write ended), EvSpERROR, EvSpTIMOUT (wait callback said stop).

@@ -45,8 +45,9 @@
 // Monitor version (header word 2, copied in MonitorState.version): 1 = 'M' service, VRAM/SPU write;
 // 2 = live screenshots ('V') only through the 'M' service (the kernel hook doesn't have them any more);
 // 3 = profiler (MON_REASON_PROFILE); 4 = escaped answers ('Q' before a command, see usb.h); 5 = crash screen drawn in
-// the program's draw area, its last frame kept in VRAM (MON_CRASH_FRAME)
-#define	MONITOR_VERSION		5
+// the program's draw area, its last frame kept in VRAM (MON_CRASH_FRAME); 6 = the kernel hook ends with the
+// ReturnFromException stored at 0x8000DF7C (psxdevcart: the hook run from a BIOS interrupt handler, PsyQo programs)
+#define	MONITOR_VERSION		6
 
 // Profiler ("ps1transfer -prof"). A root counter not used by the program interrupts it (rate set by the computer):
 // the exception vector goes to the monitor's sampler (copied to RAM), which sends a sample to the computer at each tick, without waiting (dropped if the USB FIFO is full), between

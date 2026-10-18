@@ -1,5 +1,5 @@
 /*
-* PS1 DEV CART psxcomb: link cable library for PSn00bSDK, see psxcomb.h
+* PS1 DEV CART psxcomb: link cable library for PSn00bSDK and PsyQo, see psxcomb.h
 *
 * Serial link (same signals as the PlayStation link cable library, so it can talk to a game that uses it):
 * - 8 bits, no parity, 2 stop bits, 9600 bps by default; one byte per handshake by default (CombSetPacketSize).
@@ -25,9 +25,12 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <string.h>
+#ifdef PSN00BSDK
 #include <psxetc.h>
 #include <psxapi.h>
+#else
+#include "psxcomb_bios.h"	// The same BIOS services without PSn00bSDK (PsyQo...)
+#endif
 #include "psxcomb.h"
 
 // Serial port (SIO1) registers
@@ -120,7 +123,7 @@ static void	HookService(void)
 
 static void	UsbAttach(void)
 {
-	memset(&rings, 0, offsetof(CombRings, tx));
+	__builtin_memset(&rings, 0, offsetof(CombRings, tx));
 	rings.version = USBLINK_VERSION;
 	rings.ring_size = COMB_USB_RING;
 	old_link_pointer = HOOK_LINK_POINTER;

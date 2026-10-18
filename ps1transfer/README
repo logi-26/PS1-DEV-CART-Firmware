@@ -152,6 +152,7 @@ Symbols:
 The executable run with -e is remembered, and the symbol file with the same name next to it (.map, .sym or .elf)
 is loaded automatically by -crash, -peek/-poke and @names. -sym file gives another one.
 Symbol files: GNU ld map file (-Wl,-Map=game.map), nm output (nm game.elf > game.sym), or the ELF file itself.
+C++ (e.g. PsyQo programs): nm -C game.elf > game.sym gives readable names ("Game::draw(int, int)").
 Addresses can be given as @symbol or @symbol+offset (-a, -peek, -poke):
 ps1transfer -peek @player -s 32        hexadecimal dump with symbol names (live while the program runs)
 ps1transfer -poke @lives 3 -s 1        write a 1, 2 or 4 bytes value
