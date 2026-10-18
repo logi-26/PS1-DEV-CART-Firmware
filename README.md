@@ -16,6 +16,190 @@ Transfers are also several times faster than with the original firmware.
 The firmware and all the PlayStation programs are built with the open source
 [PSn00bSDK](https://github.com/Lameguy64/PSn00bSDK). No PsyQ (Sony's SDK) is needed.
 
+## Screenshots
+
+### On the PlayStation
+
+**PS1 DEV CART menu**: The cartridge's menu: firmware version, device ID, and ready for the computer.
+
+<p align="center">
+  <img src="screenshots/ps1/menu.png" alt="The cartridge's menu: firmware version, device ID, and ready for the computer." width="640">
+</p>
+
+**Video streamer**: The Sintel trailer streamed from the internet, decoded by the PlayStation's MDEC.
+
+<p align="center">
+  <img src="screenshots/ps1/videostreamer.png" alt="The Sintel trailer streamed from the internet, decoded by the PlayStation's MDEC." width="640">
+</p>
+
+**SPU synth**: Six samples loaded into the synth's slots, the selected slot's settings and the keyboard.
+
+<p align="center">
+  <img src="screenshots/ps1/synth.png" alt="Six samples loaded into the synth's slots, the selected slot's settings and the keyboard." width="640">
+</p>
+
+**Crash screen**: A program that crashed: the cause, the registers and a stack dump.
+
+<p align="center">
+  <img src="screenshots/ps1/crash.png" alt="A program that crashed: the cause, the registers and a stack dump." width="640">
+</p>
+
+<details>
+<summary>More PlayStation tools</summary>
+
+**TIM viewer**: A car texture with its palette and its position in VRAM.
+
+<p align="center">
+  <img src="screenshots/ps1/timviewer.png" alt="A car texture with its palette and its position in VRAM." width="640">
+</p>
+
+**TMD model viewer**: A textured car model, rotated and zoomed with the pad.
+
+<p align="center">
+  <img src="screenshots/ps1/tmdviewer.png" alt="A textured car model, rotated and zoomed with the pad." width="640">
+</p>
+
+**Sound tester**: A VAG sample loaded, with the note, the volume and the 24 voices.
+
+<p align="center">
+  <img src="screenshots/ps1/soundtest.png" alt="A VAG sample loaded, with the note, the volume and the 24 voices." width="640">
+</p>
+
+**Audio streamer**: An internet radio station playing, with the song title and the buffer.
+
+<p align="center">
+  <img src="screenshots/ps1/audiostreamer.png" alt="An internet radio station playing, with the song title and the buffer." width="640">
+</p>
+
+**Link cable tester**: Two consoles linked through their cartridges: packets, losses and round trip time.
+
+<p align="center">
+  <img src="screenshots/ps1/linktest.png" alt="Two consoles linked through their cartridges: packets, losses and round trip time." width="640">
+</p>
+
+**Memory card tool**: A whole memory card backed up to the computer.
+
+<p align="center">
+  <img src="screenshots/ps1/cardtool.png" alt="A whole memory card backed up to the computer." width="640">
+</p>
+
+**Flasher**: The firmware written to the cartridge, then checked.
+
+<p align="center">
+  <img src="screenshots/ps1/flasher.png" alt="The firmware written to the cartridge, then checked." width="640">
+</p>
+
+</details>
+
+### PS1 Dev Cart Manager
+
+**Profiler**: A 3D racing game profiled while it runs: CPU and GPU load, frames, RAM, and the functions where the time goes.
+
+<p align="center">
+  <img src="screenshots/manager/profiler.png" alt="A 3D racing game profiled while it runs: CPU and GPU load, frames, RAM, and the functions where the time goes." width="100%">
+</p>
+
+**Netplay**: A lobby with a chat, and two players playing the link tester over the internet.
+
+<p align="center">
+  <img src="screenshots/manager/netplay.png" alt="A lobby with a chat, and two players playing the link tester over the internet." width="100%">
+</p>
+
+**Debug**: A crash report with the call stack and the function names.
+
+<p align="center">
+  <img src="screenshots/manager/debug.png" alt="A crash report with the call stack and the function names." width="100%">
+</p>
+
+**Synth**: Samples loaded into the PlayStation's SPU synth, with each slot's settings and a keyboard.
+
+<p align="center">
+  <img src="screenshots/manager/synth.png" alt="Samples loaded into the PlayStation's SPU synth, with each slot's settings and a keyboard." width="100%">
+</p>
+
+<details>
+<summary>All the Manager pages</summary>
+
+**Run**: A program run with its printf sent to the computer and the PCDRV file server.
+
+<p align="center">
+  <img src="screenshots/manager/run.png" alt="A program run with its printf sent to the computer and the PCDRV file server." width="100%">
+</p>
+
+**Console**: The program's printf and the files it opened on the computer.
+
+<p align="center">
+  <img src="screenshots/manager/console.png" alt="The program's printf and the files it opened on the computer." width="100%">
+</p>
+
+**Memory**: A variable of the running game read by its symbol name.
+
+<p align="center">
+  <img src="screenshots/manager/memory.png" alt="A variable of the running game read by its symbol name." width="100%">
+</p>
+
+**Screen**: A live screenshot of the running game.
+
+<p align="center">
+  <img src="screenshots/manager/screen.png" alt="A live screenshot of the running game." width="100%">
+</p>
+
+**Hot reload**: Textures sent to the running game without restarting it.
+
+<p align="center">
+  <img src="screenshots/manager/hotreload.png" alt="Textures sent to the running game without restarting it." width="100%">
+</p>
+
+**Viewers**: A TMD model with its texture, and TIM files for the TIM viewer.
+
+<p align="center">
+  <img src="screenshots/manager/viewers.png" alt="A TMD model with its texture, and TIM files for the TIM viewer." width="100%">
+</p>
+
+**Sound**: VAG samples for the sound tester.
+
+<p align="center">
+  <img src="screenshots/manager/sound.png" alt="VAG samples for the sound tester." width="100%">
+</p>
+
+**Memory card**: The saves on the card in slot 1, with their icons.
+
+<p align="center">
+  <img src="screenshots/manager/memorycard.png" alt="The saves on the card in slot 1, with their icons." width="100%">
+</p>
+
+**Link test**: The link tester running on two consoles through the USB link relay.
+
+<p align="center">
+  <img src="screenshots/manager/linktest.png" alt="The link tester running on two consoles through the USB link relay." width="100%">
+</p>
+
+**Video streamer**: The playlist and the statistics of the video being streamed.
+
+<p align="center">
+  <img src="screenshots/manager/video.png" alt="The playlist and the statistics of the video being streamed." width="100%">
+</p>
+
+**Audio streamer**: Internet radio stations, with the song playing.
+
+<p align="center">
+  <img src="screenshots/manager/audio.png" alt="Internet radio stations, with the song playing." width="100%">
+</p>
+
+**Firmware**: The cartridge's information, and the ROM ready to flash.
+
+<p align="center">
+  <img src="screenshots/manager/firmware.png" alt="The cartridge's information, and the ROM ready to flash." width="100%">
+</p>
+
+**Settings**: The ps1transfer program, the theme and the third-party licences.
+
+<p align="center">
+  <img src="screenshots/manager/settings.png" alt="The ps1transfer program, the theme and the third-party licences." width="100%">
+</p>
+
+</details>
+
 ## About AI use in this project
 
 Much of the code in this project was written by an AI assistant, working under the direction and guidance of a
@@ -356,8 +540,11 @@ network through your internet address often fails (routers rarely loop back): us
   your own (or a double click in the GUI), e.g. for a program without symbols;
 - **GPU busy** (drawing or its DMA running), **frames per second** (swaps of the draw buffers);
 - **DMA activity** (GPU, SPU, CD-ROM, MDEC, ordering table clear) and the CD-ROM controller busy;
-- **RAM used**: with `-e`, the firmware fills the free RAM above the program with a pattern before starting it, the
-  words written since are counted (`-nofill`: not filled, e.g. if you uploaded data there yourself);
+- **RAM used** of the PlayStation's 2 MB: the kernel (64 KB) and your program with its variables, plus the free RAM it
+  has written since it started. With `-e`, the firmware fills the free RAM above the program with a pattern before
+  starting it, and the words written since are counted, e.g. "RAM 1980/2048 KB (program 1518 KB + 398/398 KB free
+  written)". Attaching to a running program measures it too if it was started with `-prof`. `-nofill`: not filled
+  (not measured), e.g. if you uploaded data there yourself;
 - **stack**: the lowest stack pointer seen;
 - **SPU voices** playing (envelope of the 24 voices).
 

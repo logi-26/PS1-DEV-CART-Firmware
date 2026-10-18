@@ -73,6 +73,8 @@ Parameters:
    VSync/DrawSync/CdSync...), GPU busy, frames, DMA, CD-ROM busy, lowest stack pointer, RAM used, SPU voices, and the
    functions where the time goes (symbols: .elf/.map next to the program, or -sym); at the end, the functions with
    their share of the time. With -e -f program.ps-exe: executed first, its free RAM filled to measure what it uses.
+   RAM is shown of the 2MB: kernel + program (all of it counted) + the free RAM written, e.g. "RAM 1980/2048 KB
+   (program 1518 KB + 398/398 KB free written)".
    rate: samples a second (default 1000, about 4% of the program's time), counter: root counter used (default 0).
    Needs the debug monitor version 3; not during a -gdb session (works with -c sio / -c link: link play).
 -nofill With -prof -e: the free RAM is not filled (RAM use not measured), e.g. data uploaded there with -u

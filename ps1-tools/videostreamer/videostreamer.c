@@ -623,7 +623,7 @@ static void	Draw(int side)
 	if (show_info || !sample_rate)
 	{
 		const char	*state = !sample_rate ? "OFFLINE" : (buffering ? "BUFFERING" : "PLAYING");
-		char		line[40];
+		char		line[40], text[37];
 
 		UiTitle("PS1 DEV CART VIDEO STREAMER", state);
 		UiTextPanel(8, 166, 304, 4);
@@ -631,8 +631,10 @@ static void	Draw(int side)
 		{
 			snprintf(line, 37, "%d/%d %s", item + 1, items, name);
 			UiColorText(16, 172, line, UI_YELLOW);
-			FntPrint(fnt_info, "\n%.36s\n%dX%d  %d FPS  SOUND %d HZ\nBUFFER %d.%d S  %d KB/S  DROPPED %d",
-				error[0] ? error : info_text, vis_w, vis_h, fps100 / 100, (int)sample_rate, (int)(tenths / 10),
+			// (cut by snprintf: PSn00bSDK's printf has no precision, "%.36s" was a width)
+			snprintf(text, sizeof(text), "%s", error[0] ? error : info_text);
+			FntPrint(fnt_info, "\n%s\n%dX%d  %d FPS  SOUND %d HZ\nBUFFER %d.%d S  %d KB/S  DROPPED %d",
+				text, vis_w, vis_h, fps100 / 100, (int)sample_rate, (int)(tenths / 10),
 				(int)(tenths % 10), (int)((rate_bytes + 512) / 1024), frames_dropped);
 		}
 		else

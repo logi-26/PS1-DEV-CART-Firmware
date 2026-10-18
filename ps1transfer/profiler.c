@@ -67,6 +67,17 @@ static uint32_t		voice_endx;
 static uint16_t		spu_cnt;
 static bool			have_voices, have_ram;
 static uint32_t		ram_dirty, ram_maxrun, ram_lo, ram_hi;
+
+// RAM use shown of the PlayStation's 2MB: everything below the free RAM measured (kernel 64KB, the program with its
+// variables) counts as used, plus the free RAM the program has written (the RAM above it, the stack, is not counted)
+#define	PS1_RAM_START		0x80000000
+#define	PS1_PROGRAM_START	0x80010000
+#define	PS1_RAM_KB			2048
+
+static uint32_t	RamUsedKB(void)
+{
+	return ((ram_lo - PS1_RAM_START) / 1024 + ram_dirty * 4 / 1024);
+}
 static int			conflict = -1;
 static char			last_char = '\n';
 static bool			json;
@@ -382,8 +393,9 @@ static void	Report(ProfOptions *o, double t, double dt, FILE *csv)
 	{
 		NewLine();
 		printf("%5.0fs  CPU %3.0f%%  GPU %3.0f%%  %4.1f fps", t, cpu, gpu, fps);
-		if (have_ram)
-			printf("  RAM %u/%u KB", ram_dirty * 4 / 1024, (ram_hi - ram_lo) / 1024);
+		if (have_ram)	// Of the 2MB: kernel and program (below the free RAM) + the free RAM written
+			printf("  RAM %u/%u KB (program %u KB + %u/%u KB free written)", RamUsedKB(), PS1_RAM_KB,
+				(ram_lo - PS1_PROGRAM_START) / 1024, ram_dirty * 4 / 1024, (ram_hi - ram_lo) / 1024);
 		if (stack)
 			printf("  stack %u B", stack);
 		if (have_voices)
@@ -583,8 +595,8 @@ int	UsbProfile(ProfOptions *o)
 	printf("Profiling: %d samples a second (root counter %d)%s%s. Stop with Ctrl+C.\n", o->rate, o->counter,
 		symbol_count ? "" : ", no symbols", ram_hi ? "" : ", RAM use not measured (program not executed with -prof)");
 	if (ram_hi)
-		printf("RAM use measured from 0x%08X to 0x%08X (%u KB free when the program started)\n", ram_lo, ram_hi,
-			(ram_hi - ram_lo) / 1024);
+		printf("RAM use measured from 0x%08X to 0x%08X (%u KB free when the program started; below it the kernel "
+			"64 KB and the program %u KB)\n", ram_lo, ram_hi, (ram_hi - ram_lo) / 1024, (ram_lo - PS1_PROGRAM_START) / 1024);
 	last_char = '\n';
 
 	start = last = Now();

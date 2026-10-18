@@ -20,6 +20,7 @@ from widgets import FileField, PS1_EXE_TYPES, labeled
 RATES = ("1000", "500", "2000", "250")
 COUNTERS = {"0 (default)": 0, "1": 1, "2": 2}
 HISTORY = 60        # Seconds in the chart
+RAM_START, RAM_PROGRAM, RAM_KB = 0x80000000, 0x80010000, 2048     # PlayStation RAM, programs load at 0x80010000
 DMA = (("gpu", "GPU"), ("spu", "SPU"), ("cd", "CD-ROM"), ("mdec", "MDEC"), ("otc", "OT clear"))
 
 
@@ -81,6 +82,9 @@ class ProfilerPage(Page):
             tb.Label(cell, text=text, bootstyle="secondary").pack(anchor="w")
             self.values[key] = tb.Label(cell, text="-", font=("", 15, "bold"))
             self.values[key].pack(anchor="w")
+            if key == "ram":    # (of the 2MB: kernel + program, plus the free RAM written)
+                self.ram_detail = tb.Label(cell, text="", bootstyle="secondary")
+                self.ram_detail.pack(anchor="w")
 
         panes = tb.Panedwindow(self, orient="horizontal")
         panes.pack(fill="both", expand=True)
@@ -134,9 +138,12 @@ class ProfilerPage(Page):
             return
         self.exe.remember()
         args = ["-r", "-e", "-f", exe] + self._common() + ([] if self.fill.get() else ["-nofill"])
+        # RAM use: measured only when the free RAM was filled before the program started
+        self.ram_note = None if self.fill.get() else "not measured"
         self._start(args)
 
     def start_attach(self):
+        self.ram_note = "not measured"      # (the program was started without filling the free RAM)
         self._start(self._common())
 
     def _start(self, args):
@@ -196,8 +203,17 @@ class ProfilerPage(Page):
         self.values["gpu"].configure(text="%.0f%%" % data.get("gpu", 0))
         self.values["fps"].configure(text="%.1f" % data.get("fps", 0))
         ram = data.get("ram")
-        self.values["ram"].configure(text=("%d / %d KB" % (ram["used"] // 1024, (ram["hi"] - ram["lo"]) // 1024))
-                                     if ram else "-")
+        if ram:
+            # Of the PlayStation's 2MB: everything below the free RAM measured (kernel 64KB, the program with its
+            # variables) counts as used, plus the free RAM the program has written (the stack, above it, isn't counted)
+            program = (ram["lo"] - RAM_PROGRAM) // 1024
+            used = (ram["lo"] - RAM_START) // 1024 + ram["used"] // 1024
+            self.values["ram"].configure(text="{:,} / {:,} KB".format(used, RAM_KB))
+            self.ram_detail.configure(text="kernel 64 KB + program {:,} KB + {:,} of {:,} KB free written".format(
+                program, ram["used"] // 1024, (ram["hi"] - ram["lo"]) // 1024))
+        else:
+            self.values["ram"].configure(text=getattr(self, "ram_note", None) or "-")
+            self.ram_detail.configure(text="")
         self.values["stack"].configure(text=("%d B" % data["stack"]) if data.get("stack") else "-")
         spu = data.get("spu")
         self.values["spu"].configure(text=("%d / 24" % spu["playing"]) if spu else "-")

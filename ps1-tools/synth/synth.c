@@ -482,7 +482,14 @@ static void	DrawScreen(int side, int sel, int param, int preview)
 	{
 		s = &MB->slots[i];
 		if (s->spu_adrs)
-			sprintf(line, "%02d %-12.12s%4dK\n", i + 1, s->name, (int)((s->size + 1023) / 1024));
+		{
+			// (no precision in the formats: PSn00bSDK's sprintf reads "%-12.12s" as a width of 1212, it overflowed
+			// the line on the stack up into the kernel RAM: the name is cut here)
+			char	name[13];
+
+			snprintf(name, sizeof(name), "%s", s->name);
+			sprintf(line, "%02d %-12s%4dK\n", i + 1, name, (int)((s->size + 1023) / 1024));
+		}
 		else
 			sprintf(line, "%02d ---\n", i + 1);
 		FntPrint(fnt_cur, "%s", line);
