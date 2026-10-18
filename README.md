@@ -38,10 +38,11 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/synth.png" alt="Six samples loaded into the synth's slots, the selected slot's settings and the keyboard." width="640">
 </p>
 
-**TIM viewer**: A car texture with its palette and its position in VRAM.
+
+**TIM viewer/Palette editor**: The TIM viewer's palette editor: each colour of the palette changed with the pad, the image redrawn live, saved back to the computer.
 
 <p align="center">
-  <img src="screenshots/ps1/timviewer.png" alt="A car texture with its palette and its position in VRAM." width="640">
+  <img src="screenshots/ps1/paletteeditor.png" alt="The TIM viewer's palette editor: each colour of the palette changed with the pad, the image redrawn live, saved back to the computer." width="640">
 </p>
 
 **TMD model viewer**: A textured car model, rotated and zoomed with the pad.
@@ -384,6 +385,14 @@ buttons in a help bar at the bottom.
 | SPU synth | `-synth` | The PlayStation as a 16-slot sample synth: slot n plays MIDI channel n. Samples (VAG) uploaded at any time or sent as SysEx; ADSR, reverb, pan, fine tune per slot; MIDI input. |
 | Link cable tester | `-link [yaroze\|usb\|yarozeusb]` | Packets sent both ways every frame between two consoles: throughput, losses, round trip time, flow control lines. The serial cable can be used with libcomb (as games using the PlayStation link cable library) or like a Net Yaroze game (tty), or the USB link can be used instead of a cable. |
 | Flasher | `-flash rom.rom` | Writes the cartridge flash. Also builds a CD image to repair a cartridge (see below). |
+
+**Palette editor** (TIM viewer): change the colours of a TIM's palette on the PlayStation and see the image redrawn
+live, on the real hardware.
+- Circle in the TIM view opens it. D-pad: choose the entry, L2/R2: red, green or blue, Triangle/Cross: +/- (held:
+  repeats), Square: restore the row's original colours, Circle: exit.
+- Start saves the TIM with its edited palette as `NAME_edit.tim` on the computer, Select reloads `NAME.tim` (e.g. after
+  editing it in a paint program). Both use the file server: add `-c` (`ps1transfer -tim car.tim -c`), or tick "Palette
+  editor save / reload" on the Viewers page of the GUI.
 
 ## Link cable library (psxcomb)
 
