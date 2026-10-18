@@ -4,12 +4,15 @@ PS1 DEV CART is an alternative firmware and set of tools for **PS1USB** cartridg
 
 The cartridge plugs into the parallel port of the PlayStation and connects to your computer with a USB mini-B cable.
 With this firmware you can:
-- upload and run programs;
+- upload and run programs, including Net Yaroze programs;
 - read and write the memory and take screenshots while your program runs;
-- debug it with GDB or VS Code;
+- debug it with GDB or VS Code, and see crash reports with the function names;
+- profile it while it runs;
 - hot reload graphics and sounds;
-- link two consoles without a cable;
-- work with memory cards, 3D models, textures and sounds.
+- link two consoles without a cable, or over the internet (Netplay);
+- stream audio and video from the internet;
+- work with memory cards, 3D models, textures and sounds;
+- do all of this from a Windows GUI, **PS1 Dev Cart Manager**.
 
 Transfers are also several times faster than with the original firmware.
 
