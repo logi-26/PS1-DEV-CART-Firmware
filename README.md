@@ -44,19 +44,20 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/timviewer.png" alt="A car texture with its palette and its position in VRAM." width="640">
 </p>
 
-**Crash screen**: A program that crashed: the cause, the registers and a stack dump.
-
-<p align="center">
-  <img src="screenshots/ps1/crash.png" alt="A program that crashed: the cause, the registers and a stack dump." width="640">
-</p>
-
-<details>
-<summary>More PlayStation tools</summary>
-
 **TMD model viewer**: A textured car model, rotated and zoomed with the pad.
 
 <p align="center">
   <img src="screenshots/ps1/tmdviewer.png" alt="A textured car model, rotated and zoomed with the pad." width="640">
+</p>
+
+
+<details>
+<summary>More PlayStation tools</summary>
+
+**Crash screen**: A program that crashed: the cause, the registers and a stack dump.
+
+<p align="center">
+  <img src="screenshots/ps1/crash.png" alt="A program that crashed: the cause, the registers and a stack dump." width="640">
 </p>
 
 **Sound tester**: A VAG sample loaded, with the note, the volume and the 24 voices.
