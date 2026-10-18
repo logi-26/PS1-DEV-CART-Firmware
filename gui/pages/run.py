@@ -1,5 +1,6 @@
 """
-PS1 DEV CART GUI: Run page (upload and execute a program, TTY mode, console, Net Yaroze library).
+PS1 DEV CART GUI: Run page (upload and execute a program: a PS-X EXE, or a Net Yaroze game as the Net Yaroze tools
+make it, its auto script or ECOFF executable with the Net Yaroze library; TTY mode, console).
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 If a copy of the MPL was not distributed with this file,
@@ -11,7 +12,10 @@ import tkinter as tk
 import ttkbootstrap as tb
 
 from pages.base import Page
+from programs import file_kind
 from widgets import FileField, PS1_EXE_TYPES
+
+NY_TYPES = [("Net Yaroze auto script or executable", "auto *.exe main"), ("All files", "*.*")]
 
 
 class RunPage(Page):
@@ -21,17 +25,27 @@ class RunPage(Page):
         s = self.app.settings
         tb.Label(self, text="Run a program", font=("", 16, "bold")).pack(anchor="w", pady=(0, 10))
 
-        box = self.section("Program")
+        box = self.section("PlayStation program (PS-X EXE)")
         box.pack(fill="x", pady=(0, 10))
+        tb.Label(box, text="PSn00bSDK, PsyQ... also a Net Yaroze game converted with yarexe (it includes the Net "
+                           "Yaroze library).", bootstyle="secondary").pack(anchor="w", pady=(0, 4))
         self.exe = FileField(box, self.app, "run.exe", "Executable", filetypes=PS1_EXE_TYPES)
         self.exe.pack(fill="x", pady=2)
-        row = tb.Frame(box)
-        row.pack(fill="x", pady=2)
-        self.use_libps = tk.BooleanVar(value=s.field("run.use_libps", False))
-        tb.Checkbutton(row, text="Upload the Net Yaroze library first", variable=self.use_libps,
-                       bootstyle="round-toggle", command=self._update).pack(side="left")
+        tb.Button(box, text="Run", bootstyle="success", width=12, command=self.run).pack(anchor="w", pady=(6, 0))
+
+        box = self.section("Net Yaroze game (ECOFF)")
+        box.pack(fill="x", pady=(0, 10))
+        tb.Label(box, text="As the Net Yaroze tools make it: the auto script of siocons (its \"local load\" program "
+                           "and \"local dload\" data files), or the executable alone.", bootstyle="secondary",
+                 wraplength=900, justify="left").pack(anchor="w", pady=(0, 4))
+        self.ny = FileField(box, self.app, "run.ny", "Auto script", filetypes=NY_TYPES)
+        self.ny.pack(fill="x", pady=2)
         self.libps = FileField(box, self.app, "run.libps", "libps.exe", filetypes=PS1_EXE_TYPES)
         self.libps.pack(fill="x", pady=2)
+        tb.Label(box, text="The Net Yaroze library, from your Net Yaroze boot disc (MON\\LIBPS.EXE). It is uploaded "
+                           "first, as the boot disc does.", bootstyle="secondary").pack(anchor="w")
+        tb.Button(box, text="Run the Net Yaroze game", bootstyle="success", command=self.run_ny).pack(
+            anchor="w", pady=(6, 0))
 
         box = self.section("Options")
         box.pack(fill="x", pady=(0, 10))
@@ -56,32 +70,17 @@ class RunPage(Page):
                        bootstyle="round-toggle").grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
         self.pcdrv = FileField(box, self.app, "run.pcdrv", "PCDRV folder", mode="dir")
         self.pcdrv.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        tb.Label(box, text="Empty: the folder of the executable", bootstyle="secondary").grid(
+        tb.Label(box, text="Empty: the folder of the program", bootstyle="secondary").grid(
             row=4, column=0, columnspan=4, sticky="w")
         box.columnconfigure(3, weight=1)
-
-        buttons = tb.Frame(self)
-        buttons.pack(fill="x", pady=(4, 0))
-        tb.Button(buttons, text="Run", bootstyle="success", width=12, command=self.run).pack(side="left")
-        tb.Button(buttons, text="Reset the PS1", bootstyle="secondary-outline",
-                  command=self.app.reset_ps1).pack(side="left", padx=8)
         self._update()
 
     def _update(self):
         state = "normal" if self.tty.get() == "usb" else "disabled"     # No console without USB TTY
         self.console_check.configure(state=state)
-        self.libps.combo.configure(state="normal" if self.use_libps.get() else "disabled")
 
-    def args(self):
-        exe = self.exe.get()
-        if not exe:
-            return None
+    def options(self):
         a = []
-        if self.reset.get():
-            a.append("-r")
-        a += ["-e", "-f", exe]
-        if self.use_libps.get() and self.libps.get():
-            a += ["-y", self.libps.get()]
         tty = self.tty.get()
         if tty == "bios":
             a += ["-c", "off"]
@@ -95,19 +94,54 @@ class RunPage(Page):
                 a += ["-p", self.pcdrv.get()]
         return a
 
+    def args(self):
+        """ps1transfer arguments for the PS-X EXE section (None: no executable)."""
+        exe = self.exe.get()
+        if not exe:
+            return None
+        return (["-r"] if self.reset.get() else []) + ["-e", "-f", exe] + self.options()
+
+    def ny_args(self):
+        """ps1transfer arguments for the Net Yaroze section: an auto script (-auto) or an ECOFF executable (-e), with
+        the library; a PS-X EXE (converted with yarexe) runs as one, without it. None: no file."""
+        path = self.ny.get()
+        if not path:
+            return None
+        kind = file_kind(path)
+        a = ["-r"] if self.reset.get() else []
+        if kind == "psx":
+            return a + ["-e", "-f", path] + self.options()
+        a += ["-auto", path] if kind == "auto" else ["-e", "-f", path]
+        return a + ["-y", self.libps.get()] + self.options()
+
+    def _start(self, a, program):
+        s = self.app.settings
+        for key, var in (("run.tty", self.tty), ("run.console", self.console), ("run.reset", self.reset)):
+            s.set_field(key, var.get())
+        self.pcdrv.remember()
+        console = "-c" in a and self.tty.get() == "usb"
+        cwd = self.pcdrv.get() or os.path.dirname(program) or None
+        self.app.run(a, "Run " + os.path.basename(program), long_running=console, console=console, cwd=cwd)
+        if console:
+            self.app.show_page("Console")
+
     def run(self):
         a = self.args()
         if not a:
             self.app.error("Choose the executable to run.")
             return
-        for f in (self.exe, self.libps, self.pcdrv):
-            f.remember()
-        s = self.app.settings
-        for key, var in (("run.use_libps", self.use_libps), ("run.tty", self.tty), ("run.console", self.console),
-                         ("run.reset", self.reset)):
-            s.set_field(key, var.get())
-        console = "-c" in a and self.tty.get() == "usb"
-        cwd = self.pcdrv.get() or os.path.dirname(self.exe.get()) or None
-        self.app.run(a, "Run " + os.path.basename(self.exe.get()), long_running=console, console=console, cwd=cwd)
-        if console:
-            self.app.show_page("Console")
+        self.exe.remember()
+        self._start(a, self.exe.get())
+
+    def run_ny(self):
+        a = self.ny_args()
+        if not a:
+            self.app.error("Choose the auto script or the executable of the Net Yaroze game.")
+            return
+        if "-y" in a and not os.path.isfile(self.libps.get()):
+            self.app.error("Choose libps.exe, the Net Yaroze library (MON\\LIBPS.EXE on the Net Yaroze boot disc).")
+            return
+        self.ny.remember()
+        if "-y" in a:
+            self.libps.remember()
+        self._start(a, self.ny.get())

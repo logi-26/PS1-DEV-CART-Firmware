@@ -125,10 +125,10 @@ The firmware and all the PlayStation programs are built with the open source
 <details>
 <summary>All the Manager pages</summary>
 
-**Run**: A program run with its printf sent to the computer and the PCDRV file server.
+**Run**: A program run with its printf sent to the computer and the PCDRV file server; Net Yaroze games run from their auto script.
 
 <p align="center">
-  <img src="screenshots/manager/run.png" alt="A program run with its printf sent to the computer and the PCDRV file server." width="100%">
+  <img src="screenshots/manager/run.png" alt="A program run with its printf sent to the computer and the PCDRV file server; Net Yaroze games run from their auto script." width="100%">
 </p>
 
 **Console**: The program's printf and the files it opened on the computer.
@@ -227,7 +227,7 @@ than building the development tools for it. The aim of this project is to give t
 | **Reset console from PC**            | Yes                                          | Yes                                               |
 | **printf / TTY redirect** | Yes (to the PC only) | Yes (PC, BIOS device, serial, or USB) |
 | **PCDRV file server** | Yes (`libsn_usb`) | Yes (`psxpcdrv`: same functions, `libsn_usb.h`/`libsn.h` still work) |
-| **Net Yaroze support** | No | Yes (`libps` uploaded and started, serial `tty` driver) |
+| **Net Yaroze support** | No | Yes (the `auto` script and ECOFF executable as they are, `libps` uploaded and started, serial `tty` driver) |
 | **Live memory access** | No (upload/download from the menu only) | Yes, while the program runs: peek/poke/upload/download, with symbols from `.map`/`.elf` |
 | **Live screenshots / VRAM** | From the menu only (VRAM saved at boot) | Yes (live while the program runs, or the saved VRAM from the menu) |
 | **Hot reload** (TIM, sounds, data) | No | Yes (TIM to VRAM, sounds to SPU RAM, data to RAM; sent again on each save) |
@@ -329,8 +329,11 @@ cable, and about 29× faster over the USB link (see [Link cable library](#link-c
 - **PCDRV file server**: your program reads and writes files on the computer (`psxpcdrv` folder: the usual PCDRV
   functions `PCopen`, `PCread`, ... over USB; programs including `libsn_usb.h` or `libsn.h` build unchanged).
   Only the served folder (`-p`) can be opened: paths going outside it are refused (`-pcdrvany` allows any path).
-- **Net Yaroze**: the Net Yaroze library (`libps`) is uploaded and started before your
-  program, so Net Yaroze games run from the cartridge.
+- **Net Yaroze**: games run as the Net Yaroze tools make them, with no conversion: the `auto` script of siocons
+  (`ps1transfer -auto auto -y libps.exe`: its `local load` program and its `local dload` data files), or the ECOFF
+  executable alone (`-e -f main -y libps.exe`). The Net Yaroze library (`libps.exe`, from your Net Yaroze boot disc)
+  is uploaded and started before the program, like the boot disc does. A game converted with yarexe is a PS-X EXE
+  that already includes the library: it runs like any other program.
 
 **While a program runs**
 - **Live memory access**: peek, poke, upload and download, with symbol names from your program's `.map`/`.elf`.
@@ -524,9 +527,14 @@ the console gives them. Measured with the link tester (round trip, 60 Hz frames)
 lost by the program), 6.2 at 70 ms. Games that send every frame and use what arrived (like YarIO) run at full speed,
 the other player's moves appear a little later; games that wait for each answer slow down above ~15 ms each way.
 
-    ps1transfer -n SERIAL -r -y libps.exe -e -f game.exe -c link -netlink :7010 -netkey KEY        host
-    ps1transfer -n SERIAL -r -y libps.exe -e -f game.exe -c link -netlink 1.2.3.4:7010 -netkey KEY  guest
-    ... -netdelay 30          try it as if the other console was 30 ms away (both consoles on one computer)
+    ps1transfer -n SERIAL -r -y libps.exe -auto auto -c link -netlink :7010 -netkey KEY        host
+    ps1transfer -n SERIAL -r -y libps.exe -auto auto -c link -netlink 1.2.3.4:7010 -netkey KEY  guest
+    ... -e -f main          the Net Yaroze executable alone instead of the auto script
+    ... -e -f psx.exe       a game converted with yarexe (no -y: it includes the library)
+    ... -netdelay 30        try it as if the other console was 30 ms away (both consoles on one computer)
+
+On the Netplay page, the game is a PS-X EXE, or a Net Yaroze game's auto script or executable (with libps.exe). Both
+players need the same game: for an auto script, the script, the program and all its data files are compared.
 
 **Security.** Each game gets its own random 128-bit link key from the lobby, given only to its two players; every
 link packet carries a tag made with it (HMAC-SHA256), and ps1transfer, the host's relay and the bot ignore packets
@@ -604,7 +612,7 @@ Each page shows the command it runs. See [gui/README.md](gui/README.md).
 | Page | |
 |---|---|
 | Top bar | Cartridge chooser (by device ID), its state (menu, running, stopped, crashed) and firmware; the folder served while the file server runs; stop task, reset. |
-| Run | Upload and run a program, TTY mode, Net Yaroze library, file server. |
+| Run | Upload and run a program: a PS-X EXE, or a Net Yaroze game (auto script or ECOFF executable, with libps.exe); TTY mode, file server. |
 | Console | printf of the running program; file server activity (files opened, created and refused, bytes read and written). |
 | Memory | Peek, poke, upload, download, with symbols. |
 | Screen | Screenshots, live while a program runs, with automatic refresh. |

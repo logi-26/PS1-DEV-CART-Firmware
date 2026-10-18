@@ -29,9 +29,11 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
   - the transfer progress bar;
   - the output of `ps1transfer`.
 - **Pages:**
-  - **Run**: upload and execute a program, with its printf going to this computer (USB), to the BIOS device or
-    to the serial port (Net Yaroze link play), or to the USB link (link play without cable, see Link test). Optionally the Net Yaroze library first, and the console with the
-    PCDRV file server.
+  - **Run**: upload and execute a program, in two sections: a PlayStation program (PS-X EXE, also a Net Yaroze
+    game converted with yarexe), or a Net Yaroze game as the Net Yaroze tools make it (its `auto` script or ECOFF
+    executable, with `libps.exe` from the Net Yaroze boot disc). Its printf goes to this computer (USB), to the
+    BIOS device or to the serial port (Net Yaroze link play), or to the USB link (link play without cable, see Link
+    test). Optionally the console with the PCDRV file server.
   - **Console**: printf of the running program. **Attach** connects to a program already running. The **Files**
     list shows the file server activity: each file the program opens or creates, with its mode, the bytes read and
     written, and the requests refused (file not found, or outside the PCDRV folder). The program can only open files
@@ -90,7 +92,9 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     give the other players (**Copy address**) or what to forward (TCP+UDP 7010, UDP 7011-7014) and warnings
     (carrier-grade NAT, two routers); allow the program in the Windows firewall. **Join** connects to a host's address
     (optional password); a lost connection reconnects every 3 s (a game goes on). Your
-    game: the executable (both players need the same file: checked with a checksum), libps.exe for Net Yaroze games,
+    game: a PS-X EXE, or a Net Yaroze game's auto script or ECOFF executable (both players need the same game:
+    checked with a checksum, of the script, its program and its data files for an auto script), libps.exe for Net
+    Yaroze games (not for a game converted with yarexe, which includes it),
     the link type. The player list (game, status, ping), a chat to everyone or one player (Message), **Invite to
     play**. An accepted invite resets both consoles and starts the game with `ps1transfer -netlink` (the host waits,
     the guest connects; two guests go through the host's relay); the status line shows the round trip time and the

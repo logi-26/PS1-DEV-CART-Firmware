@@ -106,18 +106,25 @@ once the Playstation 1 booted you can switch the cartridge back on to allow the 
 
 
 Net Yaroze compatibility:
-You can upload Net Yaroze executable to your PS1 using the cartridge, you just need to get the "libps.exe" file from your Net Yaroze CD-ROM and strip its 2048 bytes exe header to raw data.
-Linux command: dd bs=1 skip=2048 if=libps.exe of=libps.bin
+Net Yaroze games run as the Net Yaroze tools make them, no conversion needed. You need the Net Yaroze library,
+libps.exe, from your Net Yaroze boot disc (MON\LIBPS.EXE).
 
-Then convert your Net Yaroze COFF exe to standard PS-X EXE using the tool "eco2exe"
-Command: eco2exe -p main.exe
+With the "auto" script of siocons, which loads the program and its data files:
+ps1transfer -auto auto -y libps.exe
+It reads "local load main" (the program), "local dload file address" (a data file, uploaded at its address) and
+"local auto file" (another script); "go" and the other siocons commands are skipped. File names are relative to the
+folder of the script ('\' or '/'). Each data file must fit below 0x801EF000 (the cartridge firmware, which receives
+the files, is above) and must not overlap the library, the program or another file.
 
-Then upload libps.bin to 0x80010000 and upload/execute your main executable on the cartridge:
-ps1transfer -u -f libps.bin -a 0x80010000
-ps1transfer -e -f main.exe
+Or the program alone, the ECOFF executable made by the Net Yaroze compiler:
+ps1transfer -e -f main -y libps.exe
+Its sections are uploaded at their addresses (the program clears its .bss itself, as with the boot disc).
 
-Or do both in one command with "-y", which also accepts the original libps.exe (its header is skipped automatically):
-ps1transfer -e -f main.exe -y libps.exe
+A game converted with yarexe (psx.exe) is a PS-X EXE that already includes the library: run it like any program,
+without -y:
+ps1transfer -e -f psx.exe
+A program converted with eco2exe (a PS-X EXE without the library) still needs -y. "-y" also accepts the library
+stripped of its 2048 bytes header (libps.bin), which is uploaded at 0x80010000.
 With -y, the start code of the library (libps.exe + 0x30: callbacks, pads...) runs before the program, like with the
 Net Yaroze boot disc: a small stub just below the program calls it, then jumps to the program entry point. Without it
 the pads read "no controller" (the program only gets the pad buffers with GetPadBuf, the start code gives them to the

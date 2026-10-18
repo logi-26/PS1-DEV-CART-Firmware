@@ -95,16 +95,23 @@ def seal_key(key, secret, n):
 
 
 def file_hash(path):
-    """SHA-1 of a game file (both players must have the same one), "" if it can't be read."""
+    """SHA-1 of a game file (both players must have the same one), "" if it can't be read. A Net Yaroze auto
+    script: of the script, its program and its data files (a different data file is another game too)."""
+    import programs     # (here: netplay_bot.py, which doesn't need it, runs with this file alone)
+    h = hashlib.sha1()
     try:
-        with open(path, "rb") as f:
-            return hashlib.sha1(f.read()).hexdigest()[:16]
+        for name in (programs.auto_files(path) if programs.file_kind(path) == "auto" else [path]):
+            with open(name, "rb") as f:
+                h.update(f.read())
+            h.update(b"\0")
     except OSError:
         return ""
+    return h.hexdigest()[:16]
 
 
 def game_name(path):
-    return os.path.splitext(os.path.basename(path))[0] if path else ""
+    import programs
+    return programs.program_name(path)
 
 
 # ---------------------------------------------------------------- server

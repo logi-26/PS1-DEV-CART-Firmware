@@ -1094,6 +1094,7 @@ void	PC_FileServer(void)
 #define	LIBPS_STUB_SIZE		24
 
 uint32_t	libps_init;		// Address of the library start code, 0: unknown library
+uint32_t	libps_adrs, libps_size;	// Where the library was uploaded
 
 // The stub, just below the program (unused by Net Yaroze programs): returns its address, 0 on USB error
 uint32_t	UploadNetYarozeStart(uint32_t exe_adrs, uint32_t entry)
@@ -1142,12 +1143,236 @@ bool	UploadNetYarozeLibrary(char *filename, uint32_t exe_adrs, uint32_t exe_size
 	else
 		printf("Unknown Net Yaroze library version: its start code isn't run (pads may not work).\n");
 
+	libps_adrs = adrs;
+	libps_size = size;
 	printf("Uploading Net Yaroze library %u bytes to 0x%X...\n", size, adrs);
 	ret = USB_Process('U', ptr, adrs, size);
 	printf("\n");
 	free(data);
 
 	return (ret);
+}
+
+/****************************************/
+// Net Yaroze programs as the Net Yaroze tools make them: the ECOFF executable of the compiler ("main") and the
+// "auto" script of siocons, which loads it and the data files ("local load main", "local dload file address",
+// "go"). A program converted to a PS-X EXE (eco2exe, or yarexe, which also includes the library) runs as usual.
+
+#define	ECOFF_MAGIC			0x0162		// MIPS little endian
+#define	ECOFF_STYP_NOLOAD	(0x80 | 0x400)	// .bss, .sbss: cleared by the program's start code
+#define	AUTO_MAX_DATA		256
+#define	AUTO_MAX_DEPTH		4
+#define	RAM_USER_START		0x80010000
+#define	RAM_FIRMWARE		0x801EF000	// PS1 DEV CART firmware (receives the files): data must stay below
+
+typedef struct
+{
+	char		path[1024];
+	uint32_t	adrs, size;
+} AutoData;
+
+static AutoData	auto_data[AUTO_MAX_DATA];
+static int		auto_count;
+static char		auto_program[1024];
+
+// ECOFF executable to a PS-X EXE in memory (sections with data at their addresses, entry point and gp); NULL: not
+// an ECOFF file. The program clears its .bss itself (as with the Net Yaroze boot disc and yarexe).
+uint8_t	*EcoffToPsxExe(const uint8_t *data, int size, int *exe_size)
+{
+	uint16_t	nscns, opthdr;
+	uint32_t	lo = 0xFFFFFFFF, hi = 0, image, i;
+	const uint8_t	*sec;
+	uint8_t		*exe;
+
+	if ((size < 20 + 56) || (*(uint16_t *)data != ECOFF_MAGIC))
+		return (NULL);
+	nscns = *(uint16_t *)&data[2];
+	opthdr = *(uint16_t *)&data[16];
+	if ((opthdr < 56) || (20 + opthdr + nscns * 40 > (uint32_t)size))
+		return (NULL);
+	for (i = 0, sec = data + 20 + opthdr; i < nscns; i++, sec += 40)
+	{
+		uint32_t	vaddr = *(uint32_t *)&sec[12], ssize = *(uint32_t *)&sec[16], ptr = *(uint32_t *)&sec[20];
+
+		if (!ssize || !ptr || (*(uint32_t *)&sec[36] & ECOFF_STYP_NOLOAD))
+			continue;
+		if (ptr + ssize > (uint32_t)size)
+		{
+			printf("ECOFF section %.8s is outside of the file\n", (const char *)sec);
+			return (NULL);
+		}
+		if (vaddr < lo)
+			lo = vaddr;
+		if (vaddr + ssize > hi)
+			hi = vaddr + ssize;
+	}
+	if (lo >= hi)
+		return (NULL);
+	image = (hi - lo + 2047) & ~2047;
+	if (!(exe = calloc(1, 2048 + image)))
+		return (NULL);
+	memcpy(exe, "PS-X EXE", 8);
+	*(uint32_t *)&exe[0x10] = *(uint32_t *)&data[20 + 16];	// a.out entry
+	*(uint32_t *)&exe[0x14] = *(uint32_t *)&data[20 + 52];	// gp value
+	*(uint32_t *)&exe[0x18] = lo;
+	*(uint32_t *)&exe[0x1C] = image;
+	strcpy((char *)&exe[0x4C], "Net Yaroze ECOFF executable (ps1transfer)");
+	for (i = 0, sec = data + 20 + opthdr; i < nscns; i++, sec += 40)
+	{
+		uint32_t	vaddr = *(uint32_t *)&sec[12], ssize = *(uint32_t *)&sec[16], ptr = *(uint32_t *)&sec[20];
+
+		if (ssize && ptr && !(*(uint32_t *)&sec[36] & ECOFF_STYP_NOLOAD))
+			memcpy(exe + 2048 + vaddr - lo, data + ptr, ssize);
+	}
+	printf("Net Yaroze ECOFF executable: 0x%X-0x%X, entry point 0x%X\n", lo, hi, *(uint32_t *)&exe[0x10]);
+	*exe_size = 2048 + image;
+	return (exe);
+}
+
+// A file named in an auto script: relative to the folder of the script ('\' or '/')
+static void	AutoPath(char *out, size_t n, const char *script, const char *name)
+{
+	const char	*slash = strrchr(script, '/'), *bslash = strrchr(script, '\\');
+	size_t		dir;
+
+	if (bslash > slash)
+		slash = bslash;
+	dir = slash ? (size_t)(slash - script + 1) : 0;
+	if ((name[0] == '/') || (name[0] == '\\') || (name[0] && (name[1] == ':')) || (dir >= n))
+		dir = 0;
+	snprintf(out, n, "%.*s%s", (int)dir, script, name);
+}
+
+// Reads an auto script (and the scripts it calls with "auto"): the program and the data files with their addresses
+bool	ReadAutoScript(const char *script, int depth)
+{
+	FILE	*f;
+	char	line[1024], *w[4], *p;
+	int		n, number = 0;
+
+	if (depth >= AUTO_MAX_DEPTH)
+	{
+		printf("%s: too many nested auto scripts\n", script);
+		return (false);
+	}
+	if (!(f = fopen(script, "r")))
+	{
+		printf("Auto script '%s' not found !\n", script);
+		return (false);
+	}
+	while (fgets(line, sizeof(line), f))
+	{
+		number++;
+		for (n = 0, p = strtok(line, " \t\r\n"); p && (n < 4); p = strtok(NULL, " \t\r\n"))
+			w[n++] = p;
+		if (n && !strcmp(w[0], "local"))	// The "local" commands of siocons (and the same without it)
+		{
+			memmove(w, w + 1, sizeof(char *) * 3);
+			n--;
+		}
+		if (!n || (w[0][0] == '#') || (w[0][0] == ';'))
+			continue;
+		if (!strcmp(w[0], "load") && (n >= 2))
+		{
+			if (auto_program[0])
+				printf("%s line %d: a second program, only the last one is run\n", script, number);
+			AutoPath(auto_program, sizeof(auto_program), script, w[1]);
+		}
+		else if (!strcmp(w[0], "dload") && (n >= 3))
+		{
+			AutoData	*d = &auto_data[auto_count];
+
+			if (auto_count >= AUTO_MAX_DATA)
+			{
+				printf("%s: more than %d data files\n", script, AUTO_MAX_DATA);
+				fclose(f);
+				return (false);
+			}
+			AutoPath(d->path, sizeof(d->path), script, w[1]);
+			d->adrs = strtoul(w[2], NULL, 16);
+			if (d->adrs < 0x80000000)
+				d->adrs |= 0x80000000;
+			auto_count++;
+		}
+		else if (!strcmp(w[0], "auto") && (n >= 2))
+		{
+			char	sub[1024];
+
+			AutoPath(sub, sizeof(sub), script, w[1]);
+			if (!ReadAutoScript(sub, depth + 1))
+			{
+				fclose(f);
+				return (false);
+			}
+		}
+		else if (strcmp(w[0], "go"))
+			printf("%s line %d: '%s' skipped (only load, dload, auto and go are used)\n", script, number, w[0]);
+	}
+	fclose(f);
+	return (true);
+}
+
+// Data files of the auto script, after the library: each one must fit below the firmware, and not overlap the
+// library, the program or another file
+bool	UploadAutoData(uint32_t exe_adrs, uint32_t exe_size, uint32_t lib_adrs, uint32_t lib_size)
+{
+	int		i, j;
+	uint8_t	*data;
+	int		size;
+
+	for (i = 0; i < auto_count; i++)
+	{
+		FILE	*f = fopen(auto_data[i].path, "rb");
+
+		if (!f)
+		{
+			printf("Data file '%s' not found !\n", auto_data[i].path);
+			return (false);
+		}
+		fseek(f, 0, SEEK_END);
+		auto_data[i].size = ftell(f);
+		fclose(f);
+	}
+	for (i = 0; i < auto_count; i++)
+	{
+		AutoData	*d = &auto_data[i];
+		const char	*clash = NULL;
+
+		if ((d->adrs < RAM_USER_START) || (d->adrs + d->size > RAM_FIRMWARE))
+		{
+			printf("%s at 0x%X-0x%X: outside of 0x%X-0x%X (the cartridge firmware is above)\n", d->path, d->adrs,
+				d->adrs + d->size, RAM_USER_START, RAM_FIRMWARE);
+			return (false);
+		}
+		if (lib_size && (d->adrs < lib_adrs + lib_size) && (d->adrs + d->size > lib_adrs))
+			clash = "the Net Yaroze library";
+		else if ((d->adrs < exe_adrs + exe_size) && (d->adrs + d->size > exe_adrs))
+			clash = "the program";
+		for (j = 0; !clash && (j < i); j++)
+			if ((d->adrs < auto_data[j].adrs + auto_data[j].size) && (d->adrs + d->size > auto_data[j].adrs))
+				clash = auto_data[j].path;
+		if (clash)
+		{
+			printf("%s at 0x%X-0x%X overlaps %s\n", d->path, d->adrs, d->adrs + d->size, clash);
+			return (false);
+		}
+	}
+	for (i = 0; i < auto_count; i++)
+	{
+		if (!(data = SystemGetFile(auto_data[i].path, &size)))
+			return (false);
+		printf("%s: %d bytes to 0x%X\n", auto_data[i].path, size, auto_data[i].adrs);
+		usb_quiet = true;
+		if (!USB_Process('U', data, auto_data[i].adrs, size))
+		{
+			usb_quiet = false;
+			free(data);
+			return (false);
+		}
+		usb_quiet = false;
+		free(data);
+	}
+	return (true);
 }
 
 /****************************************/
@@ -3069,7 +3294,7 @@ int main(int argc, char *argv[])
 	uint32_t	size = 0, adrs = 0x80010000, *ptr32, poke_value = 0;
 	char		*adrs_str = NULL;
 	uint8_t		*data = NULL, *ptr;
-	char		*filename = NULL, *path = NULL, *serial = NULL, *libps = NULL;
+	char		*filename = NULL, *path = NULL, *serial = NULL, *libps = NULL, *auto_script = NULL;
 	char		*model = NULL, *tims[VIEWER_MAX_TIM], *symfile = NULL, *sound_files[TESTER_MAX_FILES];
 	char		*timview_files[TIMVIEW_MAX_FILES];
 	int			sound_count = 0, timview_count = 0, card_mode = 0, card_slot = 1;
@@ -3459,6 +3684,17 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'a':	// 0xAddress (hexadecimal address for download/upload) or @symbol[+offset]
+					if (!strcmp(argv[i], "-auto"))	// Net Yaroze auto script: the program and its data files
+					{
+						if (i + 1 >= argc)
+						{
+							printf("Auto script needed following -auto\n");
+							goto usage;
+						}
+						auto_script = argv[++i];
+						cmd = CMD_EXECUTE;
+						break;
+					}
 					adrs_str = argv[i + 1];
 					i++;
 				break;
@@ -3642,6 +3878,25 @@ int main(int argc, char *argv[])
 	if (net_host && !tty_given)
 		tty_mode = EXEC_TTY_MODE_BIOS;
 
+	// Net Yaroze auto script: its "load" program is run, its "dload" files are uploaded first (UploadAutoData)
+	if (auto_script)
+	{
+		if (!ReadAutoScript(auto_script, 0))
+			return EXIT_FAILURE;
+		if (!auto_program[0])
+		{
+			printf("%s: no program to run (\"local load main\" line)\n", auto_script);
+			return EXIT_FAILURE;
+		}
+		if (!libps)
+		{
+			printf("A Net Yaroze program needs the Net Yaroze library: add -y libps.exe (from the Net Yaroze CD)\n");
+			return EXIT_FAILURE;
+		}
+		filename = auto_program;
+		printf("Auto script %s: %s and %d data file(s)\n", auto_script, auto_program, auto_count);
+	}
+
 	if (!filename && !reset && (cmd != CMD_CRASH) && (cmd != CMD_PEEK) && (cmd != CMD_POKE) && (cmd != CMD_HOT) &&
 		(cmd != CMD_INFO) && (cmd != CMD_FLASH_ROM) && (cmd != CMD_SYNTH) &&
 		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_NETLINK))
@@ -3655,6 +3910,25 @@ int main(int argc, char *argv[])
 		data = SystemGetFile(filename, &size);
 		if (!data)
 			goto usage;
+		if (cmd == CMD_EXECUTE)		// Net Yaroze ECOFF executable: run as a PS-X EXE
+		{
+			int		exe_size;
+			uint8_t	*exe = EcoffToPsxExe(data, size, &exe_size);
+
+			if (exe)
+			{
+				free(data);
+				data = exe;
+				size = exe_size;
+				if (!libps)
+					printf("Note: a Net Yaroze program needs the Net Yaroze library: -y libps.exe\n");
+			}
+			else if ((size < 2048) || memcmp(data, "PS-X EXE", 8))
+			{
+				printf("'%s' is not a PS-X EXE or a Net Yaroze (ECOFF) executable\n", filename);
+				goto failed;
+			}
+		}
 	}
 
 	// -gdb: reset only if a program runs (the menu firmware may be a test build running from RAM)
@@ -3740,6 +4014,8 @@ int main(int argc, char *argv[])
 			size -= 2048;
 			if (libps && !UploadNetYarozeLibrary(libps, adrs, size))
 				goto USB_error;
+			if (auto_count && !UploadAutoData(adrs, size, libps_adrs, libps_size))	// Prints its own error
+				goto failed;
 			if (model && !UploadModelData(model, tims, tim_count))	// Prints its own file or USB error
 				goto failed;
 			if (sound_count && !UploadSoundData(sound_files, sound_count))
@@ -4061,7 +4337,7 @@ usage:
 	printf("\t-sym file Symbol file (by default the .map/.sym/.elf next to the last executable run with -e)\n");
 	printf("\t-peek address [-s size] Hexadecimal dump (address in hexadecimal or @symbol[+offset])\n");
 	printf("\t-poke address value [-s 1|2|4] Write a value (e.g. -poke @lives 3 -s 1)\n");
-	printf("\t-e Execute psexe file (use -r if a program is already running)\n");
+	printf("\t-e Execute psexe file (use -r if a program is already running), or a Net Yaroze ECOFF executable (with -y)\n");
 	printf("\t-r Reset the PS1 (will be done first if combined with actions above)\n");
 	printf("\t-f file.bin\n");
 	printf("\t-a 0xAddress (hexadecimal address for download/upload)\n");
@@ -4083,6 +4359,7 @@ usage:
 	printf("\t   Commands on its input: midi HEX..., load SLOT file.vag, clear SLOT, set SLOT PARAM VALUE, state, reset, quit\n");
 	printf("\t-progress Transfer progress as progress=done/total lines (for programs using ps1transfer)\n");
 	printf("\t-y libps.exe (Net Yaroze library from the Net Yaroze CD-ROM, uploaded before -e)\n");
+	printf("\t-auto auto -y libps.exe Net Yaroze auto script (siocons): its program and \"dload\" data files\n");
 	printf("\t-m model.tmd (display a TMD model with the model viewer, tmdviewer.ps-exe next to ps1transfer)\n");
 	printf("\t-t texture.tim (texture for -m, can be used up to %d times)\n", VIEWER_MAX_TIM);
 	printf("\t-snd file (play VH+VB/VAB banks, SEQ music, VAG samples with the sound tester, up to %d files)\n", TESTER_MAX_FILES);

@@ -27,8 +27,13 @@ from widgets import FileField, MonoText, PS1_EXE_TYPES, labeled
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import netplay  # noqa: E402
+import programs  # noqa: E402
 
 LINKS = {"Net Yaroze game (tty, -c link)": "tty", "psxcomb USB link (homebrew)": "rings"}
+# A PS-X EXE (also a Net Yaroze game converted with yarexe), or a Net Yaroze game as the Net Yaroze tools make it:
+# its auto script or ECOFF executable, run with libps.exe
+GAME_TYPES = [("Games (PS-X EXE, Net Yaroze auto script or executable)", "*.exe *.ps-exe *.psx *.cpe auto main"),
+              ("All files", "*.*")]
 EVERYONE = "Everyone"
 
 
@@ -100,7 +105,7 @@ class NetplayPage(Page):
 
         box = self.section("Your game")
         box.pack(fill="x", pady=(0, 6))
-        self.exe = FileField(box, self.app, "net.exe", "Game", filetypes=PS1_EXE_TYPES, on_change=self._game_changed)
+        self.exe = FileField(box, self.app, "net.exe", "Game", filetypes=GAME_TYPES, on_change=self._game_changed)
         self.exe.pack(fill="x")
         row = tb.Frame(box)
         row.pack(fill="x", pady=(4, 0))
@@ -391,10 +396,14 @@ class NetplayPage(Page):
         self.entry.delete(0, "end")
 
     def _ready(self):
-        """The game is chosen (and libps.exe for a Net Yaroze game)."""
+        """The game is chosen (and libps.exe for a Net Yaroze game: its auto script or ECOFF executable)."""
         exe = self.exe.get()
         if not exe or not os.path.exists(exe):
             self.app.error("Choose your game first (the same file as the other player).")
+            return False
+        if programs.needs_libps(exe) and not os.path.isfile(self.libps.get()):
+            self.app.error("A Net Yaroze game needs libps.exe, the Net Yaroze library (MON\\LIBPS.EXE on the Net "
+                           "Yaroze boot disc).")
             return False
         self.exe.remember()
         if self.libps.get():
@@ -440,10 +449,14 @@ class NetplayPage(Page):
             target = ":%d" % m["port"]
         else:       # Guest: the host's address, relay: the host's relay port
             target = "%s:%d" % (self.client.host, m["port"])
+        # Net Yaroze game: the library first, then its auto script (program and data files) or ECOFF executable;
+        # a PS-X EXE (e.g. converted with yarexe, the library included) runs as it is
+        exe = self.exe.get()
+        kind = programs.file_kind(exe)
         args = ["-r"]
-        if self.libps.get() and LINKS.get(self.link.get()) == "tty":
+        if kind != "psx":
             args += ["-y", self.libps.get()]
-        args += ["-e", "-f", self.exe.get()]
+        args += ["-auto", exe] if kind == "auto" else ["-e", "-f", exe]
         if LINKS.get(self.link.get()) == "tty":
             args += ["-c", "link"]
         args += ["-netlink", target]
