@@ -110,10 +110,10 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/manager/netplay.png" alt="A lobby with a chat, and two players playing the link tester over the internet." width="100%">
 </p>
 
-**Debug**: A crash report with the call stack and the function names.
+**Debug**: A crash report with the call stack and the function names, and the last frame the game displayed before the crash.
 
 <p align="center">
-  <img src="screenshots/manager/debug.png" alt="A crash report with the call stack and the function names." width="100%">
+  <img src="screenshots/manager/debug.png" alt="A crash report with the call stack and the function names, and the last frame the game displayed before the crash." width="100%">
 </p>
 
 **Synth**: Samples loaded into the PlayStation's SPU synth, with each slot's settings and a keyboard.
@@ -231,7 +231,7 @@ than building the development tools for it. The aim of this project is to give t
 | **Live memory access** | No (upload/download from the menu only) | Yes, while the program runs: peek/poke/upload/download, with symbols from `.map`/`.elf` |
 | **Live screenshots / VRAM** | From the menu only (VRAM saved at boot) | Yes (live while the program runs, or the saved VRAM from the menu) |
 | **Hot reload** (TIM, sounds, data) | No | Yes (TIM to VRAM, sounds to SPU RAM, data to RAM; sent again on each save) |
-| **Crash screen + report** | Crash screen (cause, registers, stack dump) | Crash screen, and a report on the PC (cause, registers, call stack with function names) |
+| **Crash screen + report** | Crash screen (cause, registers, stack dump) | Crash screen, and a report on the PC (cause, registers, call stack with function names, the last frame the program displayed) |
 | **GDB / VS Code debugging**          | No                                           | Yes (full GDB server, breakpoints, step, watchpoints, etc.) |
 | **Profiler** | No | Yes, without changing the program: CPU load and the functions where the time goes, GPU busy, frames per second, RAM used, stack, DMA, SPU voices (1000 samples a second) |
 | **Multi-cartridge support** | No (first USB device only) | Yes (select by USB serial / device ID) |
@@ -343,6 +343,9 @@ The crash screen, the GDB debugger and the profiler run from the cartridge flash
 PlayStation's RAM: your program keeps all its RAM.
 - **Crash screen** with the cause and the CPU registers, and a **crash report** on the computer with the call stack
   and function names.
+- **Last frame before the crash**: the crash screen is drawn in the buffer your program was drawing, so the frame it
+  displayed last stays in VRAM (double buffered programs). The crash report saves it as a PNG (`ps1transfer -crash
+  -f frame.png`, shown on the Debug page of the GUI).
 - **GDB server** (`ps1transfer -gdb`), for GDB or VS Code. It supports:
   - breakpoints (also in interrupt callbacks), step/next/finish, backtrace, registers, memory, variables;
   - one hardware breakpoint and one watchpoint (read/write/access);

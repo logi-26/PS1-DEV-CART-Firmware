@@ -2179,8 +2179,80 @@ int		UnwindStack(uint32_t *regs)
 	return (depth + 1);
 }
 
-bool	CrashReport(char *symfile)
+// 16-bit VRAM pixels (w * h) to a 24-bit PNG file
+static bool	VramToPng(const char *filename, const uint16_t *vram, int w, int h)
 {
+	uint8_t	*rgb = malloc(w * h * 3), *p = rgb;
+	int		i;
+	bool	ok;
+
+	if (!rgb)
+		return (false);
+	for (i = 0; i < w * h; i++)
+	{
+		uint16_t	color = vram[i];
+		uint8_t		r = color & 31;
+		uint8_t		g = (color >> 5) & 31;
+		uint8_t		b = (color >> 10) & 31;
+
+		*p++ = (r << 3) | (r >> 2);
+		*p++ = (g << 3) | (g >> 2);
+		*p++ = (b << 3) | (b >> 2);
+	}
+	ok = !lodepng_encode24_file(filename, rgb, w, h);
+	free(rgb);
+	return (ok);
+}
+
+// Last frame displayed by the crashed program (monitor version 5): the crash screen is drawn in the program's draw
+// area, the buffer it was drawing, so the frame it displayed is still in VRAM, above or below it (double buffering)
+static void	CrashFrame(uint32_t info, const char *png)
+{
+	static const int	widths[4] = {256, 320, 512, 640};
+	uint32_t	mode = (info >> 20) & 0x7F;	// GPUSTAT bits 16-22
+	int			x = info & 0x3FF, y = (info >> 10) & 0x3FF, w, h, other, i, fy = -1, cand[4];
+	uint16_t	*vram;
+
+	w = (mode & 0x01) ? 368 : widths[(mode >> 1) & 3];
+	h = (mode & 0x10) ? 256 : 240;
+	other = (h == 256) ? 240 : 256;	// (PAL programs may use 240 lines, NTSC ones 256)
+	if ((mode & 0x08) && (mode & 0x40))	// 480 lines, interlaced: one buffer
+		h *= 2;
+	cand[0] = y - h;
+	cand[1] = y + h;
+	cand[2] = (h == 480) ? -1 : y - other;
+	cand[3] = (h == 480) ? -1 : y + other;
+	for (i = 0; (i < 4) && (fy < 0); i++)
+		if ((cand[i] >= 0) && (cand[i] + h <= 512))
+			fy = cand[i];
+	if (x + w > 1024)
+		w = 1024 - x;
+	if (fy < 0)
+	{
+		printf("\nLast frame: not kept (one display buffer: the crash screen is drawn over it)\n");
+		return;
+	}
+	printf("\nLast frame displayed (double buffered programs): VRAM %d,%d %dx%d%s\n", x, fy, w, h,
+		(mode & 0x20) ? " (24-bit video mode)" : "");
+	printf("  (a program drawing where it displays has no second buffer: this area holds older VRAM contents)\n");
+	if (!png)
+	{
+		printf("  Save it with -f: ps1transfer -crash [game.map] -f frame.png\n");
+		return;
+	}
+	vram = malloc(w * h * sizeof(uint16_t));
+	usb_quiet = true;
+	if (vram && USB_Process('V', (uint8_t *)vram, (x << 16) | fy, (w << 16) | h) && VramToPng(png, vram, w, h))
+		printf("  Saved to %s\n", png);
+	else
+		printf("  Can't save it to %s\n", png);
+	usb_quiet = false;
+	free(vram);
+}
+
+bool	CrashReport(char *symfile, const char *frame_png)
+{
+	MonitorState	ms;
 	static const char	*cause_str[] = {"Interrupt", "TLB Modify", "TLB miss on load", "TLB miss on store",
 							"Address error on load", "Address error on store", "Bus error on instruction fetch",
 							"Bus error on data access", "System call", "Breakpoint instruction",
@@ -2201,6 +2273,9 @@ bool	CrashReport(char *symfile)
 	}
 	if (!ps1_program_running)
 		printf("\nNote: no program was executed since the last boot, these are the registers of the last exception.\n");
+	if (USB_Process('D', (uint8_t *)&ms, MONITOR_STATE_ADRS, sizeof(ms)) && (ms.magic == MONITOR_MAGIC) &&
+		(ms.version >= 5) && (ms.reason == MON_REASON_CRASH) && (ms.prof_draw & MON_CRASH_FRAME))
+		CrashFrame(ms.prof_draw, frame_png);
 
 	code = (regs[36] >> 2) & 0x1F;
 	printf("\nCrash: %s (CAUSE %08X)\n", cause_str[(code < 13) ? code : 13], regs[36]);
@@ -2993,7 +3068,6 @@ int main(int argc, char *argv[])
 	int			x, y, w, h, i, ret, cmd = CMD_UNKNOWN;
 	uint32_t	size = 0, adrs = 0x80010000, *ptr32, poke_value = 0;
 	char		*adrs_str = NULL;
-	uint16_t	*ptr16;
 	uint8_t		*data = NULL, *ptr;
 	char		*filename = NULL, *path = NULL, *serial = NULL, *libps = NULL;
 	char		*model = NULL, *tims[VIEWER_MAX_TIM], *symfile = NULL, *sound_files[TESTER_MAX_FILES];
@@ -3845,7 +3919,7 @@ int main(int argc, char *argv[])
 		break;
 
 		case CMD_CRASH:
-			if (!CrashReport(symfile))
+			if (!CrashReport(symfile, filename))
 				goto USB_error;
 		break;
 
@@ -3953,21 +4027,7 @@ int main(int argc, char *argv[])
 				}
 			}
 			printf("Saving to PNG image: %s\n", filename);
-			// Convert 16bits RAW data to PNG
-			ptr16 = (uint16_t*)data;
-			ptr = data + w*h*sizeof(uint16_t);
-			for (i = 0; i < w * h; i++)
-			{
-				uint16_t	color = *ptr16++;
-				uint8_t		r = color & 31;
-				uint8_t		g = (color >> 5) & 31;
-				uint8_t		b = (color >> 10) & 31;
-
-				*ptr++ = ((r & 31) << (8-5)) | ((r & 31) >> (5-(8-5)));
-				*ptr++ = ((g & 31) << (8-5)) | ((g & 31) >> (5-(8-5)));
-				*ptr++ = ((b & 31) << (8-5)) | ((b & 31) >> (5-(8-5)));
-			}
-			lodepng_encode24_file(filename, data + w*h*sizeof(uint16_t), w, h);
+			VramToPng(filename, (uint16_t *)data, w, h);
 		break;
 
 		default:
@@ -3997,6 +4057,7 @@ usage:
 	printf("\t-d/-u/-v also work while a program runs (memory peek/poke, live screenshots) with the PS1 DEV CART firmware\n");
 	printf("\t-crash [game.map] Crash report while the crash screen is displayed: cause, registers, call stack\n");
 	printf("\t   with function names from a .map, .sym (nm output) or .elf file (PS1 DEV CART firmware)\n");
+	printf("\t   -f frame.png: also saves the last frame the program displayed (double buffered programs)\n");
 	printf("\t-sym file Symbol file (by default the .map/.sym/.elf next to the last executable run with -e)\n");
 	printf("\t-peek address [-s size] Hexadecimal dump (address in hexadecimal or @symbol[+offset])\n");
 	printf("\t-poke address value [-s 1|2|4] Write a value (e.g. -poke @lives 3 -s 1)\n");

@@ -169,6 +169,13 @@ place where ra is saved ("sw ra,off(sp)"). If it stops early (unusual prologue),
 addresses instead: with symbols each one must follow a "jal" to the function found before it (calls through
 function pointers, jalr, are marked "?").
 You can also read the memory of the crashed program with -d/-peek, take a screenshot with -v, and reset with -r.
+Last frame: the crash screen is drawn in the program's draw area (the buffer it was drawing), so the frame it
+displayed last stays in VRAM. The report shows where (the other buffer, above or below), and saves it with -f:
+ps1transfer -crash game.map -f frame.png
+  Last frame displayed: VRAM 0,0 320x240
+    Saved to frame.png
+A program with one display buffer draws where it displays: its frame is not kept (640x480 interlaced: the report
+says so; otherwise the area shown holds older VRAM contents, as the firmware can't see where a program displays).
 
 
 Debugging with GDB (PS1 DEV CART firmware with the debug monitor):

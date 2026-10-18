@@ -40,7 +40,8 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
   - **Memory**: peek, poke, upload and download, while a program runs. Addresses in hexadecimal or as a symbol
     (`@player`, `@table+0x10`), with the symbol file of your program.
   - **Screen**: screenshots of the screen or any VRAM area, live while a program runs, with automatic refresh.
-  - **Debug**: crash report (cause, registers, call stack with function names), and the GDB server for GDB or
+  - **Debug**: crash report (cause, registers, call stack with function names, the last frame the program
+    displayed), and the GDB server for GDB or
     VS Code (`target remote localhost:3333`).
   - **Hot reload**: a table of files and where they go (TIM: its VRAM position or `x,y`; sounds: SPU RAM
     address; data: RAM address). **Send now**, or **Watch** to send a file again each time it is saved (the

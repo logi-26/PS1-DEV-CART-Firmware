@@ -71,9 +71,9 @@ extern const uint8_t	font8x8[];	// Glyphs 0x21..0x7E
 __asm__(".section .rodata\n.global font8x8\nfont8x8:\n.incbin \"font8x8.bin\"\n.text\n");
 
 static const char	*const cause_str[] = {
-	"Interrupt", "TLB Modify", "TLB miss on load", "TLB miss on store", "Address error on load",
-	"Address error on store", "Bus error on instruction fetch", "Bus error on data access", "System call",
-	"Breakpoint instruction", "Reserved (illegal) instruction", "Coprocessor unusable", "Integer overflow", "Reserved"
+	"INTERRUPT", "TLB MODIFY", "TLB MISS ON LOAD", "TLB MISS ON STORE", "ADDRESS ERROR ON LOAD",
+	"ADDRESS ERROR ON STORE", "BUS ERROR ON INSTRUCTION FETCH", "BUS ERROR ON DATA ACCESS", "SYSTEM CALL",
+	"BREAKPOINT INSTRUCTION", "RESERVED (ILLEGAL) INSTRUCTION", "COPROCESSOR UNUSABLE", "INTEGER OVERFLOW", "RESERVED"
 };
 static const char	reg_str[] = "PCSRATV0V1A0A1A2A3T0T1T2T3T4T5T6T7S0S1S2S3S4S5S6S7T8T9K0K1GPSPFPRA";
 
@@ -89,25 +89,19 @@ static void	GpuSync(void)	// A(4Eh)
 	((void (*)(void))0xA0)();
 }
 
-static void	DarkenScreen(void)
+// Look of the PS1 tools (devcart_ui.h): colors as GP0 commands want them (0xBBGGRR)
+#define	CRASH_RGB(_r_, _g_, _b_)	(((_b_) << 16) | ((_g_) << 8) | (_r_))
+#define	CRASH_BG		CRASH_RGB(14, 16, 28)
+#define	CRASH_BAR		CRASH_RGB(40, 50, 120)
+#define	CRASH_PANEL		CRASH_RGB(20, 24, 40)
+#define	CRASH_W			320
+
+static void	Rect(int x, int y, int w, int h, uint32_t color)
 {
-	GP1 = 0x01000000;	// clear command buffer
-	GP1 = 0x04000000;	// disable DMA
-	GP1 = 0x08000001 | (((GP1 & 0x100000) != 0) << 3);	// 320x240, no interlace, 15bpp, preserve video mode
 	GpuSync();
-	GP0 = 0xE1000400;	// 50/50 blend mode, texture don't care, drawing allowed
-	GpuSync();
-	GP0 = 0xE3000000;	// drawing area top-left 0,0
-	GpuSync();
-	GP0 = 0xE4000000 | (256 << 10) | 320;	// drawing area bottom-right
-	GpuSync();
-	GP0 = 0xE5000000;	// drawing offset top-left
-	GpuSync();
-	GP0 = 0xE6000000;	// disable masking
-	GpuSync();
-	GP0 = 0x63000000;	// black, semitransparent rectangle
-	GP0 = 0x00000000;	// top-left
-	GP0 = (256 << 16) | 320;	// full screen
+	GP0 = 0x60000000 | color;	// Opaque rectangle (drawing offset: the crash screen's top-left)
+	GP0 = (y << 16) | x;
+	GP0 = (h << 16) | w;
 }
 
 static void	PrintChar(Cursor *c, char ch)
@@ -155,16 +149,61 @@ static void	PrintHex(Cursor *c, uint32_t v)
 	}
 }
 
+// The crash screen is drawn in the program's draw area: the buffer it was drawing when it crashed, so the frame it
+// displayed last stays in VRAM (double buffered programs) and the crash report can save it. Where it was, and the
+// program's display mode, are kept in MonitorState.prof_draw (MON_CRASH_FRAME, see monitor.h).
 static void	CrashScreen(uint32_t *regs)
 {
-	Cursor		c = {0, 0};
-	int			i, r;
-	uint32_t	*sp;
+	Cursor		c;
+	int			i, r, x, y, h, bottom;
+	uint32_t	*sp, mode, area;
 	char		reg[4] = {0, 0, '=', 0};
-	bool		pal;
+	bool		pal = (*((volatile char *)0xBFC7FF52) == 'E');	// BIOS region ('E' = PAL)
 
-	DarkenScreen();
-	PrintString(&c, "\n CAUSE: ");
+	mode = (GP1 >> 16) & 0x7F;	// GPUSTAT bits 16-22: the program's display mode
+	GP1 = 0x01000000;	// clear command buffer
+	GP1 = 0x04000000;	// disable DMA
+	GpuSync();
+	GP1 = 0x10000003;	// GPU info: draw area top-left
+	area = GP0 & 0xFFFFF;
+	mon_state.prof_draw = MON_CRASH_FRAME | (mode << 20) | area;
+
+	h = pal ? 256 : 240;
+	x = area & 0x3FF;
+	y = (area >> 10) & 0x1FF;
+	if (x > 1024 - CRASH_W)
+		x = 1024 - CRASH_W;
+	if (y > 512 - h)
+		y = 512 - h;
+	GpuSync();
+	GP0 = 0xE1000400;	// drawing to the displayed area allowed
+	GpuSync();
+	GP0 = 0xE3000000 | (y << 10) | x;	// drawing area
+	GpuSync();
+	GP0 = 0xE4000000 | ((y + h - 1) << 10) | (x + CRASH_W - 1);
+	GpuSync();
+	GP0 = 0xE5000000 | (y << 11) | x;	// drawing offset: coordinates below from the crash screen's top-left
+	GpuSync();
+	GP0 = 0xE6000000;	// disable masking
+
+	// Background, title bar, cause panel, registers and stack panels, help bar
+	bottom = h - 14 - 6;
+	Rect(0, 0, CRASH_W, h, CRASH_BG);
+	Rect(0, 0, CRASH_W, 14, CRASH_BAR);
+	Rect(6, 20, 308, 20, CRASH_PANEL);
+	Rect(6, 46, 200, bottom - 46, CRASH_PANEL);
+	Rect(212, 46, 102, bottom - 46, CRASH_PANEL);
+	Rect(0, h - 14, CRASH_W, 14, CRASH_PANEL);
+	c.x = 8;
+	c.y = 4;
+	PrintString(&c, "PS1 DEV CART CRASH SCREEN");
+	c.x = 8;
+	c.y = h - 11;
+	PrintString(&c, "CRASH REPORT: DEBUG PAGE OR -CRASH");
+
+	c.x = 14;
+	c.y = 26;
+	PrintString(&c, "CAUSE: ");
 	i = (regs[MON_REG_CAUSE] >> 2) & 0xF;
 	PrintString(&c, cause_str[(i < 13) ? i : 13]);
 
@@ -172,8 +211,8 @@ static void	CrashScreen(uint32_t *regs)
 	for (i = 0; i < 33; i++)
 	{
 		r = (i == 0) ? MON_REG_EPC : ((i == 1) ? MON_REG_SR : i - 1);
-		c.x = (i <= 16) ? 8 : 8 * 14;
-		c.y = 8 * ((i <= 16) ? i + 4 : i - 16 + 4);
+		c.x = (i <= 16) ? 14 : 110;
+		c.y = 52 + 8 * ((i <= 16) ? i : i - 17);
 		reg[0] = reg_str[i * 2];
 		reg[1] = reg_str[i * 2 + 1];
 		PrintString(&c, reg);
@@ -181,23 +220,23 @@ static void	CrashScreen(uint32_t *regs)
 	}
 
 	// Stack dump
-	c.x = 8 * 26;
-	c.y = 8 * 3;
-	PrintString(&c, "Stack dump:\n");
-	for (sp = (uint32_t *)regs[29]; (((uint32_t)sp & ~0xE0000000) < 0x200000) && (c.y < 256); sp++)
+	c.x = 220;
+	c.y = 52;
+	PrintString(&c, "STACK");
+	c.y = 64;
+	for (sp = (uint32_t *)regs[29]; (((uint32_t)sp & ~0xE0000000) < 0x200000) && (c.y <= bottom - 14); sp++)
 	{
-		c.x = 8 * 27;
+		c.x = 228;
 		PrintHex(&c, *sp);
-		PrintChar(&c, '\n');
+		c.y += 8;
 	}
 
-	// Display mode from the BIOS region ('E' = PAL), the crashed program may have left another one
+	// Display: the crash screen, 320x240 (PAL: 256 lines), the crashed program may have left another mode
 	GpuSync();
-	pal = (*((volatile char *)0xBFC7FF52) == 'E');
+	GP1 = 0x05000000 | (y << 10) | x;			// display start
 	GP1 = 0x06C60260;							// horizontal display range
 	GP1 = pal ? 0x07048C23 : 0x07040010;		// vertical display range
 	GP1 = pal ? 0x08000009 : 0x08000001;		// 320x240, PAL/NTSC
-	GP1 = 0x05000000;							// top-left corner
 	GP1 = 0x03000000;							// enable display
 }
 

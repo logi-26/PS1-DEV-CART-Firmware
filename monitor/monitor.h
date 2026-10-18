@@ -44,8 +44,9 @@
 
 // Monitor version (header word 2, copied in MonitorState.version): 1 = 'M' service, VRAM/SPU write;
 // 2 = live screenshots ('V') only through the 'M' service (the kernel hook doesn't have them any more);
-// 3 = profiler (MON_REASON_PROFILE); 4 = escaped answers ('Q' before a command, see usb.h)
-#define	MONITOR_VERSION		4
+// 3 = profiler (MON_REASON_PROFILE); 4 = escaped answers ('Q' before a command, see usb.h); 5 = crash screen drawn in
+// the program's draw area, its last frame kept in VRAM (MON_CRASH_FRAME)
+#define	MONITOR_VERSION		5
 
 // Profiler ("ps1transfer -prof"). A root counter not used by the program interrupts it (rate set by the computer):
 // the exception vector goes to the monitor's sampler (copied to RAM), which sends a sample to the computer at each tick, without waiting (dropped if the USB FIFO is full), between
@@ -120,12 +121,16 @@ typedef struct
 								// 3: stop (computer), 4: SPU voices and RAM scan due
 	uint16_t	prof_target;	// Root counter target and mode
 	uint16_t	prof_mode;
-	uint32_t	prof_draw;		// Last draw area (monitor)
+	uint32_t	prof_draw;		// Last draw area (monitor); after a crash (crash screen shown): MON_CRASH_FRAME
 	uint32_t	ram_lo, ram_hi;	// Free RAM filled with PROF_FREE_PATTERN by the firmware (Execute), 0 = not filled
 	uint32_t	ram_pos, ram_dirty, ram_run, ram_maxrun;	// RAM scan (monitor)
 	uint32_t	prof_call;		// (unused since the sampler handles the ticks itself: set by older ps1transfer)
 } MonitorState;
 #endif
+
+// MonitorState.prof_draw after a crash (monitor version 5): the crash screen is drawn in the program's draw area
+// (GPU info 3, bits 0-19: x 0-9, y 10-19), the program's display mode (GPUSTAT bits 16-22) in bits 20-26
+#define	MON_CRASH_FRAME		0x80000000
 
 #define	MON_STATE_ENTRY		4	// Offsets used by the assembly code
 #define	MON_STATE_CHAIN80	40
