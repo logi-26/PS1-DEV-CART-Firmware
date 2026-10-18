@@ -38,6 +38,12 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/synth.png" alt="Six samples loaded into the synth's slots, the selected slot's settings and the keyboard." width="640">
 </p>
 
+**TIM viewer**: A car texture with its palette and its position in VRAM.
+
+<p align="center">
+  <img src="screenshots/ps1/timviewer.png" alt="A car texture with its palette and its position in VRAM." width="640">
+</p>
+
 **Crash screen**: A program that crashed: the cause, the registers and a stack dump.
 
 <p align="center">
@@ -46,12 +52,6 @@ The firmware and all the PlayStation programs are built with the open source
 
 <details>
 <summary>More PlayStation tools</summary>
-
-**TIM viewer**: A car texture with its palette and its position in VRAM.
-
-<p align="center">
-  <img src="screenshots/ps1/timviewer.png" alt="A car texture with its palette and its position in VRAM." width="640">
-</p>
 
 **TMD model viewer**: A textured car model, rotated and zoomed with the pad.
 
