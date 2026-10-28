@@ -21,7 +21,6 @@ The firmware and all the PlayStation programs are built with the open source
 ## Screenshots
 
 ### On the PlayStation
-
 **PS1 DEV CART menu**: The cartridge's menu: firmware version, device ID, and ready for the computer.
 
 <p align="center">
@@ -34,22 +33,20 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/synth.png" alt="Six samples loaded into the synth's slots, the selected slot's settings and the keyboard." width="640">
 </p>
 
-
 **TIM viewer/Palette editor**: The TIM viewer's palette editor: each colour of the palette changed with the pad, the image redrawn live, saved back to the computer.
 
 <p align="center">
   <img src="screenshots/ps1/paletteeditor.png" alt="The TIM viewer's palette editor: each colour of the palette changed with the pad, the image redrawn live, saved back to the computer." width="640">
 </p>
 
+<details>
+<summary>More PlayStation tools</summary>
+
 **TMD model viewer**: A textured car model, rotated and zoomed with the pad.
 
 <p align="center">
   <img src="screenshots/ps1/tmdviewer.png" alt="A textured car model, rotated and zoomed with the pad." width="640">
 </p>
-
-
-<details>
-<summary>More PlayStation tools</summary>
 
 **Crash screen**: A program that crashed: the cause, the registers and a stack dump.
 
@@ -69,8 +66,7 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/linktest.png" alt="Two consoles linked through their cartridges: packets, losses and round trip time." width="640">
 </p>
 
-**Control tester**: Both controller ports as a program sees them: the device type, buttons, sticks, NeGcon,
-mouse pointer and GunCon sight, real controllers or the ones emulated from the Remote Controller page.
+**Control tester**: Port 1 driven as a DualShock from the computer, port 2 empty.
 
 <p align="center">
   <img src="screenshots/ps1/padtest.png" alt="Port 1 driven as a DualShock from the computer, port 2 empty." width="640">
@@ -98,10 +94,10 @@ mouse pointer and GunCon sight, real controllers or the ones emulated from the R
   <img src="screenshots/manager/profiler.png" alt="A 3D racing game profiled while it runs: CPU and GPU load, frames, RAM, and the functions where the time goes." width="100%">
 </p>
 
-**Debug Server**: A crash report with the call stack and the function names, and the last frame the game displayed before the crash.
+**Debug Server**: A crash report with the call stack and the function names.
 
 <p align="center">
-  <img src="screenshots/manager/debug.png" alt="A crash report with the call stack and the function names, and the last frame the game displayed before the crash." width="100%">
+  <img src="screenshots/manager/debug.png" alt="A crash report with the call stack and the function names." width="100%">
 </p>
 
 **Synth**: Samples loaded into the PlayStation's SPU synth, with each slot's settings and a keyboard.
@@ -125,22 +121,28 @@ mouse pointer and GunCon sight, real controllers or the ones emulated from the R
   <img src="screenshots/manager/run_yaroze.png" alt="A Net Yaroze game run from its auto script and ECOFF executable, with the Net Yaroze library." width="100%">
 </p>
 
-**Console & File Server**: The program's printf and the files it opened on the computer.
+**Console & File Server**: The program's printf, and the files it opens on the computer.
 
 <p align="center">
-  <img src="screenshots/manager/console.png" alt="The program's printf and the files it opened on the computer." width="100%">
+  <img src="screenshots/manager/console.png" alt="The program's printf, and the files it opens on the computer." width="100%">
 </p>
 
-**Memory Peek/Poke**: A variable of the running game read by its symbol name.
+**Remote Controller**: A controller driven from this computer on port 1, while the program runs.
 
 <p align="center">
-  <img src="screenshots/manager/memory.png" alt="A variable of the running game read by its symbol name." width="100%">
+  <img src="screenshots/manager/remote.png" alt="A controller driven from this computer on port 1, while the program runs." width="100%">
 </p>
 
-**Screen Capture**: A live screenshot of the running game.
+**Memory Peek/Poke**: Watch variables: the variables of a running game, read live by their symbol name.
 
 <p align="center">
-  <img src="screenshots/manager/screen.png" alt="A live screenshot of the running game." width="100%">
+  <img src="screenshots/manager/memory.png" alt="Watch variables: the variables of a running game, read live by their symbol name." width="100%">
+</p>
+
+**Screen Capture**: The screen of a running program, captured live.
+
+<p align="center">
+  <img src="screenshots/manager/screen.png" alt="The screen of a running program, captured live." width="100%">
 </p>
 
 **Hot Reload**: Textures sent to the running game without restarting it.
@@ -149,22 +151,52 @@ mouse pointer and GunCon sight, real controllers or the ones emulated from the R
   <img src="screenshots/manager/hotreload.png" alt="Textures sent to the running game without restarting it." width="100%">
 </p>
 
-**Model & Animation Viewer**: A TMD model with its texture.
+**Frame Inspector**: The GPU commands of a frame, each primitive listed and outlined on the frame it drew.
 
 <p align="center">
-  <img src="screenshots/manager/viewers.png" alt="A TMD model with its texture, and TIM files for the TIM viewer." width="100%">
+  <img src="screenshots/manager/frame.png" alt="The GPU commands of a frame, each primitive listed and outlined on the frame it drew." width="100%">
 </p>
 
-**Sound Tools**: VAG samples for the sound tester.
+**Model & Animation Viewer**: A TMD model with its texture, its animation controls and the view, running on the PS1.
 
 <p align="center">
-  <img src="screenshots/manager/sound.png" alt="VAG samples for the sound tester." width="100%">
+  <img src="screenshots/manager/viewers.png" alt="A TMD model with its texture, its animation controls and the view, running on the PS1." width="100%">
 </p>
 
-**Memory Card Tools**: The saves on the card in slot 1, with their icons.
+**VRAM Viewer**: The TIM files of the console's VRAM, outlined, with the palette of the selected TIM.
 
 <p align="center">
-  <img src="screenshots/manager/memorycard.png" alt="The saves on the card in slot 1, with their icons." width="100%">
+  <img src="screenshots/manager/vram.png" alt="The TIM files of the console's VRAM, outlined, with the palette of the selected TIM." width="100%">
+</p>
+
+**SPU RAM Viewer**: The sound RAM of a running program: its samples, the voices playing them and the free memory.
+
+<p align="center">
+  <img src="screenshots/manager/spu.png" alt="The sound RAM of a running program: its samples, the voices playing them and the free memory." width="100%">
+</p>
+
+**Sound Tools**: The sound tester: a VAB bank and a VAG sample played on the PS1, with the keyboard and the voices.
+
+<p align="center">
+  <img src="screenshots/manager/sound.png" alt="The sound tester: a VAB bank and a VAG sample played on the PS1, with the keyboard and the voices." width="100%">
+</p>
+
+**VAB Editor**: The VAB bank's programs, tones and key ranges, with the envelope, edited while it plays.
+
+<p align="center">
+  <img src="screenshots/manager/vabeditor.png" alt="The VAB bank's programs, tones and key ranges, with the envelope, edited while it plays." width="100%">
+</p>
+
+**Movie Tools**: A STR movie played on the PS1 as a game plays it from the CD, with its sound and the information on the screen.
+
+<p align="center">
+  <img src="screenshots/manager/movie.png" alt="A STR movie played on the PS1 as a game plays it from the CD, with its sound and the information on the screen." width="100%">
+</p>
+
+**Memory Card Tools**: The saves on a memory card image, with their icons.
+
+<p align="center">
+  <img src="screenshots/manager/memorycard.png" alt="The saves on a memory card image, with their icons." width="100%">
 </p>
 
 **Link Connection Test**: The link tester running on two consoles through the USB link relay.
@@ -216,31 +248,27 @@ than building the development tools for it. The aim of this project is to give t
 
 ## Transfer speed
 
-Measured with 1.5MB transferred from the cartridge menu (the original firmware measured on the same cartridge and
-computer):
+Transfers are **5 to 8 times faster** than the original firmware.
 
 | | Original firmware | PS1 DEV CART | |
 |---|---|---|---|
-| Download (PlayStation to computer) | 103 KB/s | 840 KB/s | about 8× faster |
-| Upload (computer to PlayStation) | 122 KB/s | 655 KB/s | about 5× faster |
+| Download (PlayStation to computer) | 103 KB/s | 665 to 840 KB/s | about 6 to 8× faster |
+| Upload (computer to PlayStation) | 122 KB/s | 565 to 655 KB/s | about 5× faster |
 
-What makes the difference:
-- `ps1transfer` sets the FTDI latency timer to 1 ms (the default 16 ms delayed the CRC byte the PlayStation sends after
-  each packet), and reads/writes whole packets.
-- The firmware reads/writes the USB FIFO with one status check per byte, and keeps each byte in a register for the CRC.
-- Uploads and downloads from the menu use 16KB packets. `ps1transfer` asks the firmware first, and still works with
-  the original firmware (2KB packets).
+Uploads of some file sizes reached over 900 KB/s. The speed depends on the computer and its USB port.
 
-While a program runs, the kernel hook answers (memory access, file server, synth samples, memory card tools). It
-uses 16KB packets too, and the CRC inlined in its transfer loops (the hook has no room for the fast CRC table of the
-menu firmware):
+Quick test from the cartridge menu, each download checked against its upload (3 runs per size):
 
-| While a program runs | PS1 DEV CART |
-|---|---|
-| Memory download (`-d`) | 602 KB/s |
-| Memory upload (`-u`) | 418 KB/s |
-| File server: program reads a file | 341 KB/s |
-| File server: program writes a file | 483 KB/s |
+| File size | Upload | Download |
+|---|---|---|
+| 64 KB | 405 KB/s | 473 KB/s |
+| 256 KB | 521 KB/s | 621 KB/s |
+| 1 MB | 549 KB/s | 665 KB/s |
+| 1.5 MB | 556 KB/s | 663 KB/s |
+| 1.9 MB | 560 KB/s | 670 KB/s |
+
+These are timed on the whole `ps1transfer` command, so they include starting it: small files look slower than they are.
+
 
 The memory card tool reads and writes the card through the controller port registers itself, one 128-byte sector at
 a time, with the BIOS driver as a fallback. Measured on an official 128KB card (1024 sectors):
@@ -252,11 +280,7 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
 | Write | – | about 26 ms per sector (4.9 KB/s) | |
 | Whole card restore (`-mcrestore`) | – | about 30 s (estimated from the sector writes) | |
 
-The backup times include starting the tool and sending the image to the computer (about 1 s). The card itself is the
-limit: it takes about 1 ms to read a sector from its flash, and longer to write one.
 
-Between two consoles, the psxcomb link library is about 2.5× faster than the original link cable library over the
-cable, and about 29× faster over the USB link (see [Link cable library](#link-cable-library-psxcomb)).
 
 ## Firmware features
 
@@ -271,6 +295,7 @@ cable, and about 29× faster over the USB link (see [Link cable library](#link-c
 
 **Running programs**
 - Upload and execute PS-X EXE programs, reset the console from the computer.
+- **Attach** (Console page of the GUI): see the printf of a program that is already running, without restarting it.
 - **printf / TTY** of your program sent to the computer, or kept on the BIOS device, or a serial port "tty" driver like
   the Net Yaroze, or the same driver over USB (see the USB link below).
 - **PCDRV file server**: your program reads and writes files on the computer (`psxpcdrv` folder: the usual PCDRV
@@ -284,7 +309,8 @@ cable, and about 29× faster over the USB link (see [Link cable library](#link-c
 
 **While a program runs**
 - **Live memory access**: peek, poke, upload and download, with symbol names from your program's `.map`/`.elf`.
-- **Live screenshots** of the screen or any VRAM area.
+- **Live screenshots** of the screen or any VRAM area. The Screen Capture page of the GUI finds the screen the program
+  shows on the TV by itself (**Screen on the TV (auto)**).
 - **Hot reload**: TIM images to VRAM, sounds to SPU RAM and data to RAM, sent again each time you save the file.
 
 **Debugging**
@@ -312,7 +338,8 @@ PlayStation's RAM: your program keeps all its RAM.
   from the computer (mouse, keyboard), for programs reading their pads through the BIOS: test without a controller,
   or play the second player of a two-player game. Other controllers are emulated like in an emulator, on the real
   console: DualShock and analog joystick (sticks dragged with the mouse), NeGcon, the Sony mouse (the PC mouse) and
-  the Namco GunCon (aimed at the console's picture). Controller
+  the Namco GunCon (aimed at the console's picture). A game controller plugged into the computer, such as a PS1
+  controller on a USB adapter, drives it too (buttons and sticks, with its own button mapping). Controller
   changes can be recorded with their timing and played back (looping or not), to replay the same input, and saved
   to a file (`.ps1pad`).
 - **Profiler** (`ps1transfer -prof`, or the Profiler page of the GUI), without changing your program, see
@@ -334,6 +361,8 @@ PlayStation's RAM: your program keeps all its RAM.
 
 **Flashing**
 - `ps1transfer -flash` (or the Firmware page of the GUI) flashes a ROM, then reads the flash back and compares it.
+  The GUI asks you to type the cartridge's name before it writes anything.
+- **Settings** page of the GUI: the `ps1transfer` program to use and the theme (dark by default).
 
 ## Tools run on the PlayStation
 
@@ -517,14 +546,14 @@ Each page shows the command it runs. See [gui/README.md](gui/README.md).
 | Page | |
 |---|---|
 | Top bar | Cartridge chooser (by device ID), its state (menu, running, stopped, crashed) and firmware; the folder served while the file server runs; stop task, reset. |
-| Run PSX | Upload and run a PlayStation program (PS-X EXE); TTY mode, file server. |
-| Run Net Yaroze | Upload and run a Net Yaroze game (auto script or ECOFF executable, with libps.exe); TTY mode, file server. |
-| Console & File Server | printf of the running program; file server activity (files opened, created and refused, bytes read and written). |
+| Run PSX | Upload and run a PlayStation program (PS-X EXE); TTY mode, file server; **Run Linked** starts it on two cartridges. |
+| Run Net Yaroze | Upload and run a Net Yaroze game (auto script or ECOFF executable, with libps.exe); TTY mode, file server; **Run Linked**. |
+| Console & File Server | printf of the running program, **Attach** to one already running; file server activity (files opened, created and refused, bytes read and written). |
 | Remote Controller | Controller port 1 or 2 driven from the computer (mouse, keyboard), for programs reading their pads through the BIOS: a digital pad, DualShock, analog joystick, NeGcon, mouse or GunCon; record and play back controller sequences. |
 | Memory Peek/Poke | The program's variables from its symbol file, a watch list with live values (typed, editable), peek, poke, upload, download. |
 | Profiler | Runs (or attaches to) a program, a Net Yaroze game too, and shows live what limits its frame rate with hints, CPU/GPU load, where the time goes, frame time, RAM used and free, stack, DMA, SPU voices and the functions with their callers. |
 | Hot Reload | Files and where they go, sent at once or each time they are saved. |
-| Screen Capture | Screenshots, live while a program runs, with automatic refresh. |
+| Screen Capture | Screenshots, live while a program runs, with automatic refresh; **Screen on the TV (auto)** finds the screen the program shows. |
 | Debug Server | Crash report, GDB server. |
 | Frame Inspector | The GPU commands of a frame (polygons, sprites, tiles, lines...) listed and outlined on the frame it drew. |
 | Model & Animation Viewer | TMD model viewer with its textures and TOD animations, its controls live on the computer and the controller (TOD, frame, play, loop, speed, view). |
@@ -536,6 +565,7 @@ Each page shows the command it runs. See [gui/README.md](gui/README.md).
 | Memory Card Tools | Backup/restore, save browser with icons, on a card or an image file. |
 | Link Connection Test | Link tester on two consoles, USB link relay for your own programs. |
 | Firmware | Cartridge information, flashing with a typed confirmation and a readback check. |
+| Settings | The ps1transfer program to use, and the theme (dark by default). |
 
 ## Installing the firmware
 
