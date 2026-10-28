@@ -18,7 +18,7 @@ from widgets import FileField
 
 ROM_SIZE = 128 * 1024
 ROM_TYPES = [("Cartridge ROM", "*.rom *.bin"), ("All files", "*.*")]
-MONITOR_OFFSET = 0x1C800        # Debug monitor in the ROM (monitor/monitor.h MONITOR_ROM_ADRS)
+MONITOR_OFFSET = 0x19000        # Debug monitor in the ROM (monitor/monitor.h MONITOR_ROM_ADRS 0x1F019000)
 
 FEATURES = {0x01: "live memory/VRAM access", 0x02: "device ID", 0x04: "big packets while a program runs"}
 INFO_ROWS = (("device", "Cartridge (USB serial)"), ("state", "State"), ("firmware", "Firmware"),
