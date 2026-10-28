@@ -11,7 +11,8 @@ With this firmware you can:
 - hot reload graphics and sounds;
 - link two consoles without a cable;
 - work with memory cards, 3D models, textures and sounds;
-- do all of this from a Windows GUI, **PS1 Dev Cart Manager**.
+- do all of this from a Windows GUI, **PS1 Dev Cart Manager**;
+- build, run and debug your projects from VS Code with the **PS1 DEV CART extension**.
 
 Transfers are also several times faster than with the original firmware.
 
@@ -221,14 +222,8 @@ The firmware and all the PlayStation programs are built with the open source
 
 ## About AI use in this project
 
-Much of the code in this project was written by an AI assistant, working under the direction and guidance of a
-human developer. Every feature was a human idea, the design decisions were made by a human, and much of the testing
-was done by a human on real PlayStation hardware.
-
-AI was used because writing and testing a firmware and tool set of this size by hand would have taken a very long
-time, and most people in the PlayStation homebrew scene would rather spend their time making PlayStation software
-than building the development tools for it. The aim of this project is to give them those tools.
-                                        |
+Much of this project’s code was written by an AI assistant under human guidance. All features and design decisions came from a human, who also did all of the testing on real PlayStation hardware.
+                                        
 
 ## Contents
 
@@ -241,6 +236,7 @@ than building the development tools for it. The aim of this project is to give t
 - [Profiler](#profiler)
 - [ps1transfer](#ps1transfer)
 - [PS1 Dev Cart Manager (GUI)](#ps1-dev-cart-manager-gui)
+- [VS Code extension](#vs-code-extension)
 - [Installing the firmware](#installing-the-firmware)
 - [Building](#building)
 - [Technical notes](#technical-notes)
@@ -255,7 +251,7 @@ Transfers are **5 to 8 times faster** than the original firmware.
 | Download (PlayStation to computer) | 103 KB/s | 665 to 840 KB/s | about 6 to 8× faster |
 | Upload (computer to PlayStation) | 122 KB/s | 580 to 655 KB/s | about 5× faster |
 
-Uploads of some file sizes reached over 900 KB/s. The speed depends on the computer and its USB port.
+Upload speeds largely depend on the computer and its USB port. The speed can also vary between different carts.
 
 Quick test from the cartridge menu, each download checked against its upload (3 runs per size):
 
@@ -566,6 +562,31 @@ Each page shows the command it runs. See [gui/README.md](gui/README.md).
 | Link Connection Test | Link tester on two consoles, USB link relay for your own programs. |
 | Firmware | Cartridge information, flashing with a typed confirmation and a readback check. |
 | Settings | The ps1transfer program to use, and the theme (dark by default). |
+
+## VS Code extension
+
+The **PS1 DEV CART** extension builds, runs and debugs PlayStation projects from VS Code: Net Yaroze (built in WSL),
+PsyQ / PsyQo (the PSX.Dev templates) and PSn00bSDK projects, in the PCSX-Redux emulator or on a PlayStation with the
+cartridge.
+
+- **Build, Run and Debug** buttons in the status bar and in the PS1 DEV CART panel; compiler errors in the Problems
+  panel.
+- **Run on PS1** and **Debug on PS1**: the program runs on the console with its printf in a terminal and the PCDRV
+  file server; breakpoints, stepping and variables through the cartridge's GDB server.
+- **Link play**: run or debug a link game on two emulators, or on two consoles (link cable or the USB link).
+- **New projects** from templates, IntelliSense for the SDK headers, PNG to TIM conversion, CD images.
+- **Installs the tools** a project needs: the MIPS toolchain, PSn00bSDK, CMake, Ninja, and the Net Yaroze build
+  environment in WSL.
+- Comes with `ps1transfer` and the PlayStation tools: nothing else is needed to use the cartridge from VS Code.
+
+**Installing**
+1. Download the release zip and unzip it: the extension is the `ps1-dev-cart-x.y.z.vsix` file.
+2. In VS Code, open the **Extensions** view (Ctrl+Shift+X), click the **...** menu at its top and choose **Install
+   from VSIX...**, then pick the file. Or from a terminal: `code --install-extension ps1-dev-cart-2.6.0.vsix`.
+3. Open your project's folder: the PS1 DEV CART icon appears in the activity bar, with the panel and its buttons.
+
+The extension's own documentation is in [vscode-extension/README.md](vscode-extension/README.md). To build the `.vsix`
+yourself: `npm run package` in the `vscode-extension` folder.
 
 ## Installing the firmware
 
