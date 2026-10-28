@@ -150,7 +150,8 @@ enum
 	USB_STATE_BAD_CMD,
 	USB_STATE_BAD_CRC,
 	USB_STATE_TIMEOUT,
-	USB_STATE_OK
+	USB_STATE_OK,
+	USB_STATE_BOOT_DISC	// 'C' command: the menu boots the disc (FEATURE_BOOT_DISC, see ps1devcart.c)
 };
 
 void	ResetPS1(void)
@@ -345,12 +346,14 @@ int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, 
 #define	FEATURE_LIVE_ACCESS	(1 << 0)	// 'D'/'U' memory access and 'V' VRAM read also while a program runs (kernel hook)
 #define	FEATURE_DEVICE_ID	(1 << 1)	// 'I' command (menu): device ID (USB serial number) shown on the menu, see ps1devcart.c
 #define	FEATURE_HOOK_BIG_PACKETS	(1 << 2)	// Kernel hook and debug monitor use HOOK_PACKET_SIZE packets (file server, live 'D'/'U')
+#define	FEATURE_BOOT_DISC	(1 << 3)	// 'C' command (menu): the CD drive unlocked and the disc booted, see ps1devcart.c
 
 #ifndef HOOK
 #define	DEVICE_ID_SIZE		16
 extern uint8_t	device_id_rx[];		// 'I' command data, see ps1devcart.c
 void	DeviceIdReceived(void);
 void	ProfFillRam(bool fill);		// Execute: profiler state reset, free RAM filled for the profiler, see ps1devcart.c
+void	PadRemoteSetup(void);		// Execute with EXEC_PAD: the remote pad set up by the monitor, see ps1devcart.c
 #endif
 
 #ifndef GPU_GP0		// (PSn00bSDK's hwregs_c.h has it for the firmware)
@@ -464,11 +467,12 @@ int		USB_ProcessReceive(void)
 
 #ifndef HOOK
 	if (!((USB_cmd[0] == 'D') || (USB_cmd[0] == 'U') || (USB_cmd[0] == 'E') || (USB_cmd[0] == 'F') || (USB_cmd[0] == 'R') ||
-		(USB_cmd[0] == 'd') || (USB_cmd[0] == 'u') || (USB_cmd[0] == 'V') || (USB_cmd[0] == 'I')))
+		(USB_cmd[0] == 'd') || (USB_cmd[0] == 'u') || (USB_cmd[0] == 'V') || (USB_cmd[0] == 'I') ||
+		(USB_cmd[0] == 'C')))
 #else
 	// While a program runs: reset, and memory access for live debugging (FEATURE_LIVE_ACCESS), exchange (USB link).
 	// Live screenshots ('V') go through the monitor service ('M', monitor version 2): kernel space for the USB link.
-	if (!((USB_cmd[0] == 'R') || (USB_cmd[0] == 'D') || (USB_cmd[0] == 'U') || (USB_cmd[0] == 'X')))
+	if (!((USB_cmd[0] == 'R') || (USB_cmd[0] == 'D') || (USB_cmd[0] == 'U') || (USB_cmd[0] == 'X') || (USB_cmd[0] == 'Z')))
 #endif
 		return (USB_STATE_BAD_CMD);
 
@@ -499,6 +503,11 @@ int		USB_ProcessReceive(void)
 	if (USB_cmd[0] == 'R')	// Reset
 		ResetPS1();
 
+#ifndef HOOK
+	if (USB_cmd[0] == 'C')	// Boot the disc (FEATURE_BOOT_DISC): done by the menu after the answer
+		return (USB_STATE_BOOT_DISC);
+#endif
+
 	// Get Address pointer from packet (x << 16 | y for 'V')
 	ptr = (volatile uint8_t *)((USB_cmd[1] << 24) | (USB_cmd[2] << 16) | (USB_cmd[3] << 8) | USB_cmd[4]);
 	// Get Data size from packet (w << 16 | h for 'V')
@@ -512,7 +521,7 @@ int		USB_ProcessReceive(void)
 #ifdef HOOK
 	// Exchange (USB link relay, one transfer instead of two): size = write size << 16 | read size, the
 	// computer writes at the address, then reads what follows (all in one go for the program)
-	if (USB_cmd[0] == 'X')
+	if ((USB_cmd[0] == 'X') || (USB_cmd[0] == 'Z'))	// ('Z': the same, the monitor knows it too: a debug session)
 		return ((USB_GetData(ptr, size >> 16, MAX_PACKET_SIZE) &&
 			USB_SendData(ptr + (size >> 16), size & 0xFFFF, MAX_PACKET_SIZE)) ? USB_STATE_OK : USB_STATE_TIMEOUT);
 	// Memory access while a program runs, big packets (FEATURE_HOOK_BIG_PACKETS)
@@ -572,10 +581,13 @@ int		USB_ProcessReceive(void)
 
 		// ps1transfer -prof: free RAM above the program filled with a pattern (EXEC_PROF_FILL, not kept in tty_mode)
 		ProfFillRam((USB_cmd[4] & EXEC_PROF_FILL) != 0);
+		// ps1transfer -pad: the pad of player 1 driven from the computer (EXEC_PAD, see monitor/monitor.h)
+		if (USB_cmd[4] & EXEC_PAD)
+			PadRemoteSetup();
 
 		kernel_hook_params->is_enabled = true;
 		// ps1transfer "-c off" / "-c sio" choose what the kernel hook does with the TTY device (e.g. for serial link play)
-		kernel_hook_params->tty_mode = USB_cmd[4] & ~EXEC_PROF_FILL;
+		kernel_hook_params->tty_mode = USB_cmd[4] & ~(EXEC_PROF_FILL | EXEC_PAD);
 
 		EnterCriticalSection();
 		Exec(&exe_header, 1, NULL);

@@ -137,6 +137,20 @@ int main(void)
 
 	DrawText(0, y += 8, uploaded ? "ROM uploaded by ps1transfer" : "ROM built in the flasher");
 	printf("FLASH: %s\n", uploaded ? "ROM uploaded by ps1transfer" : "ROM built in the flasher");
+
+	// From a CD (or an optical drive emulator in the parallel port, swapped for the cartridge once booted): nothing on
+	// the parallel port is touched before START, released first
+	if (!uploaded)
+	{
+		help = "START: FLASH";
+		DrawText(0, y += 8, "Insert the cartridge, switch ON,");
+		DrawText(0, y += 8, "then press START");
+		while (PadRead(1) & PADstart)
+			VSync(0);
+		while (!(PadRead(1) & PADstart))
+			VSync(0);
+		help = NULL;
+	}
 	DrawText(0, y += 8, "Checking Flash Chip ID...");
 
 	EnterCriticalSection();
@@ -156,6 +170,13 @@ int main(void)
 		result = -1;
 		DrawText(0, y += 8, "Flash Chip ID is Wrong !");
 		printf("FLASH ERROR: wrong flash chip ID %04X, nothing written\n%c", chip_id, EOT);
+		if (!uploaded)	// (e.g. the cartridge not in yet, or switched off: nothing was written)
+		{
+			DrawText(0, y += 8, "Nothing written, try again");
+			for (i = 0; i < 150; i++)	// (seen before the screen starts again)
+				VSync(0);
+			goto retry;
+		}
 		while (1);
 	}
 

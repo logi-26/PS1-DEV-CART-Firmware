@@ -9,8 +9,7 @@ With this firmware you can:
 - debug it with GDB or VS Code, and see crash reports with the function names;
 - profile it while it runs;
 - hot reload graphics and sounds;
-- link two consoles without a cable, or over the internet (Netplay);
-- stream audio and video from the internet;
+- link two consoles without a cable;
 - work with memory cards, 3D models, textures and sounds;
 - do all of this from a Windows GUI, **PS1 Dev Cart Manager**.
 
@@ -27,12 +26,6 @@ The firmware and all the PlayStation programs are built with the open source
 
 <p align="center">
   <img src="screenshots/ps1/menu.png" alt="The cartridge's menu: firmware version, device ID, and ready for the computer." width="640">
-</p>
-
-**Video streamer**: The Sintel trailer streamed from the internet, decoded by the PlayStation's MDEC.
-
-<p align="center">
-  <img src="screenshots/ps1/videostreamer.png" alt="The Sintel trailer streamed from the internet, decoded by the PlayStation's MDEC." width="640">
 </p>
 
 **SPU synth**: Six samples loaded into the synth's slots, the selected slot's settings and the keyboard.
@@ -70,16 +63,17 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/soundtest.png" alt="A VAG sample loaded, with the note, the volume and the 24 voices." width="640">
 </p>
 
-**Audio streamer**: An internet radio station playing, with the song title and the buffer.
-
-<p align="center">
-  <img src="screenshots/ps1/audiostreamer.png" alt="An internet radio station playing, with the song title and the buffer." width="640">
-</p>
-
 **Link cable tester**: Two consoles linked through their cartridges: packets, losses and round trip time.
 
 <p align="center">
   <img src="screenshots/ps1/linktest.png" alt="Two consoles linked through their cartridges: packets, losses and round trip time." width="640">
+</p>
+
+**Control tester**: Both controller ports as a program sees them: the device type, buttons, sticks, NeGcon,
+mouse pointer and GunCon sight, real controllers or the ones emulated from the Remote Controller page.
+
+<p align="center">
+  <img src="screenshots/ps1/padtest.png" alt="Port 1 driven as a DualShock from the computer, port 2 empty." width="640">
 </p>
 
 **Memory card tool**: A whole memory card backed up to the computer.
@@ -104,13 +98,7 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/manager/profiler.png" alt="A 3D racing game profiled while it runs: CPU and GPU load, frames, RAM, and the functions where the time goes." width="100%">
 </p>
 
-**Netplay**: A lobby with a chat, and two players playing the link tester over the internet.
-
-<p align="center">
-  <img src="screenshots/manager/netplay.png" alt="A lobby with a chat, and two players playing the link tester over the internet." width="100%">
-</p>
-
-**Debug**: A crash report with the call stack and the function names, and the last frame the game displayed before the crash.
+**Debug Server**: A crash report with the call stack and the function names, and the last frame the game displayed before the crash.
 
 <p align="center">
   <img src="screenshots/manager/debug.png" alt="A crash report with the call stack and the function names, and the last frame the game displayed before the crash." width="100%">
@@ -125,70 +113,64 @@ The firmware and all the PlayStation programs are built with the open source
 <details>
 <summary>All the Manager pages</summary>
 
-**Run**: A program run with its printf sent to the computer and the PCDRV file server; Net Yaroze games run from their auto script.
+**Run PSX**: A PlayStation program run with its printf sent to the computer and the PCDRV file server.
 
 <p align="center">
-  <img src="screenshots/manager/run.png" alt="A program run with its printf sent to the computer and the PCDRV file server; Net Yaroze games run from their auto script." width="100%">
+  <img src="screenshots/manager/run_psx.png" alt="A PlayStation program run with its printf sent to the computer and the PCDRV file server." width="100%">
 </p>
 
-**Console**: The program's printf and the files it opened on the computer.
+**Run Net Yaroze**: A Net Yaroze game run from its auto script and ECOFF executable, with the Net Yaroze library.
+
+<p align="center">
+  <img src="screenshots/manager/run_yaroze.png" alt="A Net Yaroze game run from its auto script and ECOFF executable, with the Net Yaroze library." width="100%">
+</p>
+
+**Console & File Server**: The program's printf and the files it opened on the computer.
 
 <p align="center">
   <img src="screenshots/manager/console.png" alt="The program's printf and the files it opened on the computer." width="100%">
 </p>
 
-**Memory**: A variable of the running game read by its symbol name.
+**Memory Peek/Poke**: A variable of the running game read by its symbol name.
 
 <p align="center">
   <img src="screenshots/manager/memory.png" alt="A variable of the running game read by its symbol name." width="100%">
 </p>
 
-**Screen**: A live screenshot of the running game.
+**Screen Capture**: A live screenshot of the running game.
 
 <p align="center">
   <img src="screenshots/manager/screen.png" alt="A live screenshot of the running game." width="100%">
 </p>
 
-**Hot reload**: Textures sent to the running game without restarting it.
+**Hot Reload**: Textures sent to the running game without restarting it.
 
 <p align="center">
   <img src="screenshots/manager/hotreload.png" alt="Textures sent to the running game without restarting it." width="100%">
 </p>
 
-**Viewers**: A TMD model with its texture, and TIM files for the TIM viewer.
+**Model & Animation Viewer**: A TMD model with its texture.
 
 <p align="center">
   <img src="screenshots/manager/viewers.png" alt="A TMD model with its texture, and TIM files for the TIM viewer." width="100%">
 </p>
 
-**Sound**: VAG samples for the sound tester.
+**Sound Tools**: VAG samples for the sound tester.
 
 <p align="center">
   <img src="screenshots/manager/sound.png" alt="VAG samples for the sound tester." width="100%">
 </p>
 
-**Memory card**: The saves on the card in slot 1, with their icons.
+**Memory Card Tools**: The saves on the card in slot 1, with their icons.
 
 <p align="center">
   <img src="screenshots/manager/memorycard.png" alt="The saves on the card in slot 1, with their icons." width="100%">
 </p>
 
-**Link test**: The link tester running on two consoles through the USB link relay.
+**Link Connection Test**: The link tester running on two consoles through the USB link relay.
 
 <p align="center">
   <img src="screenshots/manager/linktest.png" alt="The link tester running on two consoles through the USB link relay." width="100%">
-</p>
-
-**Video streamer**: The playlist and the statistics of the video being streamed.
-
-<p align="center">
-  <img src="screenshots/manager/video.png" alt="The playlist and the statistics of the video being streamed." width="100%">
-</p>
-
-**Audio streamer**: Internet radio stations, with the song playing.
-
-<p align="center">
-  <img src="screenshots/manager/audio.png" alt="Internet radio stations, with the song playing." width="100%">
 </p>
 
 **Firmware**: The cartridge's information, and the ROM ready to flash.
@@ -214,47 +196,7 @@ was done by a human on real PlayStation hardware.
 AI was used because writing and testing a firmware and tool set of this size by hand would have taken a very long
 time, and most people in the PlayStation homebrew scene would rather spend their time making PlayStation software
 than building the development tools for it. The aim of this project is to give them those tools.
-
-
-## Comparison with the original PS1USB firmware
-
-| Feature                              | PS1USB (OrionSoft firmware)                  | PS1 DEV CART firmware                                      |
-|--------------------------------------|----------------------------------------------|---------------------------------------------------|
-| **Transfer speed (upload)**          | ~122 KB/s                                    | ~655 KB/s (~5× faster)                            |
-| **Transfer speed (download)**        | ~103 KB/s                                    | ~840 KB/s (~8× faster)                            |
-| **Packet size**                      | 2 KB                                         | Up to 16 KB (still works with original 2 KB)      |
-| **Upload & run PS-EXE**              | Yes                                          | Yes                                               |
-| **Reset console from PC**            | Yes                                          | Yes                                               |
-| **printf / TTY redirect** | Yes (to the PC only) | Yes (PC, BIOS device, serial, or USB) |
-| **PCDRV file server** | Yes (`libsn_usb`) | Yes (`psxpcdrv`: same functions, `libsn_usb.h`/`libsn.h` still work) |
-| **Net Yaroze support** | No | Yes (the `auto` script and ECOFF executable as they are, `libps` uploaded and started, serial `tty` driver) |
-| **PsyQo support** | No (the hook doesn't run under PsyQo) | Yes (`psxdevcart`: every feature; `psxcomb` gives PsyQo link play) |
-| **Live memory access** | No (upload/download from the menu only) | Yes, while the program runs: peek/poke/upload/download, with symbols from `.map`/`.elf` |
-| **Live screenshots / VRAM** | From the menu only (VRAM saved at boot) | Yes (live while the program runs, or the saved VRAM from the menu) |
-| **Hot reload** (TIM, sounds, data) | No | Yes (TIM to VRAM, sounds to SPU RAM, data to RAM; sent again on each save) |
-| **Crash screen + report** | Crash screen (cause, registers, stack dump) | Crash screen, and a report on the PC (cause, registers, call stack with function names, the last frame the program displayed) |
-| **GDB / VS Code debugging**          | No                                           | Yes (full GDB server, breakpoints, step, watchpoints, etc.) |
-| **Profiler** | No | Yes, without changing the program: CPU load and the functions where the time goes, GPU busy, frames per second, RAM used, stack, DMA, SPU voices (1000 samples a second) |
-| **Multi-cartridge support** | No (first USB device only) | Yes (select by USB serial / device ID) |
-| **USB link (two consoles)**          | No                                           | Yes (no physical link cable needed - PC relay)               |
-| **Link cable library** | No | Yes (`psxcomb`, compatible with libcomb, cable or USB) |
-| **Internet through the computer** | No | Yes (`-net`: the program's USB link connected to a server on the computer, which does the internet side) |
-| **Netplay** (link play over the internet) | No | Yes (Net Yaroze games and psxcomb homebrew; lobby with chat and invites hosted in the GUI, direct links, encrypted link keys) |
-| **Flasher** | Flashes the ROM built into it (run over USB or from a CD); checks the flash chip ID, verifies the flash, retry with X | Same, plus any ROM uploaded by `ps1transfer` or the GUI (checked first), status on the PC, flash read back and compared on the PC |
-| **PCDRV example program** | Yes (loads files from the PC or the CD) | Yes (same) |
-| **TMD model viewer** | No | 3D models with up to 8 textures (TIM): rotate, zoom, all TMD polygon types (flat/gouraud, textured, lit/unlit, gradation) |
-| **Sound tester** | No | VAB banks (VH + VB), SEQ music and VAG samples: plays each instrument by program and note, SEQ start/stop, volume |
-| **TIM / VRAM viewer** | No | Up to 16 TIMs: VRAM map with overlaps, TIM view with zoom and CLUT rows, warnings (overlaps, texture page crossing, CLUT position), palette editor, CLUT swap |
-| **Memory card tool** | No | Backup/restore of a whole card; save browser with icons; export, import, copy, delete single saves on the card (writes confirmed on the console); card image files |
-| **SPU synth** | No | 16 sample slots played over MIDI (one channel each), VAG/WAV and SysEx upload, ADSR, reverb, pan, fine tune, MIDI input |
-| **Link cable tester** | No | Packets both ways each frame between two consoles: throughput, losses, corrupted packets, round trip time; serial like libcomb or Net Yaroze, or the USB link |
-| **Audio streamer** | No | Internet radio stations and audio files played by the PS1 (SPU ADPCM, 22050 Hz), with titles; playlist in the GUI |
-| **Video streamer** | No | Video files and links played by the PS1 with its MDEC (as game FMVs) and sound, up to 320x240 and 15 frames per second; playlist in the GUI |
-| **GUI**                              | No (command-line only)                       | Yes (PS1 Dev Cart Manager)                        |
-| **Firmware built with**              | PsyQ                                         | PSn00bSDK (no PsyQ required)                      |
-| **RAM used** | Menu: 65.2 KB at the top of RAM; while a program runs: none (kernel hook in the unused kernel RAM) | Menu: 34.1 KB at the top of RAM; while a program runs: none (kernel hook in the unused kernel RAM; crash screen, debugger and profiler run from the cartridge flash) |
-| **Flashing / recovery** | Yes (flasher run over USB or from a CD, checks the flash on the console) | Yes (from `ps1transfer` or the GUI with the ROM uploaded, read back and compared on the PC; or from a CD) |
-| **License**                          | MPL-2.0                                      | MPL-2.0                                           |
+                                        |
 
 ## Contents
 
@@ -263,8 +205,7 @@ than building the development tools for it. The aim of this project is to give t
 - [Tools run on the PlayStation](#tools-run-on-the-playstation)
 - [Link cable library (psxcomb)](#link-cable-library-psxcomb)
 - [Using the cartridge with PsyQo](#using-the-cartridge-with-psyqo)
-- [Internet through the computer (-net), audio and video streamers](#internet-through-the-computer--net-audio-and-video-streamers)
-- [Netplay](#netplay)
+- [Internet through the computer (-net)](#internet-through-the-computer--net)
 - [Profiler](#profiler)
 - [ps1transfer](#ps1transfer)
 - [PS1 Dev Cart Manager (GUI)](#ps1-dev-cart-manager-gui)
@@ -323,6 +264,10 @@ cable, and about 29× faster over the USB link (see [Link cable library](#link-c
 - Firmware version and **device ID** (the USB serial number of the cartridge, so you know which
   console is which when several are connected).
 - Hold **X** at boot to initialise the CD drive.
+- **START + SELECT** boots the disc in the drive (or `ps1transfer -bootcd`). The CD drive is unlocked first (the
+  "nocash unlock", as in Unirom), so burned and import discs boot without a modchip or disc swapping. Not on Japanese
+  consoles, whose drive can't be unlocked (licensed discs still boot). The unlock stays when the lid is opened. The
+  game runs with the kernel hook: reset, memory access and screenshots from the computer.
 
 **Running programs**
 - Upload and execute PS-X EXE programs, reset the console from the computer.
@@ -356,6 +301,20 @@ PlayStation's RAM: your program keeps all its RAM.
   - one hardware breakpoint and one watchpoint (read/write/access);
   - pause, then continue;
   - your program's printf shown in the debugger.
+- **Frame capture** (`ps1transfer -frame`, the Frame Inspector page of the GUI): the GPU commands of a frame,
+  stopped at DrawOTag between two VSync calls (any SDK, from the symbol file): every polygon, sprite, tile, line and
+  draw mode with its colors, vertices, texture page and CLUT, outlined on the frame it drew.
+- **SPU RAM viewer** (`ps1transfer -spu`, the SPU RAM Viewer page of the GUI): the 512KB of sound RAM of the running
+  program mapped (samples, free space, reverb work area), each sample with the voices playing it, decoded and played
+  on the computer, saved as WAV or VAG; warnings for the usual causes of a wrong or silent sound (a voice starting in
+  free memory or inside a sample, a sample overwritten or running into the reverb work area).
+- **Remote controller** (`ps1transfer -pad`, the Remote Controller page of the GUI): controller port 1 or 2 driven
+  from the computer (mouse, keyboard), for programs reading their pads through the BIOS: test without a controller,
+  or play the second player of a two-player game. Other controllers are emulated like in an emulator, on the real
+  console: DualShock and analog joystick (sticks dragged with the mouse), NeGcon, the Sony mouse (the PC mouse) and
+  the Namco GunCon (aimed at the console's picture). Controller
+  changes can be recorded with their timing and played back (looping or not), to replay the same input, and saved
+  to a file (`.ps1pad`).
 - **Profiler** (`ps1transfer -prof`, or the Profiler page of the GUI), without changing your program, see
   [below](#profiler).
 
@@ -366,17 +325,12 @@ PlayStation's RAM: your program keeps all its RAM.
   - A "tty" driver over USB (`-c link`) lets **Net Yaroze games** that use the serial port play
     over USB.
   - Measured to stay in sync like a link cable.
-- **Netplay**: two consoles in different places linked through the internet (Netplay page of the GUI, or
-  `ps1transfer -netlink`), see [below](#netplay).
 - **psxcomb**: an open source link cable library for your PSn00bSDK programs, compatible with the PlayStation link
   cable library (libcomb), over the cable or over USB (see [below](#link-cable-library-psxcomb)).
 
 **Internet**
 - **Internet through the computer** (`ps1transfer -net host:port`): the program's USB link connected to a server on
-  the computer, which does the internet side (see [below](#internet-through-the-computer--net-audio-and-video-streamers)).
-- **Audio streamer** and **video streamer**: internet radio, audio and video files played by the PlayStation
-  (Audio streamer and Video streamer pages of the GUI).
-- **Netplay** (above): link play through the internet.
+  the computer, which does the internet side (see [below](#internet-through-the-computer--net)).
 
 **Flashing**
 - `ps1transfer -flash` (or the Firmware page of the GUI) flashes a ROM, then reads the flash back and compares it.
@@ -389,12 +343,14 @@ buttons in a help bar at the bottom.
 
 | Tool | Option | What it does |
 |---|---|---|
-| TMD model viewer | `-m model.tmd -t texture.tim` | Shows a 3D model with its textures: rotate, zoom. Its own GTE renderer handles every TMD polygon type (flat/gouraud, textured, lit/unlit, gradation). |
-| Sound tester | `-snd bank.vh -snd bank.vb -snd music.seq` | Plays the instruments of a VAB sound bank, SEQ music and VAG samples. Its own VAB/SEQ player matches Sony's libsnd. |
-| TIM and VRAM viewer | `-tim file.tim` | Up to 16 TIMs: VRAM map with overlaps, TIM view with zoom and CLUTs, warnings (overlaps, texture page crossing, CLUT position). **Palette editor** and **CLUT swap**, save/reload through the file server. |
+| TMD model viewer | `-m model.tmd -t texture.tim -tod anim.tod` | Shows a 3D model with its textures: rotate, zoom. Its own GTE renderer handles every TMD polygon type (flat/gouraud, textured, lit/unlit, gradation). Plays TOD animations (hierarchical objects, as PsyQ's TOD sample functions); with `-mdllive` (the GUI's Model viewer page) its controls are on the computer too, linked live with the controller's. |
+| Sound tester | `-snd bank.vh -snd bank.vb -snd music.seq` | Plays the instruments of a VAB sound bank, SEQ music and VAG samples. Its own VAB/SEQ player matches Sony's libsnd. With `-sndlive` (the GUI's Sound page) its controls are on the computer too, linked live with the controller's, and the VAB editor tunes the bank live. |
+| TIM and VRAM viewer | `-tim file.tim` | Up to 32 TIMs: VRAM map with overlaps, TIM view with zoom and CLUTs, warnings (overlaps, texture page crossing, CLUT position). **Palette editor** and **CLUT swap**, save/reload through the file server. |
 | Memory card tool | `-mcbackup`, `-mcrestore`, `-mclist slot1`, ... | Backup (about 12 s) and restore (about 30 s) of a whole card. Browse the saves (with icons) and export, import, copy or delete one save directly on the card (only the sectors needed; writes confirmed on the console). Also works on card image files without a console. |
 | SPU synth | `-synth` | The PlayStation as a 16-slot sample synth: slot n plays MIDI channel n. Samples (VAG) uploaded at any time or sent as SysEx; ADSR, reverb, pan, fine tune per slot; MIDI input. |
 | Link cable tester | `-link [yaroze\|usb\|yarozeusb]` | Packets sent both ways every frame between two consoles: throughput, losses, round trip time, flow control lines. The serial cable can be used with libcomb (as games using the PlayStation link cable library) or like a Net Yaroze game (tty), or the USB link can be used instead of a cable. |
+| Video tester | (Movie Tools page) | Plays an STR movie (MDEC video, XA sound) as a game plays it from the CD: the sectors at the drive's pace (1x or 2x), each frame decoded once its sectors are in, the sound with it. The movie comes from the computer through the file server: loaded into RAM first (up to 1 MB) for the exact timing, or read while it plays. STR files of 2336, 2352 or 2048-byte sectors, BS versions 1-3, up to 640 pixels wide, 15 or 24-bit colour; frame, decode time, size, quantization, late and dropped frames, sound underruns shown on the screen and sent to the computer. |
+| Control tester | `-padtest` | Both controller ports as a program sees them through the BIOS: the device (digital pad, DualShock, analog joystick, NeGcon, mouse, GunCon), buttons held, sticks and analog values, a mouse pointer and a GunCon sight on the screen, the shots marked. With the remote controller option: the Remote Controller page drives it. |
 | Flasher | `-flash rom.rom` | Writes the cartridge flash. Also builds a CD image to repair a cartridge (see below). |
 
 **Palette editor** (TIM viewer): change the colours of a TIM's palette on the PlayStation and see the image redrawn
@@ -402,8 +358,15 @@ live, on the real hardware.
 - Circle in the TIM view opens it. D-pad: choose the entry, L2/R2: red, green or blue, Triangle/Cross: +/- (held:
   repeats), Square: restore the row's original colours, Circle: exit.
 - Start saves the TIM with its edited palette as `NAME_edit.tim` on the computer, Select reloads `NAME.tim` (e.g. after
-  editing it in a paint program). Both use the file server: add `-c` (`ps1transfer -tim car.tim -c`), or tick "Palette
-  editor save / reload" on the Viewers page of the GUI.
+  editing it in a paint program). Both use the file server: add `-c` (`ps1transfer -tim car.tim -c`), or use the
+  TIM / VRAM page of the GUI.
+- **TIM / VRAM page of the GUI**: the same TIM files shown on the computer, the VRAM with each image and CLUT outlined
+  (read from the console while the viewer runs), each TIM drawn with its palette, and a palette editor (red, green,
+  blue sliders, semi-transparency bit). While the console's viewer runs, a colour changed on the computer is on the TV
+  at once and in the console's palette editor, and the colours changed on the console come back to the computer
+  (`ps1transfer -tim car.tim -c -timlive`). The TIM shown is the same on both: choose one on the computer and the
+  console shows it, change it with the pad and the computer follows. Like Sony's TIM Tool, a TIM's image or CLUT can
+  be dragged (right button) to a free place of the VRAM (moved at once on the console), and saved with its new position. Save a copy (`NAME_edit.tim`) or overwrite the TIM from the page.
 
 ## Link cable library (psxcomb)
 
@@ -458,8 +421,8 @@ work with the cartridge, with three small C libraries compiled with your program
   run. With it: printf on the computer, live memory access and screenshots, hot reload, the profiler, the GDB
   debugger, crash reports (with the last frame) and the USB link all work, as with the other SDKs.
 - **`psxpcdrv`**: files of the computer (`PCopen`, `PCread`...), with `ps1transfer -c`.
-- **`psxcomb`**: **link play**, which PsyQo doesn't have: over the link cable, over USB through the cartridges
-  (`ps1transfer -relay`), or over the internet (Netplay). Same functions as the PlayStation link cable library:
+- **`psxcomb`**: **link play**, which PsyQo doesn't have: over the link cable, or over USB through the cartridges
+  (`ps1transfer -relay`). Same functions as the PlayStation link cable library:
   `AddCOMB()`, then `open("sio:")` and asynchronous `read`/`write` (`syscall_open`/`syscall_read`/`syscall_write` of
   nugget), `CombSetLink(COMB_LINK_USB)` for the USB link.
 
@@ -474,9 +437,9 @@ Rules:
   CD), `DevCartInit()` does nothing and returns 0.
 
 Symbols for crash reports and the profiler: `mipsel-none-elf-nm -C program.elf > program.sym` (demangled C++
-names). In the profiler, mark `psyqo::GPU::pumpCallbacks()` as waiting: PsyQo waits for the next frame there.
+names). The profiler counts `psyqo::GPU::pumpCallbacks()` as waiting: PsyQo waits for the next frame there.
 
-## Internet through the computer (-net), audio and video streamers
+## Internet through the computer (-net)
 
 `ps1transfer -net host:port` connects the USB link of the running program (psxcomb with `COMB_LINK_USB`, or a Net
 Yaroze game run with `-c link`) to a TCP server: what the program writes goes to the server, what the server sends
@@ -486,124 +449,34 @@ stopped (Ctrl+C, or a line on its input), and prints the throughput every second
 
     ps1transfer -r -e -f game.ps-exe -net 127.0.0.1:7777     run the game, connect its link to a local server
 
-### PS1 DEV CART AUDIO STREAMER
-
-The `ps1-tools/audiostreamer` folder plays internet radio stations and audio files streamed by the computer (a sample of -net).
-- `audio_server.py` (on the computer, `pip install miniaudio numpy av`) plays a playlist of station links and audio
-  files: by default six UK stations (Smooth, Capital London, Heart, Classic FM, Heart 80s and Radio X Classic Rock).
-  Icecast/SHOUTcast MP3 stations are decoded with miniaudio (with the song titles of the stream); local files of any
-  format FFmpeg reads (MP3, FLAC, WAV, OGG, M4A/AAC, Opus, ...) and links in other formats with PyAV (with the file's
-  artist/title tags). The sound is resampled to 22050 Hz mono (`--rate`), encoded to SPU ADPCM (the PlayStation's own
-  sound format, 12.6 KB/s) and sent at most 2.5 s ahead of real time. At the end of a file the next one plays.
-- `audiostreamer.ps-exe` (PSn00bSDK, psxcomb) buffers about a second, plays it on one SPU voice from a looping buffer
-  in SPU RAM refilled half by half, and shows the station or file, the song, the buffer and the SPU RAM used.
-  Left/Right goes to the previous/next in the playlist (sent back to the server), Up/Down changes the volume.
-
-      python ps1-tools/audiostreamer/audio_server.py [station links or audio files]
-      ps1transfer -r -e -f ps1-tools/audiostreamer/audiostreamer.ps-exe -net 127.0.0.1:7777
-
-The PS1 Dev Cart Manager's Audio streamer page does both, with a playlist you can edit (add files or links).
-
-Measured: 12.3 to 13.4 KB/s steady through the bridge (the stream's real time rate). The link itself carries about
-160 KB/s into the PlayStation (bridge + psxcomb with a 16KB ring, measured with a program that only reads).
-
-### PS1 DEV CART VIDEO STREAMER
-
-The `ps1-tools/videostreamer` folder plays videos streamed by the computer, with the PlayStation's own video hardware (the MDEC,
-as the FMVs of the games) and sound (SPU ADPCM).
-- `video_server.py` (on the computer, `pip install av numpy miniaudio`) opens any video file or stream FFmpeg can open
-  (PyAV), fits the picture in a 320x240 screen (full resolution, `--size 160x120` for a smaller stream shown 2x) and
-  sends only the picture (not the letterbox bars, which cost the MDEC as much as the picture), at the source's frame
-  rate divided by a whole number up to 15 (24 -> 12, 30 -> 15: even steps). The frames are encoded to MDEC frames
-  (BS version 2, the frame format of STR videos) with `mdec_encoder.py` (numpy), within a budget of 90 KB/s (the
-  quantization goes up for busy frames). The sound is resampled to 22050 Hz mono and encoded like the audio streamer's.
-  By default it plays the Sintel trailer and film (Blender Foundation, CC BY 3.0), streamed from blender.org; or give
-  files/URLs.
-- `videostreamer.ps-exe` buffers about a second and plays the sound as the clock. The next frame is decoded ahead
-  (PSn00bSDK's `DecDCTvlc`, then the MDEC decodes the whole frame in the background while the link, the sound and the
-  screen go on), into the texture not shown, and shown at its time; late frames are dropped. Select shows/hides the
-  information (video, picture size, frame rate, buffer, KB/s, dropped frames), Left/Right changes the video, Up/Down
-  the volume.
-
-      python ps1-tools/videostreamer/video_server.py [video files or URLs]
-      ps1transfer -r -e -f ps1-tools/videostreamer/videostreamer.ps-exe -net 127.0.0.1:7778
-
-Measured with the Sintel trailer (320x134 picture, 12 frames per second): about 80-95 KB/s through the link, quantization
-scale 2-4 (high quality), 306 frames shown and 2 dropped in 30 s, no sound underrun. The MDEC takes about 32 ms for a
-320x240 frame on its own.
-
-## Netplay
-
-Link play between two consoles in different places, through the internet: **Net Yaroze games** using the serial
-link (`tty:`, run with `-c link`) and **homebrew using psxcomb's USB link**.
-
-In the GUI's **Netplay** page, one player **hosts** the lobby (no server to rent: it runs in their PS1 Dev Cart
-Manager), the others **join** it with the host's internet address. The lobby lists the players and the game each one
-has chosen, with a chat (to everyone or one player) and **invites**. When an invite is accepted, both consoles are
-reset, the game is started and linked. Both players need the same game file (checked).
-
-The host's router is asked to open the ports itself (UPnP, on by default on most home routers) and the page shows
-the address the other players join with (from the router, else from a STUN server), with a Copy button. Without
-UPnP, the host forwards TCP and UDP 7010 and UDP 7011-7014 to their computer; the page says so, and warns when the
-provider shares the internet address between customers (carrier-grade NAT: nobody can reach you, another player
-must host). The guests need nothing. Two guests playing together start through the host's relay and try a direct
-link through their routers (UDP hole punching), the relay staying as the fallback. A dropout of up to 30 seconds
-doesn't end a game (the data waits and is sent again), and a lost lobby connection reconnects by itself without
-stopping the game.
-
-The link (`ps1transfer -netlink`) is built for latency: direct between the two computers (UDP), each packet carries
-everything not acknowledged yet (a lost packet is covered by the next one, without waiting), units sent as soon as
-the console gives them. Measured with the link tester (round trip, 60 Hz frames): 2.5 frames on the same network
-(the local relay: 3.0), 3.0 at 15 ms each way, 3.9 at 30 ms, 4.2 at 30 ms with jitter and 5% packets lost (none
-lost by the program), 6.2 at 70 ms. Games that send every frame and use what arrived (like YarIO) run at full speed,
-the other player's moves appear a little later; games that wait for each answer slow down above ~15 ms each way.
-
-    ps1transfer -n SERIAL -r -y libps.exe -auto auto -c link -netlink :7010 -netkey KEY        host
-    ps1transfer -n SERIAL -r -y libps.exe -auto auto -c link -netlink 1.2.3.4:7010 -netkey KEY  guest
-    ... -e -f main          the Net Yaroze executable alone instead of the auto script
-    ... -e -f psx.exe       a game converted with yarexe (no -y: it includes the library)
-    ... -netdelay 30        try it as if the other console was 30 ms away (both consoles on one computer)
-
-On the Netplay page, the game is a PS-X EXE, or a Net Yaroze game's auto script or executable (with libps.exe). Both
-players need the same game: for an auto script, the script, the program and all its data files are compared.
-
-**Security.** Each game gets its own random 128-bit link key from the lobby, given only to its two players; every
-link packet carries a tag made with it (HMAC-SHA256), and ps1transfer, the host's relay and the bot ignore packets
-without the right tag: nobody else can link in, send data to a console or stop a game, even knowing the ports. The
-lobby password is never sent (the lobby sends a random challenge, the Manager answers with a hash made with the
-password), and with a password the games' keys are sent encrypted with it. An address that gets the password wrong
-5 times is refused for a minute; at most 4 connections from one address, and a connection that doesn't log in
-within 5 seconds is closed. Hosting without a password asks first: then anyone with your address can join and
-chat (the games stay protected). Chat, names and game names are not encrypted. Use a password of 10 characters or
-more: someone who can see your traffic could try passwords against the challenge offline. Without the lobby,
-`-netkey` takes the same 32 hex digit key on both computers (e.g. made with
-`python -c "import os; print(os.urandom(16).hex())"`); without `-netkey` anyone can link in first.
-
-**Testing without a second player:** `gui/netplay_bot.py` (Python 3 only, nothing to install) is a pretend player.
-Run it on another network (a laptop on your phone's hotspot, an Android phone with Termux on mobile data, any PC):
-`python netplay_bot.py YOUR.INTERNET.ADDRESS` (`--delay`, `--jitter`, `--loss` to make it worse). It joins your
-lobby, accepts invites and plays the other console of the link tester: host, choose `ps1transfer/linktest.ps-exe`
-with the link "Net Yaroze game (tty, -c link)", invite the bot. The tester on your console shows the round trip and
-lost packets of the real connection, the bot posts its own figures in the chat at the end. Testing from your own
-network through your internet address often fails (routers rarely loop back): use another network.
-
 ## Profiler
 
 `ps1transfer -prof` samples the running program 1000 times a second, through the cartridge, and shows every second:
-- **CPU load** and **where the time goes**, by function (with the program's symbols: the `.elf` or `.map` next to it,
-  or `-sym`). Time in the functions where a program waits (VSync, DrawSync, CdSync...) is not CPU load; `-idle` adds
-  your own (or a double click in the GUI), e.g. for a program without symbols;
-- **GPU busy** (drawing or its DMA running), **frames per second** (swaps of the draw buffers);
+- **what limits the frame rate**, with advice: full frame rate (and the time to spare), CPU-bound, GPU-bound (the
+  CPU waits in DrawSync), missing the VBlank (the frame takes a little more than the budget, so VSync waits for the
+  next one: how many ms to save), capped by VSync, or waiting for the CD-ROM. Hints from the whole run: time in the
+  BIOS (slow ROM code) and who calls it, printf, the function to optimise first, low free RAM, all SPU voices used,
+  samples dropped;
+- **CPU load** and **where the time goes**, by function (with the program's symbols: the `.elf`, `.map` or `.sym`
+  next to it, a Net Yaroze ECOFF executable's own symbols, or `-sym`), with the **caller** seen in the return address
+  (e.g. which function calls memcpy or the BIOS). Time in the functions where a program waits is not CPU load, and is
+  shown by what it waits for: the VBlank (VSync), the GPU (DrawSync), the CD-ROM (CdSync, CdReadSync), the SPU;
+  `-idle` adds your own (or a double click in the GUI), e.g. for a program without symbols. Without a waiting
+  function in the symbols the CPU load includes the waits (shown with a "?");
+- **GPU busy** (drawing or its DMA running), **frames per second** (swaps of the draw buffers) and the **frame time**
+  against the budget of the video mode (16.7 ms NTSC, 20 ms PAL, read from the GPU: debug monitor version 7);
 - **DMA activity** (GPU, SPU, CD-ROM, MDEC, ordering table clear) and the CD-ROM controller busy;
 - **RAM used** of the PlayStation's 2 MB: the kernel (64 KB) and your program with its variables, plus the free RAM it
   has written since it started. With `-e`, the firmware fills the free RAM above the program with a pattern before
   starting it, and the words written since are counted, e.g. "RAM 1980/2048 KB (program 1518 KB + 398/398 KB free
   written)". Attaching to a running program measures it too if it was started with `-prof`. `-nofill`: not filled
-  (not measured), e.g. if you uploaded data there yourself;
-- **stack**: the lowest stack pointer seen;
-- **SPU voices** playing (envelope of the 24 voices).
+  (not measured), e.g. if you uploaded data there yourself (the data files of a Net Yaroze auto script above the
+  program turn it off). **RAM free**: the free RAM the program hasn't written, and its largest free block;
+- **stack**: the lowest stack pointer seen, and the deepest since the start;
+- **SPU voices** playing (envelope of the 24 voices), as a share of the 24, and the most played at once.
 
-At the end, the functions with their share of the time.
+At the end, the averages and peaks (frames per second, CPU, GPU), the verdict for the whole run, the hints, and the
+functions with their share of the time and their caller.
 
     ps1transfer -e -f game.exe -prof              run the game and profile it until Ctrl+C
     ps1transfer -prof 500                         profile the program already running, 500 samples a second
@@ -627,6 +500,7 @@ The command line tool on the computer (Windows and Linux). All the options are i
     ps1transfer -v 0 0 320 240 -f shot.png        screenshot (live while a program runs)
     ps1transfer -peek @lives -s 1                 read a variable of the running program
     ps1transfer -gdb -f game.exe                  debug with GDB / VS Code (target remote localhost:3333)
+    ps1transfer -e -f game.exe -pad               run a program whose pad can be driven from the computer
     ps1transfer -hot sprite.tim -watch            hot reload a texture each time it is saved
     ps1transfer -e -f game.exe -prof              profile a program (CPU/GPU load, functions, RAM...)
     ps1transfer -mclist slot1                     list the saves of the memory card in slot 1
@@ -643,21 +517,24 @@ Each page shows the command it runs. See [gui/README.md](gui/README.md).
 | Page | |
 |---|---|
 | Top bar | Cartridge chooser (by device ID), its state (menu, running, stopped, crashed) and firmware; the folder served while the file server runs; stop task, reset. |
-| Run | Upload and run a program: a PS-X EXE, or a Net Yaroze game (auto script or ECOFF executable, with libps.exe); TTY mode, file server. |
-| Console | printf of the running program; file server activity (files opened, created and refused, bytes read and written). |
-| Memory | Peek, poke, upload, download, with symbols. |
-| Screen | Screenshots, live while a program runs, with automatic refresh. |
-| Debug | Crash report, GDB server. |
-| Hot reload | Files and where they go, sent at once or each time they are saved. |
-| Viewers | TMD model viewer, TIM and VRAM viewer. |
-| Sound | Sound tester with up to 8 files. |
+| Run PSX | Upload and run a PlayStation program (PS-X EXE); TTY mode, file server. |
+| Run Net Yaroze | Upload and run a Net Yaroze game (auto script or ECOFF executable, with libps.exe); TTY mode, file server. |
+| Console & File Server | printf of the running program; file server activity (files opened, created and refused, bytes read and written). |
+| Remote Controller | Controller port 1 or 2 driven from the computer (mouse, keyboard), for programs reading their pads through the BIOS: a digital pad, DualShock, analog joystick, NeGcon, mouse or GunCon; record and play back controller sequences. |
+| Memory Peek/Poke | The program's variables from its symbol file, a watch list with live values (typed, editable), peek, poke, upload, download. |
+| Profiler | Runs (or attaches to) a program, a Net Yaroze game too, and shows live what limits its frame rate with hints, CPU/GPU load, where the time goes, frame time, RAM used and free, stack, DMA, SPU voices and the functions with their callers. |
+| Hot Reload | Files and where they go, sent at once or each time they are saved. |
+| Screen Capture | Screenshots, live while a program runs, with automatic refresh. |
+| Debug Server | Crash report, GDB server. |
+| Frame Inspector | The GPU commands of a frame (polygons, sprites, tiles, lines...) listed and outlined on the frame it drew. |
+| Model & Animation Viewer | TMD model viewer with its textures and TOD animations, its controls live on the computer and the controller (TOD, frame, play, loop, speed, view). |
+| VRAM Viewer | TIM and VRAM viewer on the console and on the computer: the VRAM with the TIMs outlined, each TIM with its palette, a palette editor live on the console. |
+| SPU RAM Viewer | The sound RAM of the running program: samples, free space, reverb work area, the voices using each sample; play a sample on the computer, save it as WAV/VAG; warnings for wrong or silent sounds. |
+| Sound Tools | Sound tester with up to 8 files, its controls live on the computer and the controller (program, note, keyboard, volume, SEQ, voices); VAB editor: the bank tuned live on the console (volume, pan, key ranges, tuning, ADSR envelope), saved as a VAB. |
 | Synth | 16 slots, keyboard, WAV to VAG conversion, MIDI input, SysEx, kits. |
-| Memory card | Backup/restore, save browser with icons, on a card or an image file. |
-| Link test | Link tester on two consoles, USB link relay for your own programs. |
-| Video streamer | Playlist of video files or links (Blender examples filled in), picture/frame rate/quality options, start/stop with the server in the GUI. |
-| Audio streamer | Playlist of radio station links and audio files (UK stations filled in), sound rate, start/stop with the server in the GUI. |
-| Netplay | Hosts or joins a lobby: players and their games, chat, invites; starts and links both consoles over the internet. |
-| Profiler | Runs (or attaches to) a program and shows CPU/GPU load, frames, RAM, stack, DMA, SPU voices and the functions where the time goes, live. |
+| Movie Tools | STR movies, like Sony's MovConv: a video (any format FFmpeg reads) or pictures (TIM, PNG, JPG: a slide show with fades, or frame by frame) with its sound or a sound file made into an STR (resolution, TV shape and fit, frame rate, 1x/2x drive speed, quality, XA sound 37800/18900 Hz mono/stereo; video and sound interleaved as the drive reads them, CD error codes included for disc images); any STR checked frame by frame and previewed with its sound; played on the console by the video tester. |
+| Memory Card Tools | Backup/restore, save browser with icons, on a card or an image file. |
+| Link Connection Test | Link tester on two consoles, USB link relay for your own programs. |
 | Firmware | Cartridge information, flashing with a typed confirmation and a readback check. |
 
 ## Installing the firmware
@@ -688,8 +565,7 @@ happens, it can be repaired with the flasher CD image (below).
     make                            firmware (ps1devcart.ps-exe), kernel hook, debug monitor
     make -C cartrom                 cartridge ROM (cartrom/ps1devcart.rom)
     make -C ps1-tools/ar_flash      flasher, with the ROM built in, and its CD image
-    make -C ps1-tools/tmdviewer     (same for soundtest, timviewer, cardtool, synth, linktest, audiostreamer,
-                                    videostreamer)
+    make -C ps1-tools/tmdviewer     (same for soundtest, timviewer, cardtool, synth, linktest, padtest, videotest)
 
 `build.sh` / `build.bat` build everything. `ps1transfer` has Makefiles for Windows and Linux
 (`Makefile_win`, `Makefile_linux`) and Code::Blocks projects.
@@ -713,8 +589,8 @@ included.
     vectors are hand written MIPS assembly. These are the parts where size and timing matter most, and they work
     whatever SDK your program uses.
   - **PSn00bSDK**: the **menu firmware** (`ps1devcart.c`) and the **PlayStation tools** (`ps1-tools/`: TMD, TIM and
-    sound viewers, SPU synth, memory card tool, link tester, audio and video streamers, flasher), for the GPU, the
-    debug font, pads, SPU, MDEC and memory cards.
+    sound viewers, SPU synth, memory card tool, link tester, flasher), for the GPU, the debug
+    font, pads, SPU and memory cards.
   - **Libraries for your programs**: `psxpcdrv` (files on the computer), `psxcomb` (link play) and `psxdevcart`
     (PsyQo programs) are plain C compiled with your program, no SDK library; they work with PSn00bSDK and PsyQo (see
     [Using the cartridge with PsyQo](#using-the-cartridge-with-psyqo)).
@@ -726,7 +602,7 @@ included.
 - Flash (128KB):
   - firmware at the start;
   - menu images at 0x1F010000 (a small file system of TIMs, edited with `cartrom/tfs_tool.py`);
-  - debug monitor at 0x1F01C800;
+  - debug monitor at 0x1F019000;
   - device ID saved in the last sector (0x1F01F000).
 - The **kernel hook** (0x8000C160 to 0x8000DF7F, unused kernel RAM) answers the computer while a program runs: memory
   access, reset, TTY, USB link. Its parameters are at 0x8000DF70 (TTY mode, packet size, features, pointer to its USB
@@ -750,12 +626,7 @@ the license requires. Third-party parts:
 - The firmware and the PS1 tools are built with PSn00bSDK (Mozilla Public License 2.0), parts of its libraries are in
   them.
 - The PS1 Dev Cart Manager executable (`gui/dist`, made with PyInstaller) contains Python (PSF license), ttkbootstrap
-  and Pillow, mido and python-rtmidi, miniaudio (MIT/HPND style licenses), and PyAV with FFmpeg and the libraries it
-  is built with (FFmpeg: LGPL 3 or later; x264/x265: GPL 2 or later; others: see the notice), used by the video and
-  audio streamer pages to decode files and links. What they are, their licenses and where their source is:
-  [gui/licenses/FFMPEG-NOTICE.txt](gui/licenses/FFMPEG-NOTICE.txt), with the license texts in `gui/licenses` (also
-  in the executable: Settings page, "Third-party licences"). Running the Manager from the Python sources needs none
-  of them bundled.
+  and Pillow, mido and python-rtmidi (MIT/HPND style licenses).
 - The crash screen is based on the PS1 Crash Handler by Spencer Alves (public domain).
 - The software reset and the first kernel hook were contributed by david4599 (https://github.com/david4599/ps1usb/).
 

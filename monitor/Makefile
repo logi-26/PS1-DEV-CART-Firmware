@@ -17,11 +17,14 @@ OBJCOPY = $(PREFIX)-objcopy
 CFLAGS = -Os -Wall -march=mips1 -mabi=32 -EL -msoft-float -fno-pic -mno-shared -mno-abicalls -G0 -mno-gpopt \
 	-mlong-calls -fno-builtin -ffreestanding -nostdlib -fno-stack-protector -ffunction-sections -fomit-frame-pointer
 LDFLAGS = -nostdlib -static -Wl,--gc-sections -T monitor.ld -Wl,--just-symbols=../kernel_hook/kernel_hook.elf
+# The BIOS File and Device structures (serial port tty driver): nugget, as the kernel hook (config/Makefile.conf)
+-include ../config/Makefile.conf
+CFLAGS += -I$(PSXDIR)/thirdparty/nugget
 
 all: ../monitor_rom.bin ../monitor_ram.bin
 
 monitor_rom.elf: monitor.c monitor.h monitor.ld font8x8.bin ../kernel_hook/kernel_hook.elf
-	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--defsym=MONITOR_ADDR=0x1F01C800 -Wl,-Map=monitor_rom.map -o $@ monitor.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--defsym=MONITOR_ADDR=0x1F019000 -Wl,-Map=monitor_rom.map -o $@ monitor.c
 
 monitor_ram.elf: monitor.c monitor.h monitor.ld font8x8.bin ../kernel_hook/kernel_hook.elf
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--defsym=MONITOR_ADDR=0x801C0000 -Wl,-Map=monitor_ram.map -o $@ monitor.c

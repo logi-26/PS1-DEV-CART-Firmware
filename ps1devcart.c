@@ -191,6 +191,7 @@ void	ProfFillRam(bool fill)
 
 	mon_state->prof_on = 0;
 	mon_state->ram_lo = mon_state->ram_hi = 0;
+	mon_state->prof_gpustat = 0;
 	if (!fill)
 		return;
 	if (exe_header.b_size && (bss > lo))
@@ -203,6 +204,14 @@ void	ProfFillRam(bool fill)
 	mon_state->ram_lo = mon_state->ram_pos = lo;
 	mon_state->ram_hi = PROF_FILL_TOP;
 	mon_state->ram_dirty = mon_state->ram_run = mon_state->ram_maxrun = 0;
+}
+
+// ps1transfer -pad: the pad of player 1 driven from the computer, set up by the monitor before the program starts
+// (it hooks the BIOS InitPAD, see monitor/monitor.h)
+void	PadRemoteSetup(void)
+{
+	if (mon_state->entry && (mon_state->version >= 8))
+		((void (*)(int, uint32_t *))mon_state->entry)(MON_REASON_PAD_SETUP, NULL);
 }
 
 /****************************************/
@@ -221,46 +230,397 @@ bool	PrintUSBStatus(void)
 }
 
 /****************************************/
-// I couldn't make this work
+// Disc boot (Start + Select on the menu, or "ps1transfer -bootcd"): the CD drive is unlocked first ("nocash unlock",
+// https://psx-spx.consoledev.net/cdromdrive/ secret unlock commands), so burned and import discs are read without a
+// modchip, then the disc is started like the BIOS does: SYSTEM.CNF (BOOT, TCB, EVENT, STACK), kernel set up, PS-X EXE.
+// The unlock is kept when the lid is opened (only the drive's Reset command 1Ch forgets it): discs can be swapped.
+// The kernel hook stays enabled (reset, memory access and screenshots from the computer while the game runs).
 
-char	*cd_region_check[] = {"for Eur", "for U/C", "for NET"};
-char	*cd_region_unlock[] = {"(Europe)", "of America", "World wide"};
+// (CD_REG and IRQ_STAT: PSn00bSDK's hwregs_c.h)
+#define	DISC_EXE_TOP	PROF_FILL_TOP	// The game is loaded under the firmware
 
-bool	CD_Unlock(void)
+// Drive regions (test command 19h,22h) and the string of the unlock command 55h
+static const char	*cd_region_id[] = {"for Europe", "for U/C", "for NETEU", "for NETNA"};
+static const char	*cd_region_unlock[] = {"(Europe)", "of America", "World wide", "World wide"};
+static const char	*cd_unlock_strings[] = {NULL, "Licensed by", "Sony", "Computer", "Entertainment"};
+
+// Next response of the drive (timeout in 100us steps): its interrupt type, 0 on timeout
+static int	CD_RawResponse(uint8_t *resp, int resp_size, int timeout)
 {
-	uint8_t	getid_cmd[] = {0x22,0,0,0,0};
-	uint8_t	result[16];
+	int		irq, n;
+
+	CD_REG(0) = 1;
+	while (!(irq = CD_REG(3) & 7))
+	{
+		if (!timeout--)
+			return (0);
+		DelayUs(100);
+	}
+	for (n = 0; CD_REG(0) & 0x20; n++)	// Response FIFO
+	{
+		uint8_t	c = CD_REG(1);
+
+		if (n < resp_size)
+			resp[n] = c;
+	}
+	if (n < resp_size)
+		resp[n] = 0;
+	CD_REG(0) = 1;
+	CD_REG(3) = 0x1F;
+	IRQ_STAT = ~(1 << 2);	// (the CPU side of the CD interrupt, not taken in the critical section)
+	return (irq);
+}
+
+// Raw CD command, polled with interrupts disabled (the BIOS and PSn00bSDK don't know the secret commands): returns the
+// interrupt type of the first response (3 = acknowledge, 5 = error), 0 if the drive doesn't answer (about 1 second).
+// Sectors (INT1) and data end (INT4) of a read or play still going on are skipped: after a reset of the console while
+// a game read the disc, they were taken for the answer.
+static int	CD_RawCommand(uint8_t cmd, const void *param, int len, uint8_t *resp, int resp_size)
+{
+	const uint8_t	*p = param;
+	int				timeout, irq;
+
+	for (timeout = 10000; (CD_REG(0) & 0x80) && timeout; timeout--)	// Busy with the previous command
+		DelayUs(100);
+	CD_REG(0) = 1;
+	CD_REG(3) = 0x1F;	// Acknowledge the interrupts
+	CD_REG(3) = 0x40;	// Clear the parameter FIFO
+	CD_REG(0) = 0;
+	while (len-- > 0)
+		CD_REG(2) = *p++;
+	CD_REG(1) = cmd;
+	for (timeout = 0; timeout < 100; timeout++)
+		if (((irq = CD_RawResponse(resp, resp_size, 10000)) != 1) && (irq != 4))
+			break;
+	return (irq);
+}
+
+// After a reset the drive spins the disc up and identifies it (a few seconds): unlocked meanwhile, the unlock was
+// ignored (the BIOS then retried reading forever), read meanwhile, the first sectors of the game were wrong. GetID
+// (1Ah) answers twice once the disc is identified (INT2 licensed, INT5 unlicensed or no disc); before, an error.
+static bool	CD_WaitReady(void)
+{
+	uint8_t	resp[8];
 	int		i;
 
-	// (raw commands: CdCommand, CdControl only knows the documented ones)
-	CdCommand(0x19, getid_cmd, sizeof(getid_cmd), result);
-	CdSync(0, NULL);
-
-	for (i = 0; i < 3; i++)
-		if (!strncmp((char *)result, cd_region_check[i], 7))
-			break;
-	if (i == 3)
+	for (i = 0; i < 40; i++)	// About 20 seconds
 	{
-		PrintConsole("Error: CD Drive not compatible...");
+		if ((CD_RawCommand(0x1A, NULL, 0, resp, sizeof(resp)) == 3) && CD_RawResponse(resp, sizeof(resp), 50000))
+			return (true);
+		DelayUs(500000);
+	}
+	return (false);
+}
+
+// Shows the result (Japanese drives and the first drive version can't be unlocked: licensed discs still boot)
+static void	CD_Unlock(void)
+{
+	uint8_t	test = 0x22, resp[16];
+	char	text[40];
+	int		i, region;
+
+	PrintConsole("Waiting for the CD drive...");
+	EnterCriticalSection();
+	// Reset (1Ch): the drive as after a power on, then unlocked again. Without it (or with Init 0Ah only), after the
+	// reset of a game that had read the disc, the drive kept seeking: no sector came any more.
+	CD_RawCommand(0x1C, NULL, 0, resp, sizeof(resp));
+	DelayUs(500000);
+	if (!CD_WaitReady())
+	{
+		ExitCriticalSection();
+		PrintConsole("CD drive not ready");
+		return;
+	}
+	if (CD_RawCommand(0x19, &test, 1, resp, sizeof(resp)) != 3)
+	{
+		ExitCriticalSection();
+		PrintConsole("Old CD drive: not unlocked");
+		return;
+	}
+	for (region = 0; region < 4; region++)
+		if (!strcmp((char *)resp, cd_region_id[region]))
+			break;
+	if (region == 4)
+	{
+		ExitCriticalSection();
+		PrintConsole(strcmp((char *)resp, "for US/AEP") ? "Japan CD drive: not unlocked" : "Debug CD drive (no lock)");
+		return;
+	}
+	// 50h to 56h: each one answers INT5 (error 40h), even when it works
+	for (i = 0; i < 7; i++)
+	{
+		const char	*s = (i == 5) ? cd_region_unlock[region] : (i < 5) ? cd_unlock_strings[i] : NULL;
+
+		if (!CD_RawCommand(0x50 + i, s, s ? strlen(s) : 0, NULL, 0))
+		{
+			ExitCriticalSection();
+			PrintConsole("CD drive not answering");
+			return;
+		}
+	}
+	ExitCriticalSection();
+	sprintf(text, "CD drive unlocked (%s)", cd_region_id[region]);
+	PrintConsole(text);
+}
+
+// SYSTEM.CNF value after "KEY =" (the line), NULL if the key isn't there
+static char	*CnfValue(char *cnf, const char *key)
+{
+	int		len = strlen(key);
+	char	*p;
+
+	for (p = cnf; *p; p++)
+	{
+		if (((p == cnf) || (p[-1] == '\n') || (p[-1] == '\r')) && !strncmp(p, key, len) &&
+			((p[len] == ' ') || (p[len] == '\t') || (p[len] == '=')))
+		{
+			for (p += len; (*p == ' ') || (*p == '\t') || (*p == '='); p++)
+				;
+			return (p);
+		}
+	}
+	return (NULL);
+}
+
+static uint32_t	CnfHex(char *cnf, const char *key, uint32_t value)
+{
+	char	*p = CnfValue(cnf, key);
+	int		d;
+
+	if (!p)
+		return (value);
+	for (value = 0; ; p++)
+	{
+		if ((*p >= '0') && (*p <= '9'))
+			d = *p - '0';
+		else if (((*p | 0x20) >= 'a') && ((*p | 0x20) <= 'f'))
+			d = (*p | 0x20) - 'a' + 10;
+		else
+			break;
+		value = (value << 4) | d;
+	}
+	return (value);
+}
+
+#define	BCD(n)	((((n) / 10) << 4) | ((n) % 10))
+
+// Sectors read with polled drive commands, interrupts disabled: the BIOS driver (read() and Load) lost the first
+// sectors of the program (29 with a burned disc: the program was 0xE800 bytes too low in RAM). One INT1 a sector, its
+// data read before the acknowledge. Single speed: at double speed, sectors were lost in the middle of the program.
+// After an error the read starts again from the sector not read.
+
+static bool	CD_ReadSectors(int lba, uint8_t *dst, uint32_t size)
+{
+	uint8_t	resp[8], loc[3], mode = 0x00, c;	// (mode: single speed, 2048-byte sectors)
+	int		retry, timeout, irq, pos, i, n;
+
+	EnterCriticalSection();
+	if (CD_RawCommand(0x09, NULL, 0, resp, sizeof(resp)) == 3)	// Pause: a read or play still going on is stopped
+		CD_RawResponse(resp, sizeof(resp), 50000);
+	CD_RawCommand(0x0E, &mode, 1, resp, sizeof(resp));	// Setmode
+	for (retry = 0; size && (retry < 8); retry++)
+	{
+		pos = lba + 150;	// (2 seconds of lead-in)
+		loc[0] = BCD(pos / 4500);
+		loc[1] = BCD((pos / 75) % 60);
+		loc[2] = BCD(pos % 75);
+		if (((irq = CD_RawCommand(0x02, loc, 3, resp, sizeof(resp))) != 3) ||
+			((irq = CD_RawCommand(0x06, NULL, 0, resp, sizeof(resp))) != 3))	// Setloc, ReadN
+			continue;
+		while (size)
+		{
+			CD_REG(0) = 1;
+			for (timeout = 30000; !(irq = CD_REG(3) & 7) && timeout; timeout--)	// (3 seconds: seek, spin up)
+				DelayUs(100);
+			if (irq != 1)	// Not a sector: error (or timeout), read again
+				break;
+			while (CD_REG(0) & 0x20)	// Response FIFO (status)
+				c = CD_REG(1);
+			CD_REG(0) = 0;
+			CD_REG(3) = 0;
+			CD_REG(3) = 0x80;	// Want data
+			for (timeout = 1000; !(CD_REG(0) & 0x40) && timeout; timeout--)	// Data FIFO not empty
+				DelayUs(10);
+			n = (size < 2048) ? size : 2048;
+			for (i = 0; i < 2048; i++)
+			{
+				c = CD_REG(2);
+				if (i < n)
+					*dst++ = c;
+			}
+			CD_REG(3) = 0;
+			CD_REG(0) = 1;
+			CD_REG(3) = 0x1F;	// Acknowledge: the next sector
+			IRQ_STAT = ~(1 << 2);
+			size -= n;
+			lba++;
+		}
+	}
+	if (CD_RawCommand(0x09, NULL, 0, resp, sizeof(resp)) == 3)	// Pause: the drive stops reading
+		CD_RawResponse(resp, sizeof(resp), 50000);
+	ExitCriticalSection();
+	return (!size);
+}
+
+static char		disc_cnf[2048 + 1];
+static uint8_t	disc_exe[2048];
+
+#define	LE32(p)	((p)[0] | ((p)[1] << 8) | ((p)[2] << 16) | ((p)[3] << 24))
+
+// ISO 9660 name (with or without ";1", "NAME." for no extension) against a path part, case not significant
+static bool	CD_NameMatch(const uint8_t *name, int name_len, const char *part, int len)
+{
+	int		i;
+
+	for (i = 0; (i < name_len) && (name[i] != ';'); i++)
+		;
+	if (i && (name[i - 1] == '.'))
+		i--;
+	name_len = i;
+	for (i = 0; (i < len) && (part[i] != ';'); i++)
+		;
+	if (i != name_len)
 		return (false);
+	while (i--)
+		if ((name[i] | 0x20) != (part[i] | 0x20))
+			return (false);
+	return (true);
+}
+
+// File of the disc ("cdrom:\DIR\NAME.EXT;1"): its first sector and size, found in the directories (no BIOS CD driver:
+// it retried a read error forever, the menu hung). Returns -1 if the disc can't be read, 0 if the file isn't there.
+static int	CD_FindFile(const char *path, uint32_t *size)
+{
+	uint8_t		*sec = disc_exe, *r;
+	const char	*end;
+	uint32_t	dir_size, off;
+	int			lba, len, i;
+	bool		found;
+
+	if (!strncmp(path, "cdrom:", 6))
+		path += 6;
+	if (!CD_ReadSectors(16, sec, 2048) || memcmp(sec + 1, "CD001", 5))	// Primary volume descriptor
+		return (-1);
+	lba = LE32(sec + 156 + 2);	// Root directory
+	dir_size = LE32(sec + 156 + 10);
+	for (;;)
+	{
+		while ((*path == '\\') || (*path == '/'))
+			path++;
+		for (end = path; *end && (*end != '\\') && (*end != '/'); end++)
+			;
+		if (!(len = end - path))
+			return (0);
+		for (found = false, off = 0; !found && (off < dir_size); off += 2048)
+		{
+			if (!CD_ReadSectors(lba + off / 2048, sec, 2048))
+				return (-1);
+			for (i = 0; (i + 33 < 2048) && sec[i] && (i + sec[i] <= 2048); i += sec[i])	// (records don't cross sectors)
+			{
+				r = sec + i;
+				if ((33 + r[32] <= r[0]) && CD_NameMatch(r + 33, r[32], path, len))
+				{
+					lba = LE32(r + 2);
+					dir_size = LE32(r + 10);
+					found = true;
+					break;
+				}
+			}
+		}
+		if (!found)
+			return (0);
+		if (!*end)
+		{
+			*size = dir_size;
+			return (lba);
+		}
+		path = end;
+	}
+}
+
+void	BootDisc(void)
+{
+	struct EXEC			exe;
+	char				boot[64], *p;
+	uint32_t			tcb, event, stack, size, file_size;
+	int					lba, n, i;
+
+	PrintConsole("Booting the disc...");
+	CD_Unlock();
+
+	// SYSTEM.CNF, or PSX.EXE without it (BIOS defaults). The disc is read while the menu goes on (each read polled with
+	// interrupts disabled): a failure only shows a message.
+	strcpy(boot, "cdrom:PSX.EXE;1");
+	tcb = 4;
+	event = 16;
+	stack = 0x801FFF00;
+	memset(disc_cnf, 0, sizeof(disc_cnf));
+	if ((lba = CD_FindFile("SYSTEM.CNF;1", &file_size)) < 0)
+	{
+		PrintConsole("No disc, or it can't be read");
+		return;
+	}
+	if (lba)
+	{
+		if (!CD_ReadSectors(lba, (uint8_t *)disc_cnf, (file_size < 2048) ? file_size : 2048))
+		{
+			PrintConsole("Can't read SYSTEM.CNF");
+			return;
+		}
+		if ((p = CnfValue(disc_cnf, "BOOT")))
+		{
+			for (i = 0; (i < sizeof(boot) - 1) && (p[i] > ' '); i++)
+				boot[i] = p[i];
+			boot[i] = 0;
+		}
+		tcb = CnfHex(disc_cnf, "TCB", tcb);
+		event = CnfHex(disc_cnf, "EVENT", event);
+		stack = CnfHex(disc_cnf, "STACK", stack);
 	}
 
-	CdCommand(0x50, NULL, 0, NULL);
-	CdSync(0, NULL);
-	CdCommand(0x51, "Licensed by", 11, NULL);
-	CdSync(0, NULL);
-	CdCommand(0x52, "Sony", 4, NULL);
-	CdSync(0, NULL);
-	CdCommand(0x53, "Computer", 8, NULL);
-	CdSync(0, NULL);
-	CdCommand(0x54, "Entertainment", 13, NULL);
-	CdSync(0, NULL);
-	CdCommand(0x55, cd_region_unlock[i], strlen(cd_region_unlock[i]), NULL);
-	CdSync(0, NULL);
-	CdCommand(0x56, NULL, 0, NULL);
-	CdSync(0, NULL);
+	// The PS-X EXE: header (load address and size), then the program under the firmware, free RAM cleared
+	if ((lba = CD_FindFile(boot, &file_size)) <= 0)
+	{
+		PrintConsole(lba ? "Executable not on the disc" : "No disc, or it can't be read");
+		return;
+	}
+	n = (file_size > 2048) && CD_ReadSectors(lba, disc_exe, 2048);
+	memcpy(&exe, disc_exe + 0x10, sizeof(exe));
+	size = exe.t_size;
+	if (n && (size > file_size - 2048))	// (header bigger than the file)
+		size = file_size - 2048;
+	if (!n || memcmp(disc_exe, "PS-X EXE", 8) || (exe.t_addr < 0x80010000) || (exe.t_addr + size > DISC_EXE_TOP))
+	{
+		PrintConsole(!n ? "Can't read the executable" : memcmp(disc_exe, "PS-X EXE", 8) ? "Not a PS-X EXE" :
+			"Executable over the firmware");
+		return;
+	}
+	memset((void *)0x80010000, 0, DISC_EXE_TOP - 0x80010000);
+	if (!CD_ReadSectors(lba + 1, (uint8_t *)exe.t_addr, size))
+	{
+		PrintConsole("Can't read the executable");
+		return;
+	}
 
-	return (true);
+	// PSn00bSDK's interrupt handlers removed (as for a program executed), kernel set up as SYSTEM.CNF asks (as the
+	// BIOS does: it re-enables interrupts)
+	DrawSync(0);
+	PadStop();
+	StopCallback();
+	EnterCriticalSection();
+	IRQ_STAT = 0;
+	SetConf(event, tcb, stack);
+
+	// The stack of SYSTEM.CNF (as the BIOS does), the kernel hook enabled with the BIOS TTY device kept
+	exe.s_addr = stack;
+	exe.s_size = 0;
+	ProfFillRam(false);
+	kernel_hook_params->tty_mode = EXEC_TTY_MODE_BIOS;
+	kernel_hook_params->is_enabled = true;
+
+	EnterCriticalSection();
+	FlushCache();
+	Exec(&exe, 1, NULL);
 }
 
 /****************************************/
@@ -334,6 +694,7 @@ int main(void)
 	bool	usb_ok;
 	RECT	vram = {0, 0, 1024, 512};
 	uint32_t	pad;
+	int		boot_hold = 0;	// Start + Select held since this VSync count + 1, -1 until released
 
 	// PSn00bSDK: ResetGraph() (in InitDisplay) calls ResetCallback() and installs its VBlank/DMA handlers only if the
 	// callbacks were not set up yet: with ResetCallback() called first (PsyQ order), VSync() would never return
@@ -355,7 +716,7 @@ int main(void)
 	ExitCriticalSection();
 	kernel_hook_params->usb_packet_log2 = USB_BIG_PACKET_LOG2;	// Tells ps1transfer that big packets can be used
 	// Memory/VRAM access while a program runs, device ID, big packets also while a program runs
-	kernel_hook_params->features = FEATURE_LIVE_ACCESS | FEATURE_DEVICE_ID | FEATURE_HOOK_BIG_PACKETS;
+	kernel_hook_params->features = FEATURE_LIVE_ACCESS | FEATURE_DEVICE_ID | FEATURE_HOOK_BIG_PACKETS | FEATURE_BOOT_DISC;
 
 	// Save entire VRAM in RAM at boot (so the computer can download VRAM data)
 	StoreImage(&vram, (uint32_t *)0x80020000);
@@ -385,7 +746,7 @@ int main(void)
 
 	InitConsole();
 
-	// Enable CD IRQs
+	// Enable CD IRQs (with X held, for CdInit() below)
 	// Otherwise they are not enabled after CdInit() which will hang
 	// and timeout the first CD command but they will be enabled afterwards
 	// Intended behaviour? Or bug?
@@ -393,33 +754,45 @@ int main(void)
 	// For registers details and alternative implementation, see:
 	// https://problemkaputt.de/psx-spx.htm#cdromcontrollerioports
 	// https://github.com/Lameguy64/PSn00bSDK/blob/702bb601fb5712e2ae962a34b89204c646fe98f5/libpsn00b/psxcd/common.c#L217
+	// Only then: no handler acknowledges the drive otherwise, an answer it gives after the boot (e.g. a disc it can't
+	// read on a locked drive, after a power on) could interrupt the menu forever
 	*((volatile uint8_t *)0x1F801800) = 1;	// Index Register
-	*((volatile uint8_t *)0x1F801803) = 7;	// Interrupt Flag Register
-	*((volatile uint8_t *)0x1F801802) = 7;	// Interrupt Enable Register
+	*((volatile uint8_t *)0x1F801803) = 0x1F;	// Interrupt Flag Register
+	*((volatile uint8_t *)0x1F801802) = 0;	// Interrupt Enable Register
+	IRQ_STAT = ~(1 << 2);
 
 	pad = PadRead(1);
-	if (pad & (PADRdown | PADRright))	// X = Init CD
+	if (pad & PADRdown)	// X = Init CD
 	{
-/*
-		// I couldn't make this work
-		if (pad & PADRright)			// O = Unlock CD
-		{
-			PrintConsole("Unlocking CD drive...");
-			CdInit();
-			CD_Unlock();
-		}
-*/
+		*((volatile uint8_t *)0x1F801802) = 7;	// Interrupt Enable Register
 		PrintConsole("Initializing CD...");
 		CdInit();
 		PrintConsole("CD ready!");
 	}
 
+	PrintConsole("START + SELECT: boot the disc");
 	usb_ok = PrintUSBStatus();
 
 	Init_CRC8();	// Copy CRC8 lookup table in Data Cache
 	while (1)
 	{
 		int		ret;
+
+		// Start + Select held half a second: the disc is booted (again after a failure only once released). All the
+		// buttons "pressed" is a bad read: the boot started by itself with a single read.
+		pad = PadRead(1) & 0xFFFF;
+		if (((pad & (PADstart | PADselect)) == (PADstart | PADselect)) && (pad != 0xFFFF))
+		{
+			if (!boot_hold)
+				boot_hold = VSync(-1) + 1;
+			else if ((boot_hold > 0) && (VSync(-1) + 1 - boot_hold >= 30))
+			{
+				BootDisc();
+				boot_hold = -1;
+			}
+		}
+		else
+			boot_hold = 0;
 
 		// Handle USB cable plug/unplug status
 		if (!usb_ok)
@@ -432,15 +805,6 @@ int main(void)
 			if (USB_STATUS & USB_STATUS_MASK_USB_READY)
 				usb_ok = PrintUSBStatus();
 		}
-
-/*		// This is only to test the ExceptionHandler crash screen
-		if (pad & PADRdown)
-		{
-			asm("lui $v0,0x8001");
-			asm("addiu $v0,0x0001");
-			asm("lw $v0,0($v0)");
-		}
-*/
 
 		if (usb_ok)
 		{
@@ -458,6 +822,10 @@ int main(void)
 
 				case USB_STATE_OK:
 					PrintConsole("Transfer Successful !");
+				break;
+
+				case USB_STATE_BOOT_DISC:	// ps1transfer -bootcd
+					BootDisc();
 				break;
 			}
 		}

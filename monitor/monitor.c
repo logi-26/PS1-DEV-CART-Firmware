@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "monitor.h"
+#include "common/psxlibc/device.h"		// (nugget: the BIOS File and Device structures)
+#include "../kernel_hook/siotty.h"
 
 #define	MON_STR(_x_)	#_x_
 #define	MON_XSTR(_x_)	MON_STR(_x_)
@@ -35,6 +37,17 @@ bool	USB_SendData(volatile uint8_t *ptr, uint32_t size, uint32_t packet_size);
 bool	USB_GetData(volatile uint8_t *ptr, uint32_t size, uint32_t packet_size);
 void	ResetPS1(void);
 extern MonitorState	mon_state;
+extern SioBuffers	sio_buf;				// Serial port / USB link tty driver: its buffers and state (kernel_hook/siotty.h)
+extern SioState		sio_state;
+extern bool			is_sio_tty_enabled;
+void	ReplaceTTY(struct Device *dev);
+int		USB_tty_dummy(void);
+_Static_assert(offsetof(MonitorState, pad_buf) == MON_STATE_PAD_BUF, "MON_STATE_PAD_BUF");
+_Static_assert(offsetof(MonitorState, pad_orig) == MON_STATE_PAD_ORIG, "MON_STATE_PAD_ORIG");
+_Static_assert(offsetof(MonitorState, prof_draw) == MON_STATE_PAD_BUF2, "MON_STATE_PAD_BUF2 (pad_buf2 reuses prof_draw)");
+_Static_assert(sizeof(MonitorState) <= 0x70, "MonitorState: bigger than its place in the kernel hook RAM");
+_Static_assert(offsetof(MonitorState, ram_lo) == MON_STATE_PAD_DEVICE, "MON_STATE_PAD_DEVICE");
+_Static_assert(sizeof(PadDevice) <= offsetof(MonitorState, prof_call) - offsetof(MonitorState, ram_lo), "PadDevice");
 
 #define	TTY_MODE			(*((volatile uint8_t *)0x8000DF71))	// KernelHookParams.tty_mode (EXEC_DEBUG)
 #define	MAX_PACKET_SIZE		16384	// HOOK_PACKET_SIZE of usb.h (FEATURE_HOOK_BIG_PACKETS)
@@ -275,6 +288,24 @@ static bool	PacketEnd(uint8_t crc, bool *ok)
 	return (ack == 'N');
 }
 
+// The GPU's DMA finished, then a GPUSTAT bit set (26: ready for a command, 27: VRAM data ready), polled a limited
+// number of times (about a second from the flash): a GPU that never gets ready (e.g. a program's bad primitive) makes
+// the command fail (the computer sees an error), instead of hanging the console with its interrupts off
+#define	GPU_WAIT		400000
+
+static bool	GpuReady(uint32_t stat_bit)
+{
+	uint32_t	n;
+
+	for (n = 0; DMA_CHCR(2) & (1 << 24); n++)
+		if (n > GPU_WAIT)
+			return (false);
+	for (n = 0; !(GPU_STAT & stat_bit); n++)
+		if (n > GPU_WAIT)
+			return (false);
+	return (true);
+}
+
 // VRAM read ('V', screenshot): one packet per line, read from the GPU while it is sent (monitor version 2: the kernel
 // hook doesn't have it any more, the computer uses the 'M' service while the program runs)
 static bool	VramRead(uint32_t xy, uint32_t wh)
@@ -285,15 +316,13 @@ static bool	VramRead(uint32_t xy, uint32_t wh)
 
 	while (h && ok)
 	{
-		while (DMA_CHCR(2) & (1 << 24))		// GPU DMA (e.g. ordering table being drawn) finished
-			;
-		while (!(GPU_STAT & (1 << 26)))		// GPU ready for a command
-			;
+		if (!GpuReady(1 << 26))				// GPU DMA (e.g. ordering table being drawn) finished, ready
+			return (false);
 		GP0 = 0xC0000000;					// Copy rectangle VRAM to CPU
 		GP0 = (y << 16) | x;
 		GP0 = (1 << 16) | w;
-		while (!(GPU_STAT & (1 << 27)))		// VRAM data ready
-			;
+		if (!GpuReady(1 << 27))				// VRAM data ready
+			return (false);
 		crc = 0xFF;
 		for (i = 0; i < w * 2; i++)
 		{
@@ -323,10 +352,8 @@ static bool	VramWrite(uint32_t xy, uint32_t wh)
 	while (h && ok)
 	{
 		n = (h > MON_VRAM_LINES(w)) ? MON_VRAM_LINES(w) : h;
-		while (DMA_CHCR(2) & (1 << 24))		// GPU DMA (e.g. ordering table being drawn) finished
-			;
-		while (!(GPU_STAT & (1 << 26)))		// GPU ready for a command
-			;
+		if (!GpuReady(1 << 26))				// GPU DMA (e.g. ordering table being drawn) finished, ready
+			return (false);
 		GP0 = 0xA0000000;					// Copy rectangle CPU to VRAM
 		GP0 = (y << 16) | x;
 		GP0 = (n << 16) | w;
@@ -402,6 +429,102 @@ static bool	SpuWrite(uint32_t adrs, uint32_t size)
 		}
 	}
 	SPU_CNT = cnt;
+	return (ok);
+}
+
+#define	DMA_MADR(_ch_)	(*((volatile uint32_t *)(0x1F801080 + (_ch_) * 16)))
+#define	DMA_BCR(_ch_)	(*((volatile uint32_t *)(0x1F801084 + (_ch_) * 16)))
+#define	DMA_DPCR		(*((volatile uint32_t *)0x1F8010F0))
+#define	DMA_DICR		(*((volatile uint32_t *)0x1F8010F4))
+#define	SPU_DTC			(*((volatile uint16_t *)0x1F801DAC))
+#define	SPU_REGS		((volatile uint16_t *)0x1F801C00)
+#define	SPU_CHUNK		56		// Bytes kept per DMA of one 16-word block (the SPU FIFO): each block read gives first a
+#define	SPU_STALE		2		// stale halfword, then 31 of the address set; 56: the next one on an 8-byte address
+#define	DICR_SPU_IRQ	(1 << 20)
+#define	DICR_SPU_FLAG	(1 << 28)
+
+extern uint32_t	mon_stack[];	// Kernel hook: the monitor's stack (its bottom is the SPU DMA buffer, see SpuRead)
+
+static void	SpuMode(uint16_t cnt, uint16_t mode)
+{
+	SPU_CNT = (cnt & ~0x30) | mode;
+	while ((SPU_STAT & 0x30) != mode)
+		;
+}
+
+// SPU RAM read (MON_CMD_SPU_READ): the SPU has no manual read, only DMA, done by chunks of 56 bytes (a 16-word block
+// read, its first halfword stale) into the bottom 64 bytes of the kernel hook's monitor stack (free: the 'M' service doesn't run on it, the loop of a stopped program uses its
+// top 230 bytes; the profiler's sampler there doesn't run with a USB command). The program's SPU and DMA settings are
+// restored, its DMA interrupt isn't triggered. adrs MON_SPU_REGS: the SPU registers instead (16-bit reads).
+static bool	SpuRead(uint32_t adrs, uint32_t size)
+{
+	volatile uint8_t	*buf = (volatile uint8_t *)mon_stack, *data = buf;
+	uint16_t			cnt = SPU_CNT, dtc = SPU_DTC, start = SPU_ADDR, v;
+	uint32_t			dpcr = DMA_DPCR, dicr = DMA_DICR, n, pos, i;
+	uint8_t				crc;
+	bool				regs = (adrs == MON_SPU_REGS), ok = true;
+
+	if (!regs)
+	{
+		while (DMA_CHCR(4) & (1 << 24))		// The program's SPU DMA finished
+			;
+		while (SPU_STAT & (1 << 10))
+			;
+		DMA_DICR = (dicr & 0x00FF7FFF) & ~DICR_SPU_IRQ;	// (flags kept: 0 written)
+		DMA_DPCR = dpcr | (8 << 16) | ((dpcr & (8 << 16)) ? 0 : (3 << 16));	// Channel 4 on
+		SPU_DTC = 4;
+		data = buf + SPU_STALE;
+	}
+	for (pos = 0; (pos < size) && ok; )
+	{
+		n = ((size - pos) > MON_SPU_PACKET) ? MON_SPU_PACKET : (size - pos);
+		crc = 0xFF;
+		for (i = 0; i < n; i++)
+		{
+			if (!(i % SPU_CHUNK))
+			{
+				if (regs)
+				{
+					for (v = 0; v < SPU_CHUNK / 2; v++)		// (0x1F801DA8: the transfer FIFO, not read)
+					{
+						uint32_t	r = (pos + i) / 2 + v;
+						uint16_t	value = ((r == (0x1DA8 - 0x1C00) / 2) || (r >= MON_SPU_REGS_SIZE / 2)) ? 0 : SPU_REGS[r];
+
+						buf[v * 2] = value;
+						buf[v * 2 + 1] = value >> 8;
+					}
+				}
+				else
+				{
+					SpuMode(cnt, 0);
+					SPU_ADDR = (adrs + pos + i) >> 3;
+					SpuMode(cnt, 0x30);				// DMA read
+					DMA_MADR(4) = (uint32_t)buf & 0xFFFFFF;
+					DMA_BCR(4) = (1 << 16) | 16;
+					DMA_CHCR(4) = 0x01000200;		// SPU to RAM, by blocks, start
+					while (DMA_CHCR(4) & (1 << 24))
+						;
+				}
+			}
+			crc = crc8_tab[crc ^ data[i % SPU_CHUNK]];
+			if (!USB_SendByteTimeout(data[i % SPU_CHUNK], TIMEOUT_CNT))
+			{
+				ok = false;
+				break;
+			}
+		}
+		if (ok && PacketEnd(crc, &ok))
+			pos += n;
+	}
+	if (!regs)
+	{
+		SpuMode(cnt, 0);
+		SPU_ADDR = start;
+		SPU_DTC = dtc;
+		SPU_CNT = cnt;
+		DMA_DPCR = dpcr;
+		DMA_DICR = (dicr & 0x00FFFFFF) | ((dicr & DICR_SPU_FLAG) ? 0 : DICR_SPU_FLAG);	// Our DMA's flag cleared
+	}
 	return (ok);
 }
 
@@ -672,14 +795,530 @@ static void	ProfSetVector(bool on)
 	FlushCache();
 }
 
+// MON_CMD_GPU_INFO: the drawing state of the GPU (GP1 10h: the answer in GPUREAD), for the frame capture
+static void	GpuInfo(void)
+{
+	static const uint8_t	which[4] = {3, 4, 5, 7};	// Draw area top left, bottom right, offset, version
+	uint32_t				info[4];
+	int						i;
+
+	for (i = 0; i < 4; i++)
+	{
+		GP1 = 0x10000000 | which[i];
+		info[i] = GP0;		// (GPUREAD)
+	}
+	USB_SendData((uint8_t *)info, sizeof(info), MAX_PACKET_SIZE);
+}
+
+/****************************************/
+// Serial port (SIO) / USB link TTY driver ("ps1transfer -c sio" / "-c link"), see kernel_hook/siotty.h: moved here
+// from the kernel hook (room in the kernel area). Its state (sio_state) and buffers (sio_buf) are in the kernel hook
+// RAM; the BIOS calls these functions (its tty device) from the program, the kernel hook at each exception.
+
+#define	SIO_DATA	*((volatile uint8_t *)0x1F801050)
+#define	SIO_STAT	*((volatile uint16_t *)0x1F801054)
+#define	SIO_MODE	*((volatile uint16_t *)0x1F801058)
+#define	SIO_CTRL	*((volatile uint16_t *)0x1F80105A)
+#define	SIO_BAUD	*((volatile uint16_t *)0x1F80105E)
+
+#define	SIO_STAT_TX_READY	(1 << 0)
+#define	SIO_STAT_RX_READY	(1 << 1)
+#define	SIO_STAT_RX_ERRORS	((1 << 3) | (1 << 4) | (1 << 5))	// Parity, overrun, framing
+#define	SIO_STAT_DSR		(1 << 7)
+#define	SIO_STAT_CTS		(1 << 8)
+
+#define	SIO_CTRL_TX_ENABLE	(1 << 0)
+#define	SIO_CTRL_DTR		(1 << 1)
+#define	SIO_CTRL_RX_ENABLE	(1 << 2)
+#define	SIO_CTRL_ACK		(1 << 4)
+#define	SIO_CTRL_RTS		(1 << 5)	// The other console can only send when its CTS (our RTS) is on
+#define	SIO_CTRL_RESET		(1 << 6)
+
+#define	SIO_MODE_STOP_MASK	(3 << 6)	// 1:1 2:1.5 3:2 stop bits
+#define	SIO_MODE_PARITY_MASK	(3 << 4)	// bit 4: enable, bit 5: odd
+#define	SIO_MODE_CHAR_MASK	(3 << 2)	// 0:5 1:6 2:7 3:8 bits
+#define	SIO_MODE_DEFAULT	((1 << 6) | (3 << 2) | 2)	// 8N1, baud rate factor x16
+
+#define	SIO_CLOCK			(33868800 / 16)
+#define	GPU_STAT_ODD_LINE	(1 << 31)	// 0 during the vertical blank (and on even lines)
+#define	SIO_TX_TIMEOUT		3000	// Avoid freezing printf when nothing is connected (CTS off): about 0.1 s (the loop runs from
+								// flash, ~35x slower than the 100000 of the driver in RAM)
+#define	USB_STATUS_MASK_USB_READY	(1 << 2)
+
+// ioctl commands, same values as Net Yaroze and PsyQ <sys/ioctl.h>
+#define	FIOCNBLOCK	(('f' << 8) | 1)	// set non-blocking io
+#define	FIOCSCAN	(('f' << 8) | 2)	// scan for input
+#define	TIOCRAW		(('t' << 8) | 1)	// disable xon/xoff control (and '\n' -> "\r\n" here)
+#define	TIOCFLUSH	(('t' << 8) | 2)	// flush input buffer
+#define	TIOCREOPEN	(('t' << 8) | 3)	// reopen
+#define	TIOCBAUD	(('t' << 8) | 4)	// set baud rate
+#define	TIOCDTR		(('t' << 8) | 6)	// control DTR line
+#define	TIOCRTS		(('t' << 8) | 7)	// control RTS line
+#define	TIOCLEN		(('t' << 8) | 8)	// stop << 16 | char
+#define	TIOCPARITY	(('t' << 8) | 9)	// parity 0:none 1:even 3:odd
+#define	TIOSTATUS	(('t' << 8) | 10)	// return status
+#define	TIOERRRST	(('t' << 8) | 11)	// error reset
+#define	TIOEXIST	(('t' << 8) | 12)	// exist test with DSR/CTS
+#define	TIORLEN		(('t' << 8) | 13)	// receive buffer length
+
+#define	SIO_EINVAL	22
+
+#define	SIO_rx_buffer		sio_buf.rx_buffer
+#define	SIO_rx_head			sio_buf.rx_head		// Head is only written by SIO_Poll (or the computer), tail by the reader
+#define	SIO_rx_tail			sio_buf.rx_tail
+#define	SIO_RX_HEAD			(sio_buf.rx_head & (SIO_RX_BUFFER_SIZE - 1))	// Read masked: a bad value from the computer
+																		// (e.g. a transfer cut off) can't loop read()
+
+static void	SIO_Delay(void)
+{
+	volatile int	i;
+
+	for (i = 0; i < 1500; i++)
+		;
+}
+
+// Reset the serial port with the current settings (received data are lost)
+static __attribute__((noinline)) int	SIO_Init(void)
+{
+	if (sio_state.link)	// USB link: the computer writes rx_head, received data are dropped
+	{
+		SIO_rx_tail = SIO_RX_HEAD;
+		sio_buf.rx_unit_tail = sio_buf.rx_unit_head & (LINK_UNITS - 1);
+		sio_state.link_allow = 0;
+		return (0);
+	}
+	SIO_CTRL = SIO_CTRL_RESET | SIO_CTRL_ACK;
+	SIO_Delay();
+	SIO_BAUD = SIO_CLOCK / sio_state.baud;
+	SIO_MODE = sio_state.mode;
+	SIO_CTRL = sio_state.ctrl;
+	SIO_rx_head = SIO_rx_tail = 0;
+	return (0);
+}
+
+// Move received bytes from the 8 bytes hardware FIFO to the receive buffer
+static __attribute__((noinline)) void	SIO_Poll(void)
+{
+	uint16_t	stat;
+	uint32_t	next;
+	uint8_t		c;
+
+	if (sio_state.link)
+		return;
+	while ((stat = SIO_STAT) & (SIO_STAT_RX_READY | SIO_STAT_RX_ERRORS))
+	{
+		if (stat & SIO_STAT_RX_READY)
+		{
+			c = SIO_DATA;
+			next = (SIO_rx_head + 1) & (SIO_RX_BUFFER_SIZE - 1);
+			if (next != SIO_rx_tail)	// Byte is dropped if the buffer is full
+			{
+				SIO_rx_buffer[SIO_rx_head] = c;
+				SIO_rx_head = next;
+			}
+		}
+		if (stat & SIO_STAT_RX_ERRORS)
+			SIO_CTRL = sio_state.ctrl | SIO_CTRL_ACK;
+	}
+}
+
+static uint32_t	SIO_RxLength(void)
+{
+	uint32_t	n = (SIO_RX_HEAD - SIO_rx_tail) & (SIO_RX_BUFFER_SIZE - 1);
+
+	return ((sio_state.link && (n > sio_state.link_allow)) ? sio_state.link_allow : n);
+}
+
+// USB link: the open unit is closed if the unit ring has room (else it grows with the next writes)
+static void	LINK_CloseUnit(void)
+{
+	uint32_t	next = (sio_buf.tx_unit_head + 1) & (LINK_UNITS - 1);
+
+	if (sio_state.link_open && (next != (sio_buf.tx_unit_tail & (LINK_UNITS - 1))))
+	{
+		sio_buf.tx_unit_head = next;
+		sio_state.link_open = false;
+	}
+}
+
+// USB link, at each run of the kernel hook: frames counted at the vertical blanks
+static void	LINK_Tick(void)
+{
+	if (!(GPU_STAT & GPU_STAT_ODD_LINE))
+		sio_state.link_frame++;
+	LINK_CloseUnit();
+}
+
+// USB link, before a read: one more unit for the program in a new frame (more if the backlog grows)
+static void	LINK_Release(void)
+{
+	uint32_t	t = sio_buf.rx_unit_tail;
+
+	if (sio_state.link_released == sio_state.link_frame)
+		return;
+	while (t != (sio_buf.rx_unit_head & (LINK_UNITS - 1)))
+	{
+		sio_state.link_allow += sio_buf.rx_units[t];
+		t = (t + 1) & (LINK_UNITS - 1);
+		sio_state.link_released = sio_state.link_frame;
+		if (((sio_buf.rx_unit_head - t) & (LINK_UNITS - 1)) <= 1)
+			break;
+	}
+	sio_buf.rx_unit_tail = t;
+}
+
+static __attribute__((noinline)) bool	SIO_SendByte(uint8_t c)
+{
+	uint32_t	timeout = SIO_TX_TIMEOUT, next;
+
+	if (sio_state.link)	// USB link: byte dropped if the computer doesn't keep up
+	{
+		next = (sio_buf.tx_head + 1) & (LINK_TX_BUFFER_SIZE - 1);
+		if (next == (sio_buf.tx_tail & (LINK_TX_BUFFER_SIZE - 1)))
+			return (false);
+		sio_buf.tx_buffer[sio_buf.tx_head] = c;
+		sio_buf.tx_head = next;
+		return (true);
+	}
+	while (!(SIO_STAT & SIO_STAT_TX_READY))
+	{
+		SIO_Poll();
+		if (!(timeout--))
+			return (false);
+	}
+	SIO_DATA = c;
+	return (true);
+}
+
+// USB link: the kernel hook answers the computer only at some interrupts (about once per frame), so it also answers
+// at each read/write of the program (with interrupts off, like in the exception handler): lower latency
+static __attribute__((noinline)) void	LINK_Serve(void)
+{
+	uint32_t	sr;
+
+	__asm__ volatile("mfc0 %0, $12" : "=r"(sr));
+	__asm__ volatile("mtc0 %0, $12; nop; nop" : : "r"(sr & ~1));
+	if (!(USB_STATUS & USB_STATUS_MASK_USB_READY))
+		USB_Process(0, 0, NULL, 0, NULL);
+	__asm__ volatile("mtc0 %0, $12; nop; nop" : : "r"(sr));
+}
+
+static int	SIO_tty_open(struct File *file, const char *filename, int mode)
+{
+	return (0);
+}
+
+static int	SIO_tty_action(struct File *file, enum FileAction action)
+{
+	volatile uint8_t	*buf8 = (volatile uint8_t *)file->buffer;
+	uint32_t			i = 0, tx_start = sio_buf.tx_head;
+	bool				serve = sio_state.link;
+
+	// USB link: the computer is answered when a read finds no more bytes (bytes arriving now are read at once; a
+	// blocking read waits for them this way) and after a write (bytes written now leave at once)
+	sio_state.busy = true;
+	if (action == PSXWRITE)
+	{
+		for (; i < file->count; i++)
+		{
+			if (!sio_state.raw && (buf8[i] == '\n') && !SIO_SendByte('\r'))
+				break;
+			if (!SIO_SendByte(buf8[i]))
+				break;
+		}
+	}
+	else
+	{
+		while (i < file->count)
+		{
+			SIO_Poll();
+			if ((SIO_rx_tail != SIO_RX_HEAD) && (!sio_state.link || sio_state.link_allow))
+			{
+				buf8[i++] = SIO_rx_buffer[SIO_rx_tail];
+				SIO_rx_tail = (SIO_rx_tail + 1) & (SIO_RX_BUFFER_SIZE - 1);
+				if (sio_state.link)
+					sio_state.link_allow--;
+			}
+			else if (serve)		// (once for a non-blocking read, until it has its bytes for a blocking one)
+			{
+				LINK_Serve();
+				LINK_Release();
+				serve = !(file->flags & PSXF_NBLOCK);
+			}
+			else if (file->flags & PSXF_NBLOCK)
+				break;
+		}
+	}
+	sio_state.busy = false;
+	if (sio_state.link && (action == PSXWRITE))
+	{
+		// The bytes written are a unit, closed at once (or at the next vertical blank if the unit ring is full).
+		// Units are given by their end position: the bytes put in the buffer (a '\r' is added before each '\n' when
+		// not raw) always match.
+		if (sio_buf.tx_head != tx_start)
+		{
+			sio_buf.tx_units[sio_buf.tx_unit_head] = sio_buf.tx_head;
+			sio_state.link_open = true;
+			LINK_CloseUnit();
+		}
+		LINK_Serve();
+	}
+
+	return (i);
+}
+
+static int	SIO_tty_ioctl(struct File *file, int cmd, int arg)
+{
+	int	ret = 0, len;
+
+	sio_state.busy = true;
+	switch (cmd)
+	{
+		case FIOCNBLOCK:
+			if (arg)
+				file->flags |= PSXF_NBLOCK;
+			else
+				file->flags &= ~PSXF_NBLOCK;
+		break;
+
+		case FIOCSCAN:
+		case TIORLEN:
+			SIO_Poll();
+			ret = SIO_RxLength();
+		break;
+
+		case TIOCRAW:
+			sio_state.raw = (arg != 0);
+		break;
+
+		case TIOCFLUSH:
+			SIO_Poll();
+			SIO_rx_tail = SIO_RX_HEAD;
+		break;
+
+		case TIOCREOPEN:
+			SIO_Init();
+		break;
+
+		case TIOCBAUD:
+			if (arg <= 0)
+				goto error;
+			sio_state.baud = arg;
+			SIO_Init();
+		break;
+
+		case TIOCDTR:
+		case TIOCRTS:
+			if (arg)
+				sio_state.ctrl |= (cmd == TIOCDTR) ? SIO_CTRL_DTR : SIO_CTRL_RTS;
+			else
+				sio_state.ctrl &= ~((cmd == TIOCDTR) ? SIO_CTRL_DTR : SIO_CTRL_RTS);
+			SIO_CTRL = sio_state.ctrl;
+		break;
+
+		case TIOCLEN:	// Char length is accepted as 0..3 (documented) or 5..8 (number of bits)
+			len = arg & 0xF;
+			if (len >= 5)
+				len -= 5;
+			if (len > 3)
+				goto error;
+			sio_state.mode &= ~(SIO_MODE_STOP_MASK | SIO_MODE_CHAR_MASK);
+			sio_state.mode |= (len << 2) | ((((arg >> 16) & 3) ? ((arg >> 16) & 3) : 1) << 6);
+			SIO_Init();
+		break;
+
+		case TIOCPARITY:
+			sio_state.mode = (sio_state.mode & ~SIO_MODE_PARITY_MASK) | ((arg & 3) << 4);
+			SIO_Init();
+		break;
+
+		case TIOSTATUS:
+			ret = SIO_STAT;
+		break;
+
+		case TIOERRRST:
+			SIO_CTRL = sio_state.ctrl | SIO_CTRL_ACK;
+		break;
+
+		case TIOEXIST:
+			ret = (SIO_STAT & (SIO_STAT_DSR | SIO_STAT_CTS)) != 0;
+		break;
+
+		default:
+			goto error;
+	}
+	sio_state.busy = false;
+	return (ret);
+
+error:
+	sio_state.busy = false;
+	file->errno = SIO_EINVAL;
+	return (-1);
+}
+
+// The tty device (the BIOS copies it in its device table: it can be in flash)
+static const struct Device	SIO_tty_dev =
+{
+	"tty",
+	PSXDTTYPE_CHAR | PSXDTTYPE_CONS,
+	0,
+	"PS1 DEV CART SIO tty",
+	(device_init)SIO_Init,
+	SIO_tty_open,
+	SIO_tty_action,
+	(device_close)USB_tty_dummy,
+	SIO_tty_ioctl,
+	(device_read)USB_tty_dummy,
+	(device_write)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(device_firstFile)USB_tty_dummy,
+	(device_nextFile)USB_tty_dummy,
+	(device_format)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(device_deinit)USB_tty_dummy,
+	(void *)USB_tty_dummy
+};
+
+// MON_REASON_SIO_SETUP: the BIOS TTY device replaced by this driver (serial port, or USB link)
+static void	SioSetup(bool link)
+{
+	sio_state.link = link;
+	sio_state.baud = SIO_BAUD_DEFAULT;
+	sio_state.mode = SIO_MODE_DEFAULT;
+	sio_state.ctrl = SIO_CTRL_TX_ENABLE | SIO_CTRL_RX_ENABLE | SIO_CTRL_RTS;
+	SIO_Init();
+	ReplaceTTY((struct Device *)&SIO_tty_dev);
+	is_sio_tty_enabled = true;
+}
+
+// MON_REASON_SIO_UPDATE, at each exception: frames counted (USB link), the receive FIFO emptied
+static void	SioUpdate(void)
+{
+	if (sio_state.link)
+		LINK_Tick();
+	if (!sio_state.busy)
+		SIO_Poll();
+}
+
+/****************************************/
+// Remote pad (EXEC_PAD, see monitor.h): InitPAD of the program goes through PadInitHook (in flash), which keeps the
+// buffers of both ports and goes on to the BIOS InitPAD
+
+void	PadInitHook(void);
+__asm__(
+	".set push\n"
+	".set noreorder\n"
+	".text\n"
+	".global PadInitHook\n"
+	"PadInitHook:\n"
+	"	lui		$t0, %hi(mon_state)\n"
+	"	addiu	$t0, $t0, %lo(mon_state)\n"
+	"	sw		$a0, " MON_XSTR(MON_STATE_PAD_BUF) "($t0)\n"	// pad_buf: port 1
+	"	sw		$a2, " MON_XSTR(MON_STATE_PAD_BUF2) "($t0)\n"	// pad_buf2: port 2 (reuses prof_draw)
+	"	lw		$t0, " MON_XSTR(MON_STATE_PAD_ORIG) "($t0)\n"	// pad_orig: the BIOS InitPAD
+	"	nop\n"
+	"	jr		$t0\n"
+	"	nop\n"
+	".set pop\n"
+);
+
+static void	**B0Table(void)
+{
+	register volatile int n asm("t1") = 0x57;
+	__asm__ volatile("" : "=r"(n) : "r"(n));
+	return (((void **(*)(void))0xB0)());
+}
+
+// Before the program starts (firmware): InitPAD through PadInitHook, no button from the computer yet, port 1 driven
+static void	PadSetup(void)
+{
+	void		**b0 = B0Table();
+	uint32_t	n;
+
+	if (b0[0x12] != (void *)PadInitHook)
+		mon_state.pad_orig = (uint32_t)b0[0x12];
+	if (!mon_state.pad_orig)	// (the BIOS one is unknown: the program reads its pad as usual)
+		return;
+	b0[0x12] = (void *)PadInitHook;
+	mon_state.pad_buf = 0;
+	mon_state.prof_draw = 0;	// pad_buf2 (port 2), reused: not called yet
+	mon_state.prof_frames = 0;	// pad_port (reused): port 1 by default
+	for (n = 0; n < sizeof(PadDevice); n++)	// PadDevice (reused): a digital pad
+		((uint8_t *)&mon_state.ram_lo)[n] = 0;
+	mon_state.prof_seq = 0;
+	mon_state.prof_target = 0;
+	mon_state.prof_armed = PROF_ARMED_PAD;
+	mon_state.prof_on = 0xFF;	// (the kernel hook calls the monitor at each exception)
+}
+
+// At each exception: the buttons pressed from the computer added to the buffer of the port selected (pad_port, reuses
+// prof_frames) the BIOS fills (at the vertical blank); only one port is driven, the other keeps a real controller
+static int	PadClamp(int v)
+{
+	return ((v < -128) ? -128 : ((v > 127) ? 127 : v));
+}
+
+static void	PadOverride(void)
+{
+	volatile uint8_t	*buf = (volatile uint8_t *)(mon_state.prof_frames ? mon_state.prof_draw : mon_state.pad_buf);
+	PadDevice			*dev = (PadDevice *)&mon_state.ram_lo;
+	uint16_t			bits = mon_state.prof_target;
+	uint8_t				type = dev->type ? dev->type : PAD_DIGITAL;
+	bool				fresh;
+	int					i, dx, dy;
+
+	if (!buf || !(mon_state.prof_seq & 1))
+		return;
+	fresh = buf[0] || (buf[1] != type);		// Filled by the BIOS (a new frame) since our reply, or no device
+	if (type == PAD_DIGITAL)
+	{
+		if (fresh)							// No pad (or not a digital one): a digital pad, nothing pressed
+		{
+			buf[0] = 0;
+			buf[1] = PAD_DIGITAL;
+			buf[2] = buf[3] = 0xFF;
+		}
+		buf[2] &= ~(bits >> 8);				// Buttons active low: PsyQ bits = ~(buf[2] << 8 | buf[3])
+		buf[3] &= ~bits;
+		return;
+	}
+	buf[0] = 0;								// Another device: the whole reply
+	buf[1] = type;
+	buf[2] = ~(bits >> 8);
+	buf[3] = ~bits;
+	if (type == PAD_MOUSE)
+	{
+		if (fresh)							// The motion since the last frame, given once
+		{
+			dx = PadClamp((int16_t)(dev->mouse_x - dev->given_x));
+			dy = PadClamp((int16_t)(dev->mouse_y - dev->given_y));
+			dev->given_x += dx;
+			dev->given_y += dy;
+			buf[4] = dx;
+			buf[5] = dy;
+		}
+		return;
+	}
+	for (i = 0; i < 4; i++)
+		buf[4 + i] = dev->axes[i];
+}
+
 // Called by the kernel hook (monitor entry) when prof_armed asks for it: 0 set up, 2 the program uses the counter,
-// 3 stop (asked by the computer), 4 SPU voices and RAM scan
+// 3 stop (asked by the computer), 4 SPU voices and RAM scan; PROF_ARMED_PAD: remote pad
 static void	ProfSlow(uint32_t *regs)
 {
 	int			n = mon_state.prof_on - 1, i;
 	uint16_t	bit = 16 << n;
 	uint32_t	v, armed = mon_state.prof_armed;
 	uint8_t		p[PROF_VOICES_SIZE];
+
+	if (armed == PROF_ARMED_PAD)
+	{
+		PadOverride();
+		return;
+	}
 
 	if (!armed)		// Set up: the counter (unless the program uses its interrupt), the sampler in RAM
 	{
@@ -723,6 +1362,7 @@ static void	ProfSlow(uint32_t *regs)
 		return;
 	}
 	mon_state.prof_armed = 1;
+	mon_state.prof_gpustat = GPU_STAT;		// (video mode, read by the computer)
 
 	for (i = 0; i < 24; i++)
 	{
@@ -795,7 +1435,8 @@ static bool	MonReceive(bool wait)
 			return (false);
 	}
 	if ((cmd[0] != 'D') && (cmd[0] != 'U') && (cmd[0] != 'V') && (cmd[0] != 'R') && (cmd[0] != MON_CMD_CONTINUE) &&
-		(cmd[0] != MON_CMD_VRAM_WRITE) && (cmd[0] != MON_CMD_SPU_WRITE))
+		(cmd[0] != MON_CMD_VRAM_WRITE) && (cmd[0] != MON_CMD_SPU_WRITE) && (cmd[0] != MON_CMD_GPU_INFO) &&
+		(cmd[0] != MON_CMD_SPU_READ) && (cmd[0] != MON_CMD_EXCHANGE))
 		return (false);	// E.g. a pause byte sent while the program was stopping
 	for (i = 1; i < sizeof(cmd); i++)
 		if (!USB_GetByte(&cmd[i]))
@@ -820,6 +1461,14 @@ static bool	MonReceive(bool wait)
 		case 'U':	USB_GetData((uint8_t *)adrs, size, MAX_PACKET_SIZE);		break;
 		case MON_CMD_VRAM_WRITE:	VramWrite(adrs, size);						break;
 		case MON_CMD_SPU_WRITE:		SpuWrite(adrs, size);						break;
+		case MON_CMD_GPU_INFO:		GpuInfo();									break;
+		case MON_CMD_SPU_READ:		SpuRead(adrs, size);						break;
+		// USB link exchange (as the kernel hook's: write, then read what follows), also while the program is stopped:
+		// a relay run by the GDB server (-gdb -relay) whose exchange crosses a stop goes on
+		case MON_CMD_EXCHANGE:
+			if (USB_GetData((uint8_t *)adrs, size >> 16, MAX_PACKET_SIZE))
+				USB_SendData((uint8_t *)adrs + (size >> 16), size & 0xFFFF, MAX_PACKET_SIZE);
+		break;
 		case MON_CMD_CONTINUE:	return (true);
 	}
 	return (false);
@@ -854,6 +1503,21 @@ void	MonitorEntry(int reason, uint32_t *regs)
 	if (reason == MON_REASON_PROFILE)	// (first: called at each exception while profiling)
 	{
 		ProfSlow(regs);
+		return;
+	}
+	if (reason == MON_REASON_PAD_SETUP)
+	{
+		PadSetup();
+		return;
+	}
+	if (reason == MON_REASON_SIO_UPDATE)	// (at each exception with "-c sio" or "-c link")
+	{
+		SioUpdate();
+		return;
+	}
+	if (reason == MON_REASON_SIO_SETUP)
+	{
+		SioSetup(regs != NULL);
 		return;
 	}
 

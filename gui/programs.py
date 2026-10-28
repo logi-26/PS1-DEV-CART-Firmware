@@ -1,5 +1,5 @@
 """
-PS1 DEV CART GUI: the kinds of program files (Run and Netplay pages).
+PS1 DEV CART GUI: the kinds of program files (Run page).
 
 - "psx": a PS-X EXE (PSn00bSDK, PsyQ... also a Net Yaroze game converted with yarexe, which includes the library);
 - "ecoff": a Net Yaroze executable as the Net Yaroze compiler makes it (run with the library, ps1transfer -e -y);

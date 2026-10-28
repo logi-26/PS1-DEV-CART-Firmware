@@ -180,8 +180,9 @@ psexe:
 psexe_end:
 	.org	0x00010000
 	.incbin	"tim.tfs"
-	# Debug monitor, executed from the flash (see monitor/monitor.h MONITOR_ROM_ADRS)
-	.org	0x0001C800
+	# Debug monitor, executed from the flash (see monitor/monitor.h MONITOR_ROM_ADRS): after the menu images (they end
+	# at 0x18F6C), up to 0x1EF00 (24KB: the serial port tty driver moved from the kernel hook is in it)
+	.org	0x00019000
 	.incbin	"../monitor_rom.bin"
 	# The last 4KB flash sector (0x1F000) holds the device ID (erased and written by the menu, see ps1devcart.c): the
 	# build fails here ("attempt to move .org backwards") if the monitor reaches 0x1EF00, the assembler's own small

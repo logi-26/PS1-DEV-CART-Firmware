@@ -10,7 +10,7 @@ include ../../psn00b_tool.mk
 
 
 # "ps1transfer -flash" executes the flasher found next to ps1transfer (first, the CD image needs mkpsxiso)
-all: ../../ps1transfer/$(TARGET).ps-exe $(TARGET).bin $(TARGET).cue
+all: ../../ps1transfer/$(TARGET).ps-exe $(TARGET).bin $(TARGET).cue $(SHIPPED_ELF)
 
 ../../ps1transfer/$(TARGET).ps-exe: $(TARGET).ps-exe
 	cp $(TARGET).ps-exe ../../ps1transfer/$(TARGET).ps-exe
@@ -19,7 +19,7 @@ $(TARGET).bin $(TARGET).cue: $(TARGET).ps-exe $(TARGET).xml
 	mkpsxiso -y -q $(TARGET).xml
 
 clean:
-	rm -f $(OBJS) $(TARGET).elf $(TARGET).ps-exe $(TARGET).map $(TARGET).ld $(TARGET).bin $(TARGET).cue ../../ps1transfer/$(TARGET).ps-exe
+	rm -f $(OBJS) $(TARGET).elf $(TARGET).ps-exe $(TARGET).map $(TARGET).ld $(TARGET).bin $(TARGET).cue ../../ps1transfer/$(TARGET).ps-exe $(SHIPPED_ELF)
 
 
 .PHONY: all clean

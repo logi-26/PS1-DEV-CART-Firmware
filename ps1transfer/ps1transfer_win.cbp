@@ -58,6 +58,19 @@
 			<Option compilerVar="CC" />
 		</Unit>
 		<Unit filename="profiler.h" />
+		<Unit filename="memlive.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="mdllive.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="sndlive.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="timlive.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="timlive.h" />
 		<Unit filename="synthbridge.h" />
 		<Unit filename="usblink.c">
 			<Option compilerVar="CC" />

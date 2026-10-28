@@ -1,0 +1,9 @@
+node_modules/
+.vscode-test/
+*.vsix
+# copied from the rest of the repo by scripts/prepare-files.js
+template/
+tools/
+LICENSE
+ps1transfer/
+yaroze/toolchain-build/

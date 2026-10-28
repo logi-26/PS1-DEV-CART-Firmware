@@ -24,22 +24,24 @@ def parse_pcdrv(line):
 
 
 class ConsolePage(Page):
-    title = "Console"
+    title = "Console & File Server"
 
     def build(self):
-        tb.Label(self, text="Console", font=("", 16, "bold")).pack(anchor="w", pady=(0, 6))
-        tb.Label(self, text="printf of the running program. \"Attach\" connects to a program already running "
-                            "(started without the console), and also serves its PCDRV file requests.",
-                 wraplength=700, justify="left", bootstyle="secondary").pack(anchor="w", pady=(0, 8))
-        self.pcdrv = FileField(self, self.app, "console.pcdrv", "PCDRV folder", mode="dir")
-        self.pcdrv.pack(fill="x", pady=(0, 4))
-        self.any_path = tk.BooleanVar(value=self.app.settings.field("console.pcdrvany", False))
-        tb.Checkbutton(self, text="Let the PS1 open any file of this computer (not only the PCDRV folder)",
-                       variable=self.any_path, bootstyle="round-toggle",
-                       command=lambda: self.app.settings.set_field("console.pcdrvany", self.any_path.get())).pack(
-            anchor="w", pady=(0, 6))
+        tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))
+        tb.Label(self, text="The text the running program prints (top) and the files it opens on this computer (bottom). "
+                            "Both go through the same connection: \"Attach\" starts both, for a program already "
+                            "running. Run PSX, Run Yaroze and the viewers start it too when their console option is on.",
+                 wraplength=1000, justify="left", bootstyle="secondary").pack(anchor="w", pady=(0, 8))
 
-        bar = tb.Frame(self)
+        # The two features in a resizable split: the console above, the file server below
+        panes = tb.Panedwindow(self, orient="vertical")
+        panes.pack(fill="both", expand=True)
+        panes.add(self._build_console(panes), weight=3)
+        panes.add(self._build_files(panes), weight=2)
+
+    def _build_console(self, parent):
+        box = self.section("Console output (printf)", parent)
+        bar = tb.Frame(box)
         bar.pack(fill="x", pady=(0, 6))
         tb.Button(bar, text="Attach", bootstyle="success", command=self.attach).pack(side="left")
         tb.Button(bar, text="Stop", bootstyle="danger-outline", command=self.app.stop_task).pack(side="left", padx=6)
@@ -47,18 +49,22 @@ class ConsolePage(Page):
         tb.Button(bar, text="Save log...", bootstyle="secondary-outline", command=self.save).pack(side="left", padx=6)
         self.autoscroll = tk.BooleanVar(value=True)
         tb.Checkbutton(bar, text="Follow", variable=self.autoscroll, bootstyle="round-toggle").pack(side="right")
-
-        panes = tb.Panedwindow(self, orient="vertical")
-        panes.pack(fill="both", expand=True)
-        self.text = MonoText(panes, height=18)
-        panes.add(self.text, weight=3)
-        panes.add(self._build_files(panes), weight=1)
+        self.text = MonoText(box, height=12)
+        self.text.pack(fill="both", expand=True)
+        return box
 
     def _build_files(self, parent):
-        box = tb.Frame(parent)
+        box = self.section("PC file server (PCDRV): files the program opens on this computer", parent)
+        self.pcdrv = FileField(box, self.app, "console.pcdrv", "PCDRV folder", mode="dir")
+        self.pcdrv.pack(fill="x", pady=(0, 4))
+        self.any_path = tk.BooleanVar(value=self.app.settings.field("console.pcdrvany", False))
+        tb.Checkbutton(box, text="Let the PS1 open any file of this computer (not only the PCDRV folder)",
+                       variable=self.any_path, bootstyle="round-toggle",
+                       command=lambda: self.app.settings.set_field("console.pcdrvany", self.any_path.get())).pack(
+            anchor="w", pady=(0, 6))
         head = tb.Frame(box)
-        head.pack(fill="x", pady=(6, 2))
-        tb.Label(head, text="Files", font=("", 11, "bold")).pack(side="left")
+        head.pack(fill="x", pady=(2, 2))
+        tb.Label(head, text="Files", font=("", 10, "bold")).pack(side="left")
         self.files_status = tb.Label(head, text="", bootstyle="secondary")
         self.files_status.pack(side="left", padx=8)
         tb.Button(head, text="Clear", bootstyle="secondary-outline", command=self.files_clear).pack(side="right")

@@ -7,8 +7,8 @@
 
 #include "../usb.h"
 #include "ttyhook.h"
-#include "siotty.h"
 #include "debugmon.h"
+#include "siotty.h"
 
 bool	is_tty_enabled;
 

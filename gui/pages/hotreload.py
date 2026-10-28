@@ -32,10 +32,10 @@ def describe(path, target):
 
 
 class HotReloadPage(Page):
-    title = "Hot reload"
+    title = "Hot Reload"
 
     def build(self):
-        tb.Label(self, text="Hot reload", font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))
+        tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))
         tb.Label(self, text="Send textures, sounds and data to the running program without restarting it. "
                             "With Watch, a file is sent again each time it is "
                             "saved, and the printf of the program is shown.",

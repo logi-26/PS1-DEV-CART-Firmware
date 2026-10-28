@@ -13,10 +13,13 @@
 *
 * Controls:	Select: view, L1/R1: TIM, D-pad: scroll (R2: faster), Triangle/Cross: zoom (TIM view),
 *			L2/R2: CLUT row (TIM view), Square: draw with the CLUT of another TIM (TIM view, same CLUT width),
-*			Circle: palette editor (TIM view), Start: reset scroll/zoom
+*			Circle: palette editor (TIM view), Start: hide/show the info panel and the controls
 * Palette editor: D-pad: entry, L2/R2: red/green/blue, Triangle/Cross: +/- (held: repeat), Square: restore the row,
 *			Start: save NAME_edit.tim, Select: reload NAME.tim (edited in a paint program), Circle: exit.
 *			Save/reload use the PCDRV file server: "ps1transfer -tim file.tim -c".
+* PS1 Dev Cart Manager ("ps1transfer -tim file.tim -c -timlive"): the TIM and CLUT row shown are shared with the
+* computer (ViewerSync), a TIM chosen there is shown here and the other way round; a TIM moved in VRAM there is
+* moved here.
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 * If a copy of the MPL was not distributed with this file,
@@ -37,7 +40,7 @@
 // Data block written by ps1transfer, see "-tim" in ps1transfer/main.c
 #define	VIEWER_DATA_ADRS	0x80100000
 #define	VIEWER_MAGIC		0x564D4954	// "TIMV"
-#define	VIEWER_MAX_TIM		16
+#define	VIEWER_MAX_TIM		32
 #define	VIEWER_NAME_LEN		24
 
 typedef struct
@@ -53,6 +56,28 @@ typedef struct
 	uint32_t		count;
 	ViewerFile	files[VIEWER_MAX_TIM];
 } ViewerData;
+
+// Selection shared with the PS1 Dev Cart Manager ("ps1transfer -timlive", see ps1transfer/timlive.c), in the free
+// end of the data block header: the TIM and CLUT row shown here, written at each frame, and the ones the computer
+// asks for (applied at the next frame, then set back to -1)
+#define	VIEWER_SYNC_ADRS	(VIEWER_DATA_ADRS + 0x7C0)
+#define	VIEWER_SYNC_MAGIC	0x434E5953	// "SYNC": the viewer has the shared selection
+
+typedef struct
+{
+	uint32_t	magic;
+	int16_t		sel, row;			// Shown on the PS1
+	int16_t		req_sel, req_row;	// Asked by the computer, -1: nothing
+	int16_t		text;				// Info panel and controls shown (Start)
+	int16_t		req_text;			// Asked by the computer: 0 hidden, 1 shown, -1: nothing
+	int16_t		req_move;			// TIM moved by the computer (new x, y written in its file), -1: nothing
+	int16_t		pad;
+	int16_t		areas[3][4];		// The viewer's screen buffers and font in VRAM (x, y, w, h): not for TIMs
+	int16_t		shown_x, shown_y;	// Screen on the TV (VRAM position), for a screenshot ("ps1transfer -v auto")
+	int16_t		hold, held;			// Screenshot: the computer asks (hold 1), the viewer stops drawing after a
+									// complete frame (held 1) until hold is 0 (with one screen buffer, a frame
+									// being drawn would be captured half drawn)
+} ViewerSync;
 
 #define	SCREEN_W		320
 #define	SCREEN_H		240
@@ -253,6 +278,49 @@ static void	ReloadTim(TimInfo *t)
 	}
 }
 
+// VRAM area set to 0 (black, transparent), a line at a time: the GPU's fill command works by 16 pixels in x, it
+// would clear the neighbours of an area not aligned
+static void	ClearRect(RECT *r)
+{
+	static uint16_t	zero[VRAM_W];
+	RECT			line;
+	int				y;
+
+	for (y = 0; y < r->h; y++)
+	{
+		setRECT(&line, r->x, r->y + y, r->w, 1);
+		LoadImage(&line, (uint32_t *)zero);
+	}
+	DrawSync(0);
+}
+
+// TIM moved in VRAM by the computer (PS1 Dev Cart Manager, "ps1transfer -timlive"): its new positions are in the
+// headers of its CLUT and image blocks. The old areas are cleared, then the CLUT (with its edited colors) and the
+// image loaded at the new ones. A save writes the TIM with them.
+static void	MoveTim(TimInfo *t)
+{
+	uint32_t	*p = t->file + 2;
+	RECT		old_clut = t->clut, old_img = t->img;
+
+	if (t->clut.w)
+	{
+		t->clut.x = ((uint16_t *)p)[2];
+		t->clut.y = ((uint16_t *)p)[3];
+		p += p[0] / 4;
+	}
+	t->img.x = ((uint16_t *)p)[2];
+	t->img.y = ((uint16_t *)p)[3];
+	if (t->clut.w)
+		ClearRect(&old_clut);
+	ClearRect(&old_img);
+	if (t->clut.w)
+		LoadImage(&t->clut, (uint32_t *)t->clut_data);
+	LoadImage(&t->img, p + 3);
+	DrawSync(0);
+	CheckTims();
+	sprintf(status, "MOVED %s", t->name);
+}
+
 // Warnings for each TIM: overlaps, CLUT position/size, texture page crossing, outside VRAM
 static void	CheckTims(void)
 {
@@ -350,7 +418,9 @@ static void	PlaceViewer(void)
 		}
 }
 
-// Draw a VRAM rectangle (VRAM pixels) as textured quads, scaled by num/den, in the texture mode (0/1/2) and CLUT
+// Draw a VRAM rectangle (VRAM pixels) as textured quads, scaled by num/den, in the texture mode (0/1/2) and CLUT.
+// In x a VRAM pixel holds 4 (4-bit) or 2 (8-bit) texels: drawn that much wider, a line stays a line in y (square
+// texels: the image keeps its aspect ratio)
 static void	DrawVram(int vx, int vy, int vw, int vh, int sx, int sy, int num, int den, int mode, uint16_t clut, uint32_t *otp)
 {
 	int			px, py, pw, ph, tpu = 4 >> mode, u0, v0, u1, v1, x0, y0, x1, y1;
@@ -370,8 +440,8 @@ static void	DrawVram(int vx, int vy, int vw, int vh, int sx, int sy, int num, in
 			pw = PIECE - (px % PIECE);
 			if (px + pw > vx + vw)
 				pw = vx + vw - px;
-			x0 = sx + (px - vx) * num / den;
-			x1 = sx + (px + pw - vx) * num / den;
+			x0 = sx + (px - vx) * tpu * num / den;
+			x1 = sx + (px + pw - vx) * tpu * num / den;
 			if ((x1 <= 0) || (x0 >= SCREEN_W) || (x1 == x0) || (y1 == y0) || !(p = AllocPrim(sizeof(POLY_FT4))))
 				continue;
 			u0 = (px & 63) * tpu;
@@ -387,6 +457,19 @@ static void	DrawVram(int vx, int vy, int vw, int vh, int sx, int sy, int num, in
 			addPrim(otp, p);
 		}
 	}
+}
+
+// GP0(01h) before the TIM is drawn: the GPU's texture and CLUT caches emptied. A CLUT changed in VRAM (palette editor,
+// or the computer) would otherwise not be used for the parts of the image drawn from the cache
+static void	ClearCache(uint32_t *otp)
+{
+	uint32_t	*p = AllocPrim(8);
+
+	if (!p)
+		return;
+	setlen(p, 1);
+	p[1] = 0x01000000;
+	addPrim(otp, p);
 }
 
 static void	DrawTile(int x, int y, int w, int h, int r, int g, int b, uint32_t *otp)
@@ -492,10 +575,11 @@ static void	PrintTimInfo(int i, int fnt)
 int	main(void)
 {
 	ViewerData	*vd = (ViewerData *)VIEWER_DATA_ADRS;
+	volatile ViewerSync	*sync = (volatile ViewerSync *)VIEWER_SYNC_ADRS;
 	uint32_t		pad, opad = 0;
 	int			side = 0, i, j, view = VIEW_MAP, sel = 0, zoom = 1, clut_row = 0, is_pal, speed;
 	int			scroll_x = 0, scroll_y = 0;
-	int			swap = -1, edit = 0, entry = 0, comp = 0, held = 0;
+	int			swap = -1, edit = 0, entry = 0, comp = 0, held = 0, show_text = 1;
 	static const char	*comp_names[3] = {"RED", "GREEN", "BLUE"};
 
 	// Same video mode as the console region, like the PS1 DEV CART menu (BIOS version string: 'E' = Europe = PAL)
@@ -525,9 +609,71 @@ int	main(void)
 	fnt_map_info = UiOpenText(8, MAP_INFO_Y, 304, 4);
 	fnt_info = UiOpenText(8, TIM_INFO_Y, 304, 5);
 	SetDispMask(1);
+	sync->req_sel = sync->req_row = sync->req_text = sync->req_move = -1;
+	sync->shown_x = disp[0].disp.x;
+	sync->shown_y = disp[0].disp.y;
+	sync->hold = sync->held = 0;
+	sync->sel = sync->row = 0;
+	sync->text = show_text;
+	for (i = 0; i < 3; i++)
+	{
+		RECT	*r = (i < 2) ? &screen_rect[i] : &font_rect;
+
+		sync->areas[i][0] = r->x;
+		sync->areas[i][1] = r->y;
+		sync->areas[i][2] = r->w;
+		sync->areas[i][3] = r->h;
+	}
+	sync->magic = VIEWER_SYNC_MAGIC;
 
 	while (1)
 	{
+		// Screenshot: the frame drawn (all of it: image, panels, text) stays on the screen while the computer reads it
+		if (sync->hold)
+		{
+			DrawSync(0);
+			sync->held = 1;
+			while (sync->hold)
+				VSync(0);
+			sync->held = 0;
+		}
+
+		// TIM (and CLUT row) chosen on the computer: shown in the TIM view (the palette editor stays open on a TIM
+		// with a CLUT)
+		if (sync->req_sel >= 0)
+		{
+			if (sync->req_sel < n_tims)
+			{
+				if (sync->req_sel != sel)
+				{
+					sel = sync->req_sel;
+					clut_row = 0;
+					swap = -1;
+					scroll_x = scroll_y = 0;
+					entry = 0;
+					if (!tims[sel].clut.w)
+						edit = 0;
+				}
+				if ((sync->req_row >= 0) && (sync->req_row < tims[sel].clut.h))
+					clut_row = sync->req_row;
+				if (!edit)
+					view = VIEW_TIM;
+				status[0] = 0;
+			}
+			sync->req_sel = sync->req_row = -1;
+		}
+		if (sync->req_text >= 0)
+		{
+			show_text = (sync->req_text != 0);
+			sync->req_text = -1;
+		}
+		if (sync->req_move >= 0)
+		{
+			if (sync->req_move < n_tims)
+				MoveTim(&tims[sync->req_move]);
+			sync->req_move = -1;
+		}
+
 		pad = PadRead(1);
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))
 		speed = (pad & PADR2) ? 8 : 2;
@@ -614,13 +760,13 @@ int	main(void)
 					status[0] = 0;
 				}
 			}
-			if (PRESSED(PADstart))
-			{
-				scroll_x = scroll_y = 0;
-				zoom = 1;
-			}
+			if (PRESSED(PADstart))	// The image without the info panel and the controls (also from the computer)
+				show_text ^= 1;
 		}
 		opad = pad;
+		sync->sel = sel;		// (read by the computer)
+		sync->text = show_text;
+		sync->row = clut_row;
 
 		side ^= 1;
 		ClearOTagR(ot[side], OT_LEN);
@@ -634,22 +780,26 @@ int	main(void)
 			for (i = 0; i < 3; i++)	// Viewer screen buffers and font in grey
 				DrawOutline((i < 2) ? &screen_rect[i] : &font_rect, 0, MAP_Y, 0, 0, MAP_NUM, MAP_DEN, grey, &ot[side][2]);
 			UiTitle("PS1 DEV CART TIM VIEWER", "VRAM MAP");
-			UiTextPanel(8, MAP_INFO_Y, 304, 4);
-			if (n_tims)
-				PrintTimInfo(sel, fnt_map_info);
-			else
-				FntPrint(fnt_map_info, "NO TIM FILE.\nUSE: PS1TRANSFER -TIM FILE.TIM");
-			UiHelp(viewer_overlaps ? "SELECT:VIEW  L1/R1:TIM\nWARNING: VIEWER OVERWRITES TIM DATA" :
-				"SELECT:VIEW  L1/R1:TIM");
+			if (show_text)
+			{
+				UiTextPanel(8, MAP_INFO_Y, 304, 4);
+				if (n_tims)
+					PrintTimInfo(sel, fnt_map_info);
+				else
+					FntPrint(fnt_map_info, "NO TIM FILE.\nUSE: PS1TRANSFER -TIM FILE.TIM");
+				UiHelp(viewer_overlaps ? "SELECT:VIEW L1/R1:TIM START:HIDE TEXT\nWARNING: VIEWER OVERWRITES TIM DATA" :
+					"SELECT:VIEW L1/R1:TIM START:HIDE TEXT");
+			}
 		}
 		else if (view == VIEW_TIM && n_tims)
 		{
 			TimInfo	*t = &tims[sel], *ct = &tims[(swap < 0) ? sel : swap];	// ct: TIM of the CLUT used
-			int		mode = (t->mode > 2) ? 2 : t->mode, tpu = 4 >> mode;	// 24-bit: shown as raw 16-bit
+			int		mode = (t->mode > 2) ? 2 : t->mode;	// 24-bit: shown as raw 16-bit
 			uint16_t	clut = ct->clut.w ? getClut(ct->clut.x, ct->clut.y + clut_row) : 0;
 
 			// Image at zoom: VRAM pixels * texels per VRAM pixel * zoom
-			DrawVram(t->img.x, t->img.y, t->img.w, t->img.h, 16 - scroll_x, TIM_Y - scroll_y, tpu * zoom, 1, mode, clut, &ot[side][OT_LEN - 1]);
+			DrawVram(t->img.x, t->img.y, t->img.w, t->img.h, 16 - scroll_x, TIM_Y - scroll_y, zoom, 1, mode, clut, &ot[side][OT_LEN - 1]);
+			ClearCache(&ot[side][OT_LEN - 1]);		// (added last: before the image pieces)
 			// Palette swatches (16 per line)
 			if (ct->clut.w)
 			{
@@ -681,15 +831,18 @@ int	main(void)
 
 				sprintf(right, "TIM %d/%d", sel + 1, n_tims);
 				UiTitle("PS1 DEV CART TIM VIEWER", right);
-				UiTextPanel(8, TIM_INFO_Y, 304, 5);
-				FntPrint(fnt_info, "ZOOM %d  CLUT ROW %d/%d", zoom, clut_row + 1, ct->clut.h ? ct->clut.h : 1);
-				if (swap >= 0)
-					FntPrint(fnt_info, "  CLUT OF TIM %d", swap + 1);
-				FntPrint(fnt_info, "\n");
-				PrintTimInfo(sel, fnt_info);
-				UiHelp("SELECT:VIEW L1/R1:TIM D-PAD:SCROLL\nTRI/X:ZOOM L2/R2:CLUT SQR:SWAP O:EDIT");
+				if (show_text)
+				{
+					UiTextPanel(8, TIM_INFO_Y, 304, 5);
+					FntPrint(fnt_info, "ZOOM %d  CLUT ROW %d/%d", zoom, clut_row + 1, ct->clut.h ? ct->clut.h : 1);
+					if (swap >= 0)
+						FntPrint(fnt_info, "  CLUT OF TIM %d", swap + 1);
+					FntPrint(fnt_info, "\n");
+					PrintTimInfo(sel, fnt_info);
+					UiHelp("SEL:VIEW L1/R1:TIM D-PAD:SCROLL ST:TEXT\nTRI/X:ZOOM L2/R2:CLUT SQR:SWAP O:EDIT");
+				}
 			}
-			if (status[0])
+			if (status[0] && (show_text || edit))
 				FntPrint(fnt_info, "%s\n", status);
 		}
 		else
@@ -707,12 +860,15 @@ int	main(void)
 				sprintf(right, "VRAM %d,%d", scroll_x, scroll_y);
 				UiTitle("PS1 DEV CART TIM VIEWER", right);
 			}
-			UiHelp("SELECT:VIEW  D-PAD:SCROLL  R2:FAST");
+			if (show_text)
+				UiHelp("SEL:VIEW D-PAD:SCROLL R2:FAST START:TEXT");
 		}
 
 		DrawSync(0);
 		VSync(0);
 		PutDispEnv(&disp[side]);
+		sync->shown_x = disp[side].disp.x;	// (the screen on the TV: "ps1transfer -v auto")
+		sync->shown_y = disp[side].disp.y;
 		PutDrawEnv(&draw[side]);
 		DrawOTag(&ot[side][OT_LEN - 1]);
 		UiFlush();

@@ -388,7 +388,6 @@ typedef struct
 	Queue			*in, *out;			// Bytes for this console, bytes from it
 	volatile int	failed;
 	volatile uint32_t	turns;
-	void			(*notify)(void);	// Called after units were put in the out queue (-netlink: sent at once)
 } TtyThread;
 
 #ifdef _WIN32
@@ -401,50 +400,57 @@ static pthread_mutex_t	queue_lock = PTHREAD_MUTEX_INITIALIZER;
 #define	UNLOCK()	pthread_mutex_unlock(&queue_lock)
 #endif
 
-static void	TtyLoop(TtyThread *t)
+typedef bool	(*ExchangeFn)(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata,
+	uint32_t rsize);
+
+// One turn of a console: the units for it put in its receive buffer, one exchange, the units it sent queued
+static bool	TtyTurn(TtyThread *t, ExchangeFn exchange)
 {
 	LinkEnd		*e = t->e;
 	uint8_t		buf[TTY_TX_SIZE], unit[TTY_TX_SIZE];
 	uint16_t	units[TTY_UNITS];
 	uint32_t	n, i, k, size;
 
-	while (!stop_requested)
+	// Units from the other console, as many as the receive buffer can take (known from the last exchange)
+	LOCK();
+	while (t->in->utail != t->in->uhead)
 	{
-		// Units from the other console, as many as the receive buffer can take (known from the last exchange)
-		LOCK();
-		while (t->in->utail != t->in->uhead)
-		{
-			size = t->in->units[t->in->utail & (QUEUE_UNITS - 1)];
-			if ((size > sizeof(unit)) || (size > Space(e)))
-				break;
-			for (i = 0; i < size; i++)
-				unit[i] = t->in->buf[(t->in->tail + i) & (QUEUE_SIZE - 1)];
-			Put(e, unit, size);
-			t->in->tail += size;
-			t->in->utail++;
-		}
-		UNLOCK();
-		if (!USB_Exchange(e->handle, e->tty_adrs, e->pc, TTY_PC_PART, e->ps1, TTY_PS1_PART))
+		size = t->in->units[t->in->utail & (QUEUE_UNITS - 1)];
+		if ((size > sizeof(unit)) || (size > Space(e)))
+			break;
+		for (i = 0; i < size; i++)
+			unit[i] = t->in->buf[(t->in->tail + i) & (QUEUE_SIZE - 1)];
+		Put(e, unit, size);
+		t->in->tail += size;
+		t->in->utail++;
+	}
+	UNLOCK();
+	if (!exchange(e->handle, e->tty_adrs, e->pc, TTY_PC_PART, e->ps1, TTY_PS1_PART))
+		return (false);
+	// Units sent by this console (its tx_tail goes with the next exchange)
+	n = TakeUnits(e, buf, units);
+	LOCK();
+	for (k = 0, i = 0; k < n; i += units[k++])
+	{
+		if ((t->out->head - t->out->tail + units[k] > QUEUE_SIZE) || (t->out->uhead - t->out->utail >= QUEUE_UNITS))
+			break;	// The other console doesn't read: dropped
+		for (size = 0; size < units[k]; size++)
+			t->out->buf[t->out->head++ & (QUEUE_SIZE - 1)] = buf[i + size];
+		t->out->units[t->out->uhead++ & (QUEUE_UNITS - 1)] = units[k];
+	}
+	UNLOCK();
+	t->turns++;
+	return (true);
+}
+
+static void	TtyLoop(TtyThread *t)
+{
+	while (!stop_requested)
+		if (!TtyTurn(t, USB_Exchange))
 		{
 			t->failed = 1;
 			return;
 		}
-		// Units sent by this console (its tx_tail goes with the next exchange)
-		n = TakeUnits(e, buf, units);
-		LOCK();
-		for (k = 0, i = 0; k < n; i += units[k++])
-		{
-			if ((t->out->head - t->out->tail + units[k] > QUEUE_SIZE) || (t->out->uhead - t->out->utail >= QUEUE_UNITS))
-				break;	// The other console doesn't read: dropped
-			for (size = 0; size < units[k]; size++)
-				t->out->buf[t->out->head++ & (QUEUE_SIZE - 1)] = buf[i + size];
-			t->out->units[t->out->uhead++ & (QUEUE_UNITS - 1)] = units[k];
-		}
-		UNLOCK();
-		if (n && t->notify)
-			t->notify();
-		t->turns++;
-	}
 }
 
 #ifdef _WIN32
@@ -488,8 +494,11 @@ static int	TtyRelay(LinkEnd *a, LinkEnd *b)
 #endif
 		if (time(NULL) != second)
 		{
-			printf("%s -> %s %u B/s   %s -> %s %u B/s   %u/%u exchanges/s\n", a->name, b->name, b->bytes, b->name,
+			printf("%s -> %s %u B/s   %s -> %s %u B/s   %u/%u exchanges/s", a->name, b->name, b->bytes, b->name,
 				a->name, a->bytes, ta.turns, tb.turns);
+			if (link_crc_errors)
+				printf("   %u CRC errors", link_crc_errors);
+			printf("\n");
 			a->bytes = b->bytes = ta.turns = tb.turns = 0;
 			second = time(NULL);
 		}
@@ -512,7 +521,90 @@ static int	TtyRelay(LinkEnd *a, LinkEnd *b)
 }
 
 /****************************************/
-// -net: the USB link of a console connected to a TCP server (e.g. a game server, or the audio streamer's server)
+// Relay of a debug session ("-gdb -relay SERIAL2", gdbserver.c): the other console's turns in a thread (its own
+// cartridge), the debugged one's taken by the GDB server between its own USB transfers (RelayTurn, with an exchange
+// that keeps the stop notifications for it). Both programs with the USB link tty driver (-c link).
+
+static LinkEnd		dbg_a, dbg_b;
+static Queue		dbg_ab, dbg_ba;
+static TtyThread	dbg_ta, dbg_tb;
+static bool			dbg_on;
+#ifdef _WIN32
+static HANDLE		dbg_thread;
+#else
+static pthread_t	dbg_thread;
+#endif
+
+bool	RelayBegin(char *first_name, char *second_serial)
+{
+	bool	ok;
+
+	dbg_a.handle = USB_GetHandle();
+	dbg_a.name = first_name;
+	dbg_b.name = second_serial;
+	if (!(dbg_b.handle = USB_OpenOther(second_serial)))
+	{
+		printf("Can't open the cartridge %s for the USB link relay (see -l).\n", second_serial);
+		return (false);
+	}
+	Use(&dbg_b);
+	USB_DetectEscaped();
+	ok = Start(&dbg_a) && Start(&dbg_b);
+	Use(&dbg_a);					// (the debugged cartridge: the GDB server's)
+	if (ok && ((dbg_a.kind != END_TTY) || (dbg_b.kind != END_TTY)))
+	{
+		printf("The relay of a debug session needs both programs with the USB link tty driver (-c link).\n");
+		ok = false;
+	}
+	if (!ok)
+	{
+		USB_CloseOther(dbg_b.handle);
+		return (false);
+	}
+	dbg_ta = (TtyThread){&dbg_a, &dbg_ba, &dbg_ab, 0, 0};
+	dbg_tb = (TtyThread){&dbg_b, &dbg_ab, &dbg_ba, 0, 0};
+	stop_requested = 0;
+#ifdef _WIN32
+	InitializeCriticalSection(&queue_lock);
+	dbg_thread = CreateThread(NULL, 0, TtyThreadMain, &dbg_tb, 0, NULL);
+#else
+	pthread_create(&dbg_thread, NULL, TtyThreadMain, &dbg_tb);
+#endif
+	dbg_on = true;
+	printf("USB link relay with %s, in the debug session\n", second_serial);
+	return (true);
+}
+
+// The debugged console's turn (the program running or stopped: the monitor answers the exchange too)
+bool	RelayTurn(void)
+{
+	if (!dbg_on)
+		return (true);
+	if (dbg_tb.failed)
+	{
+		printf("USB link relay: USB error (%s), stopped.\n", dbg_b.name);
+		RelayEnd();
+		return (false);
+	}
+	return (TtyTurn(&dbg_ta, USB_ExchangeServed));
+}
+
+void	RelayEnd(void)
+{
+	if (!dbg_on)
+		return;
+	dbg_on = false;
+	stop_requested = 1;
+#ifdef _WIN32
+	WaitForSingleObject(dbg_thread, INFINITE);
+#else
+	pthread_join(dbg_thread, NULL);
+#endif
+	USB_CloseOther(dbg_b.handle);
+}
+
+/****************************************/
+// -net: the USB link of a console connected to a TCP server (e.g. a game server on the computer)
 
 #define	NET_CHUNK	4096		// Bytes moved at most per direction and turn
 
@@ -759,909 +851,5 @@ int	UsbRelay(char *first_name, char *second_serial)
 out:
 	USB_SetHandle(a.handle);
 	USB_CloseOther(b.handle);
-	return (ret);
-}
-
-/****************************************/
-// -netlink: the USB link of this console linked to the console of another computer through the network (netplay)
-//
-// Both computers run "ps1transfer -netlink": the host waits (":port"), the guest connects ("host:port"). Each console
-// runs a program with the USB link: a Net Yaroze game with the tty driver ("-c link") or a program using psxcomb's
-// USB link. The units (tty driver: what the program wrote in one write(), given to the other program one per frame
-// like a cable; rings: the bytes taken in one turn) are numbered and sent over UDP:
-// - every packet carries all the units the other computer hasn't acknowledged yet: a lost packet is covered by the
-//   next one, without waiting for a timeout (a TCP stream would hold everything back for a round trip);
-// - the units are sent as soon as the console gives them (the console's thread sends them), and put in the
-//   console's queue as soon as they arrive (the receiving thread), the console's thread writing them at its next
-//   exchange with the kernel hook;
-// - acknowledges and time stamps (round trip time) go with the units, or alone after units were received.
-// - between two guests of a Netplay lobby, both connect to the host's relay, which tells each one the other's address
-//   as it sees it (NL_PEER): they try to link directly through their routers (UDP hole punching), the relay is used
-//   until a packet comes directly, and again if the direct packets stop;
-// - a dropout of up to 30 seconds is waited for (units kept and sent again), then the link is given up.
-// -netdelay ms[,jitter[,loss%]] delays (and drops) the packets sent, to test as if the other computer was far.
-// -netkey (given by the Netplay lobby for each game, see gui/netplay.py): every packet ends with a tag, the first 8
-// bytes of HMAC-SHA256(key, packet), and packets without the right tag are dropped: another computer can't link in,
-// send units or stop the link (packets version 2; without a key, version 1 as before).
-
-#define	NL_MAGIC		0x4C4E5350	// "PSNL"
-#define	NL_VERSION		1
-#define	NL_VERSION_KEYED	2		// With the tag (-netkey)
-#define	NL_KEY_SIZE		16			// 128-bit key, 32 hex digits
-#define	NL_TAG_SIZE		8
-#define	NL_HELLO		1
-#define	NL_DATA			2
-#define	NL_BYE			3
-#define	NL_PEER			4			// From the lobby's relay: the other guest's address (IPv4, port, network order)
-#define	NL_MAX_PACKET	1200		// UDP payload (under the usual 1500-byte MTU)
-#define	NL_STORE		1024		// Units kept until acknowledged (power of 2): 17 s at 60 a second
-#define	NL_UNIT_MAX		1024		// Bytes of a unit (rings: bytes taken in one turn)
-#define	NL_RESEND_MS	10			// Units not acknowledged sent again after the round trip time + this
-#define	NL_KEEPALIVE_MS	250
-#define	NL_QUIET_MS		3000		// Nothing from the other computer: shown as waiting
-#define	NL_TIMEOUT_MS	30000		// Nothing from the other computer for this time: link lost
-#define	NL_PUNCH_MS		6000		// Direct link tried for this time (hello every NL_PUNCH_EVERY ms)
-#define	NL_PUNCH_EVERY	50
-#define	NL_DIRECT_LOST	1500		// Direct packets stopped this long: through the relay again
-#define	NL_DELAYED		512			// -netdelay: packets waiting (power of 2)
-
-typedef struct
-{
-	uint32_t	magic;
-	uint8_t		type, kind, version, flags;
-	uint32_t	session;
-	uint32_t	ack;				// Next unit expected from the other computer
-	uint32_t	first;				// Number of the first unit in the packet
-	uint16_t	count, reserved;
-	uint32_t	time, echo, echo_age;	// Sender's clock (ms), last time received from the other one and its age
-} NlHeader;
-
-typedef struct
-{
-	uint16_t	len;
-	uint8_t		data[NL_UNIT_MAX];
-} NlUnit;
-
-typedef struct
-{
-	double		due;
-	int			len;
-	uint8_t		data[NL_MAX_PACKET];
-} NlDelayed;
-
-static struct
-{
-	sock_t				s;
-	struct sockaddr_in	peer;
-	volatile bool		connected;
-	uint32_t			session;
-	int					kind;
-	NlUnit				store[NL_STORE];		// Units sent, kept until acknowledged
-	uint32_t			send_next, acked;		// Free-running unit numbers
-	uint32_t			recv_next;				// Next unit expected
-	uint32_t			peer_time;				// Last time stamp received, and when (local clock)
-	double				peer_time_at, last_send, last_recv;
-	volatile double		rtt, rtt_min;
-	// Statistics of the current second
-	volatile uint32_t	units_out, units_in, packets_out, packets_in, resent;
-	// -netdelay
-	int					delay, jitter, loss;
-	NlDelayed			delayed[NL_DELAYED];
-	volatile uint32_t	dhead, dtail;
-	Queue				*in, *out;				// Units for the console, units from it
-	// Guest: the address connected to (host, or the lobby's relay), the other guest's direct address (NL_PEER)
-	struct sockaddr_in	relay, direct;
-	bool				guest, have_direct, direct_ok, quiet;
-	double				punch_start, last_punch, last_direct;
-} nl;
-
-#ifdef _WIN32
-static CRITICAL_SECTION	nl_lock;
-#define	NL_LOCK()	EnterCriticalSection(&nl_lock)
-#define	NL_UNLOCK()	LeaveCriticalSection(&nl_lock)
-#else
-static pthread_mutex_t	nl_lock = PTHREAD_MUTEX_INITIALIZER;
-#define	NL_LOCK()	pthread_mutex_lock(&nl_lock)
-#define	NL_UNLOCK()	pthread_mutex_unlock(&nl_lock)
-#endif
-
-/****************************************/
-// Link key: SHA-256 (FIPS 180-4) and HMAC (RFC 2104), small and fast enough for a few hundred packets a second
-
-static uint8_t	nl_key[NL_KEY_SIZE];
-static bool		nl_keyed;
-
-typedef struct
-{
-	uint32_t	h[8];
-	uint8_t		buf[64];
-	uint32_t	n;			// Bytes in buf
-	uint64_t	len;		// Bytes hashed
-} Sha256;
-
-static const uint32_t	sha256_k[64] =
-{
-	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-};
-
-#define	SHA_ROR(_x_, _n_)	(((_x_) >> (_n_)) | ((_x_) << (32 - (_n_))))
-
-static void	Sha256Block(Sha256 *s, const uint8_t *p)
-{
-	uint32_t	w[64], v[8], t1, t2;
-	int			i;
-
-	for (i = 0; i < 16; i++)
-		w[i] = ((uint32_t)p[4 * i] << 24) | ((uint32_t)p[4 * i + 1] << 16) | ((uint32_t)p[4 * i + 2] << 8) | p[4 * i + 3];
-	for (; i < 64; i++)
-		w[i] = w[i - 16] + (SHA_ROR(w[i - 15], 7) ^ SHA_ROR(w[i - 15], 18) ^ (w[i - 15] >> 3)) + w[i - 7] +
-			(SHA_ROR(w[i - 2], 17) ^ SHA_ROR(w[i - 2], 19) ^ (w[i - 2] >> 10));
-	memcpy(v, s->h, sizeof(v));
-	for (i = 0; i < 64; i++)
-	{
-		t1 = v[7] + (SHA_ROR(v[4], 6) ^ SHA_ROR(v[4], 11) ^ SHA_ROR(v[4], 25)) + ((v[4] & v[5]) ^ (~v[4] & v[6])) +
-			sha256_k[i] + w[i];
-		t2 = (SHA_ROR(v[0], 2) ^ SHA_ROR(v[0], 13) ^ SHA_ROR(v[0], 22)) + ((v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]));
-		memmove(v + 1, v, 7 * sizeof(uint32_t));
-		v[4] += t1;
-		v[0] = t1 + t2;
-	}
-	for (i = 0; i < 8; i++)
-		s->h[i] += v[i];
-}
-
-static void	Sha256Init(Sha256 *s)
-{
-	static const uint32_t	iv[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
-										0x1f83d9ab, 0x5be0cd19};
-
-	memcpy(s->h, iv, sizeof(iv));
-	s->n = 0;
-	s->len = 0;
-}
-
-static void	Sha256Update(Sha256 *s, const uint8_t *p, uint32_t n)
-{
-	while (n--)
-	{
-		s->buf[s->n++] = *p++;
-		s->len++;
-		if (s->n == 64)
-		{
-			Sha256Block(s, s->buf);
-			s->n = 0;
-		}
-	}
-}
-
-static void	Sha256Final(Sha256 *s, uint8_t out[32])
-{
-	uint64_t	bits = s->len * 8;
-	uint8_t		b = 0x80;
-	int			i;
-
-	Sha256Update(s, &b, 1);
-	b = 0;
-	while (s->n != 56)
-		Sha256Update(s, &b, 1);
-	for (i = 7; i >= 0; i--)
-	{
-		b = (uint8_t)(bits >> (i * 8));
-		Sha256Update(s, &b, 1);
-	}
-	for (i = 0; i < 8; i++)
-	{
-		out[4 * i] = s->h[i] >> 24;
-		out[4 * i + 1] = s->h[i] >> 16;
-		out[4 * i + 2] = s->h[i] >> 8;
-		out[4 * i + 3] = s->h[i];
-	}
-}
-
-// Tag of a packet: the first NL_TAG_SIZE bytes of HMAC-SHA256(nl_key, data)
-static void	NlTag(const uint8_t *data, uint32_t len, uint8_t *tag)
-{
-	Sha256	s;
-	uint8_t	pad[64], inner[32], full[32];
-	int		i;
-
-	for (i = 0; i < 64; i++)
-		pad[i] = ((i < NL_KEY_SIZE) ? nl_key[i] : 0) ^ 0x36;
-	Sha256Init(&s);
-	Sha256Update(&s, pad, 64);
-	Sha256Update(&s, data, len);
-	Sha256Final(&s, inner);
-	for (i = 0; i < 64; i++)
-		pad[i] = ((i < NL_KEY_SIZE) ? nl_key[i] : 0) ^ 0x5C;
-	Sha256Init(&s);
-	Sha256Update(&s, pad, 64);
-	Sha256Update(&s, inner, 32);
-	Sha256Final(&s, full);
-	memcpy(tag, full, NL_TAG_SIZE);
-}
-
-// The packet's tag is right (compared in constant time); len: without the tag
-static bool	NlTagOk(const uint8_t *data, uint32_t len)
-{
-	uint8_t	tag[NL_TAG_SIZE], diff = 0;
-	int		i;
-
-	NlTag(data, len, tag);
-	for (i = 0; i < NL_TAG_SIZE; i++)
-		diff |= tag[i] ^ data[len + i];
-	return (diff == 0);
-}
-
-// -netkey: 32 hex digits
-static bool	NlSetKey(const char *hex)
-{
-	int	i, hi, lo;
-
-	nl_keyed = false;
-	if (!hex)
-		return (true);
-	if (strlen(hex) != 2 * NL_KEY_SIZE)
-		return (false);
-	for (i = 0; i < NL_KEY_SIZE; i++)
-	{
-		hi = isxdigit((unsigned char)hex[2 * i]) ? (isdigit((unsigned char)hex[2 * i]) ? hex[2 * i] - '0' : (tolower(hex[2 * i]) - 'a' + 10)) : -1;
-		lo = isxdigit((unsigned char)hex[2 * i + 1]) ? (isdigit((unsigned char)hex[2 * i + 1]) ? hex[2 * i + 1] - '0' : (tolower(hex[2 * i + 1]) - 'a' + 10)) : -1;
-		if ((hi < 0) || (lo < 0))
-			return (false);
-		nl_key[i] = (uint8_t)((hi << 4) | lo);
-	}
-	nl_keyed = true;
-	return (true);
-}
-
-/****************************************/
-
-// Milliseconds, precise (GetTickCount moves by 15.6 ms)
-static double	NlNow(void)
-{
-#ifdef _WIN32
-	static LARGE_INTEGER	freq;
-	LARGE_INTEGER			t;
-
-	if (!freq.QuadPart)
-		QueryPerformanceFrequency(&freq);
-	QueryPerformanceCounter(&t);
-	return (t.QuadPart * 1000.0 / freq.QuadPart);
-#else
-	struct timespec	ts;
-
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6);
-#endif
-}
-
-// 1 ms timer resolution for the waits (Windows: 15.6 ms by default), winmm loaded at run time
-static void	NlFineTimer(void)
-{
-#ifdef _WIN32
-	HMODULE	winmm = LoadLibraryA("winmm.dll");
-	UINT	(WINAPI *begin)(UINT) = winmm ? (UINT (WINAPI *)(UINT))GetProcAddress(winmm, "timeBeginPeriod") : NULL;
-
-	if (begin)
-		begin(1);
-#endif
-}
-
-static void	NlRawSend(const uint8_t *buf, int len)
-{
-	sendto(nl.s, (const char *)buf, len, 0, (struct sockaddr *)&nl.peer, sizeof(nl.peer));
-}
-
-// A packet to the other computer (through the delay line with -netdelay)
-static void	NlSendPacket(const uint8_t *buf, int len)
-{
-	NlDelayed	*d;
-
-	nl.packets_out++;
-	if (!nl.delay && !nl.jitter && !nl.loss)
-	{
-		NlRawSend(buf, len);
-		return;
-	}
-	if (nl.loss && ((rand() % 100) < nl.loss))
-		return;
-	if (nl.dhead - nl.dtail >= NL_DELAYED)
-		return;
-	d = &nl.delayed[nl.dhead & (NL_DELAYED - 1)];
-	d->due = NlNow() + nl.delay + (nl.jitter ? rand() % (nl.jitter + 1) : 0);
-	if ((nl.dhead != nl.dtail) && (d->due < nl.delayed[(nl.dhead - 1) & (NL_DELAYED - 1)].due))
-		d->due = nl.delayed[(nl.dhead - 1) & (NL_DELAYED - 1)].due;	// (in order, as on a link)
-	d->len = len;
-	memcpy(d->data, buf, len);
-	nl.dhead++;
-}
-
-// Data packet: the units not acknowledged (the oldest first, as many as fit), the acknowledge, the time stamps.
-// Called with nl_lock held.
-static int	NlBuild(int type, uint8_t *buf)
-{
-	NlHeader	*h = (NlHeader *)buf;
-	uint32_t	u, len = sizeof(NlHeader);
-	double		now = NlNow();
-
-	memset(h, 0, sizeof(*h));
-	h->magic = NL_MAGIC;
-	h->type = type;
-	h->kind = nl.kind;
-	h->version = nl_keyed ? NL_VERSION_KEYED : NL_VERSION;
-	h->session = nl.session;
-	h->ack = nl.recv_next;
-	h->first = nl.acked;
-	h->time = (uint32_t)(uint64_t)now;	// (32-bit milliseconds, wraps after 49 days)
-	h->echo = nl.peer_time;
-	h->echo_age = nl.peer_time_at ? (uint32_t)(now - nl.peer_time_at) : 0;
-	if (type == NL_DATA)
-		for (u = nl.acked; u != nl.send_next; u++)
-		{
-			NlUnit	*unit = &nl.store[u & (NL_STORE - 1)];
-
-			if (len + 2 + unit->len > NL_MAX_PACKET - NL_TAG_SIZE)
-				break;
-			buf[len] = unit->len;
-			buf[len + 1] = unit->len >> 8;
-			memcpy(buf + len + 2, unit->data, unit->len);
-			len += 2 + unit->len;
-			h->count++;
-		}
-	if (nl_keyed)	// (buf has NL_MAX_PACKET bytes)
-	{
-		NlTag(buf, len, buf + len);
-		len += NL_TAG_SIZE;
-	}
-	return (len);
-}
-
-static void	NlSendData(int type)
-{
-	uint8_t	buf[NL_MAX_PACKET];
-	int		len = NlBuild(type, buf);
-
-	nl.last_send = NlNow();
-	NlSendPacket(buf, len);
-}
-
-static bool	NlSame(const struct sockaddr_in *a, const struct sockaddr_in *b)
-{
-	return ((a->sin_addr.s_addr == b->sin_addr.s_addr) && (a->sin_port == b->sin_port));
-}
-
-// Units given by the console (its thread, after an exchange): numbered, kept, sent at once
-static void	NlFromConsole(void)
-{
-	Queue	*q = nl.out;
-	bool	any = false;
-
-	LOCK();
-	NL_LOCK();
-	while ((q->utail != q->uhead) && (nl.send_next - nl.acked < NL_STORE))
-	{
-		NlUnit		*unit = &nl.store[nl.send_next & (NL_STORE - 1)];
-		uint32_t	size = q->units[q->utail & (QUEUE_UNITS - 1)], i;
-
-		for (i = 0; i < size; i++)
-			unit->data[i] = q->buf[(q->tail + i) & (QUEUE_SIZE - 1)];
-		unit->len = size;
-		q->tail += size;
-		q->utail++;
-		nl.send_next++;
-		nl.units_out++;
-		any = true;
-	}
-	if (nl.connected && any)
-		NlSendData(NL_DATA);
-	NL_UNLOCK();
-	UNLOCK();
-}
-
-// A packet dropped: without the game's key, or with a key while this side has none (shown once)
-static void	NlRejected(int version)
-{
-	static bool	shown;
-
-	if (shown)
-		return;
-	shown = true;
-	if (nl_keyed && (version == NL_VERSION))
-		printf("Packets without the game's key ignored (the other computer needs -netkey too).\n");
-	else if (!nl_keyed && (version == NL_VERSION_KEYED))
-		printf("Packets with a link key ignored (this computer needs the same -netkey).\n");
-	else if (nl_keyed)
-		printf("Packets with a wrong key ignored (not from the other player of this game).\n");
-}
-
-// A packet from the other computer
-static void	NlReceive(uint8_t *buf, int len, struct sockaddr_in *from)
-{
-	NlHeader	*h = (NlHeader *)buf;
-	uint32_t	u, pos = sizeof(NlHeader), n, i, k;
-	bool		got = false;
-	double		now = NlNow();
-
-	if ((len < (int)sizeof(NlHeader)) || (h->magic != NL_MAGIC))
-		return;
-	if (nl_keyed)	// Only packets with the game's key (the tag is not counted in len after)
-	{
-		if ((h->version != NL_VERSION_KEYED) || (len < (int)sizeof(NlHeader) + NL_TAG_SIZE) ||
-			!NlTagOk(buf, len - NL_TAG_SIZE))
-		{
-			NlRejected(h->version);
-			return;
-		}
-		len -= NL_TAG_SIZE;
-	}
-	else if (h->version != NL_VERSION)
-	{
-		NlRejected(h->version);
-		return;
-	}
-	NL_LOCK();
-	if (h->type == NL_PEER)		// The relay gives the other guest's address: a direct link is tried
-	{
-		if (nl.guest && NlSame(from, &nl.relay) && (len >= (int)sizeof(NlHeader) + 6) && !nl.have_direct)
-		{
-			memset(&nl.direct, 0, sizeof(nl.direct));
-			nl.direct.sin_family = AF_INET;
-			memcpy(&nl.direct.sin_addr, buf + sizeof(NlHeader), 4);
-			memcpy(&nl.direct.sin_port, buf + sizeof(NlHeader) + 4, 2);
-			nl.have_direct = true;
-			nl.punch_start = now;
-			printf("Trying a direct link with %s:%d\n", inet_ntoa(nl.direct.sin_addr), ntohs(nl.direct.sin_port));
-		}
-		goto out;
-	}
-	if (!nl.connected)
-	{
-		if ((h->type != NL_HELLO) && (h->type != NL_DATA))
-			goto out;
-		if (h->kind != nl.kind)
-		{
-			printf("The other console runs %s, this one %s: both need the same kind of link.\n",
-				(h->kind == END_TTY) ? "a Net Yaroze tty link program (-c link)" : "a psxcomb USB link program",
-				(nl.kind == END_TTY) ? "a Net Yaroze tty link program (-c link)" : "a psxcomb USB link program");
-			stop_requested = 1;
-			goto out;
-		}
-		nl.peer = *from;
-		nl.session = h->session;
-		nl.connected = true;
-		printf("Linked with %s:%d\n", inet_ntoa(from->sin_addr), ntohs(from->sin_port));
-		NlSendData(NL_HELLO);
-	}
-	else if (!NlSame(from, &nl.peer) && !(nl.guest && NlSame(from, &nl.relay)) &&
-		!(nl.have_direct && NlSame(from, &nl.direct)))
-		goto out;		// Another computer
-	else if (h->session != nl.session)
-	{
-		// Both sides connecting (through the lobby's relay: both said hello at the same time): the lower session
-		// number is kept by both. Otherwise an old session.
-		if ((h->type != NL_HELLO) || (h->session > nl.session))
-			goto out;
-		nl.session = h->session;
-		NlSendData(NL_HELLO);
-	}
-	if (h->type == NL_BYE)
-	{
-		printf("The other computer stopped the link.\n");
-		stop_requested = 1;
-		goto out;
-	}
-	if (nl.have_direct && NlSame(from, &nl.direct))	// Direct packets: the relay isn't needed any more
-	{
-		nl.last_direct = now;
-		if (!nl.direct_ok)
-		{
-			nl.direct_ok = true;
-			nl.peer = nl.direct;
-			printf("Direct link with %s:%d (the host's relay isn't used any more)\n", inet_ntoa(from->sin_addr),
-				ntohs(from->sin_port));
-		}
-	}
-	if (nl.quiet)
-	{
-		nl.quiet = false;
-		printf("The other computer is back.\n");
-	}
-	nl.packets_in++;
-	nl.last_recv = now;
-	nl.peer_time = h->time;
-	nl.peer_time_at = now;
-	if (h->echo)
-	{
-		// (the clocks are 32-bit milliseconds: the difference wraps with them; an old or bad value is ignored)
-		double	rtt = (int32_t)((uint32_t)(uint64_t)now - h->echo - h->echo_age);
-
-		if ((rtt >= 0) && (rtt < 10000))
-		{
-			nl.rtt = nl.rtt ? nl.rtt * 0.8 + rtt * 0.2 : rtt;
-			if (!nl.rtt_min || (rtt < nl.rtt_min))
-				nl.rtt_min = rtt;
-		}
-	}
-	if ((int32_t)(h->ack - nl.acked) > 0 && (int32_t)(h->ack - nl.send_next) <= 0)
-		nl.acked = h->ack;
-	// Units: the ones not received yet go to the console's queue, in order
-	LOCK();
-	for (u = h->first, i = 0; i < h->count; i++, u++)
-	{
-		if (pos + 2 > (uint32_t)len)
-			break;
-		n = buf[pos] | (buf[pos + 1] << 8);
-		if ((pos + 2 + n > (uint32_t)len) || (n > NL_UNIT_MAX))
-			break;
-		if (u == nl.recv_next)
-		{
-			Queue	*q = nl.in;
-
-			if ((q->head - q->tail + n > QUEUE_SIZE) || (q->uhead - q->utail >= QUEUE_UNITS))
-				break;	// The console doesn't read: kept by the other computer until it does
-			for (k = 0; k < n; k++)
-				q->buf[q->head++ & (QUEUE_SIZE - 1)] = buf[pos + 2 + k];
-			q->units[q->uhead++ & (QUEUE_UNITS - 1)] = n;
-			nl.recv_next++;
-			nl.units_in++;
-			got = true;
-		}
-		pos += 2 + n;
-	}
-	UNLOCK();
-	if (got)
-		NlSendData(NL_DATA);	// Acknowledge at once (with this console's units not acknowledged, if any)
-out:
-	NL_UNLOCK();
-}
-
-// psxcomb USB link rings: the bytes of each turn are a unit
-static void	RingsLoop(TtyThread *t)
-{
-	LinkEnd		*e = t->e;
-	static uint8_t	buf[NL_UNIT_MAX];
-	uint32_t	n, i, size;
-
-	while (!stop_requested)
-	{
-		if (!Fetch(e))
-		{
-			t->failed = 1;
-			return;
-		}
-		if (e->h.magic != USBLINK_MAGIC)
-		{
-			printf("The console stopped the USB link.\n");
-			t->failed = 1;
-			return;
-		}
-		LOCK();
-		while (t->in->utail != t->in->uhead)
-		{
-			size = t->in->units[t->in->utail & (QUEUE_UNITS - 1)];
-			if (size > Space(e))
-				break;
-			for (i = 0; i < size; i++)
-				buf[i] = t->in->buf[(t->in->tail + i) & (QUEUE_SIZE - 1)];
-			UNLOCK();
-			if (!Put(e, buf, size))
-			{
-				t->failed = 1;
-				return;
-			}
-			LOCK();
-			t->in->tail += size;
-			t->in->utail++;
-		}
-		UNLOCK();
-		if ((n = Outgoing(e)))
-		{
-			if (n > NL_UNIT_MAX)
-				n = NL_UNIT_MAX;
-			if (!Take(e, buf, n))
-			{
-				t->failed = 1;
-				return;
-			}
-			LOCK();
-			if ((t->out->head - t->out->tail + n <= QUEUE_SIZE) && (t->out->uhead - t->out->utail < QUEUE_UNITS))
-			{
-				for (i = 0; i < n; i++)
-					t->out->buf[t->out->head++ & (QUEUE_SIZE - 1)] = buf[i];
-				t->out->units[t->out->uhead++ & (QUEUE_UNITS - 1)] = n;
-			}
-			UNLOCK();
-			if (t->notify)
-				t->notify();
-		}
-		if (!Commit(e))
-		{
-			t->failed = 1;
-			return;
-		}
-		t->turns++;
-	}
-}
-
-#ifdef _WIN32
-static DWORD WINAPI	RingsThreadMain(LPVOID arg)
-{
-	RingsLoop((TtyThread *)arg);
-	return (0);
-}
-#else
-static void	*RingsThreadMain(void *arg)
-{
-	RingsLoop((TtyThread *)arg);
-	return (NULL);
-}
-#endif
-
-// Receiving thread: packets from the other computer, resends, keepalives, the delay line of -netdelay
-static volatile int	nl_net_done;
-
-static void	NlNetLoop(void)
-{
-	uint8_t				buf[2048];
-	struct sockaddr_in	from;
-	int					len;
-	double				now;
-
-	while (!stop_requested)
-	{
-#ifdef _WIN32
-		int			flen = sizeof(from);
-#else
-		socklen_t	flen = sizeof(from);
-#endif
-
-		if (NetReadable(nl.s, 1))
-		{
-			len = recvfrom(nl.s, (char *)buf, sizeof(buf), 0, (struct sockaddr *)&from, &flen);
-			if (len > 0)
-				NlReceive(buf, len, &from);
-		}
-		now = NlNow();
-		NL_LOCK();
-		while ((nl.dtail != nl.dhead) && (nl.delayed[nl.dtail & (NL_DELAYED - 1)].due <= now))
-		{
-			NlRawSend(nl.delayed[nl.dtail & (NL_DELAYED - 1)].data, nl.delayed[nl.dtail & (NL_DELAYED - 1)].len);
-			nl.dtail++;
-		}
-		// Direct link tried: hellos to the other guest's address (they open our router to its packets)
-		if (nl.have_direct && !nl.direct_ok && (now - nl.punch_start < NL_PUNCH_MS) &&
-			(now - nl.last_punch >= NL_PUNCH_EVERY))
-		{
-			uint8_t	pbuf[NL_MAX_PACKET];
-			int		plen = NlBuild(NL_HELLO, pbuf);
-
-			sendto(nl.s, (const char *)pbuf, plen, 0, (struct sockaddr *)&nl.direct, sizeof(nl.direct));
-			nl.last_punch = now;
-		}
-		if (nl.direct_ok && (now - nl.last_direct > NL_DIRECT_LOST))
-		{
-			nl.direct_ok = false;
-			nl.peer = nl.relay;
-			nl.punch_start = now;		// (tried again)
-			printf("Direct link lost: through the host's relay again\n");
-		}
-		if (nl.connected)
-		{
-			if ((nl.acked != nl.send_next) && (now - nl.last_send >= NL_RESEND_MS + nl.rtt))	// (acknowledge not back yet)
-			{
-				nl.resent++;
-				NlSendData(NL_DATA);
-			}
-			else if (now - nl.last_send >= NL_KEEPALIVE_MS)
-				NlSendData(NL_DATA);
-			if (!nl.quiet && (now - nl.last_recv > NL_QUIET_MS))
-			{
-				nl.quiet = true;
-				printf("Nothing from the other computer for %d seconds: waiting for it (up to %d seconds)...\n",
-					NL_QUIET_MS / 1000, NL_TIMEOUT_MS / 1000);
-			}
-			if (now - nl.last_recv > NL_TIMEOUT_MS)
-			{
-				printf("Nothing from the other computer for %d seconds: link lost.\n", NL_TIMEOUT_MS / 1000);
-				stop_requested = 1;
-			}
-		}
-		NL_UNLOCK();
-	}
-	nl_net_done = 1;
-}
-
-#ifdef _WIN32
-static DWORD WINAPI	NlNetThreadMain(LPVOID arg)
-{
-	(void)arg;
-	NlNetLoop();
-	return (0);
-}
-#else
-static void	*NlNetThreadMain(void *arg)
-{
-	(void)arg;
-	NlNetLoop();
-	return (NULL);
-}
-#endif
-
-// UDP socket: bound to the port (host), or to any port and the host's address known (guest)
-static bool	NlOpen(const char *peer, bool *host)
-{
-	char				name[256], *colon;
-	struct sockaddr_in	addr;
-	struct hostent		*he;
-	int					port;
-#ifdef _WIN32
-	WSADATA				wsa;
-
-	WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
-	strncpy(name, peer, sizeof(name) - 1);
-	name[sizeof(name) - 1] = 0;
-	if (!(colon = strrchr(name, ':')) || ((port = atoi(colon + 1)) <= 0) || (port > 65535))
-	{
-		printf("-netlink needs :port (host) or host:port (guest), e.g. -netlink :7010 or -netlink 1.2.3.4:7010\n");
-		return (false);
-	}
-	*colon = 0;
-	*host = !name[0];
-	if ((nl.s = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET)
-		return (false);
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(*host ? port : 0);
-	if (bind(nl.s, (struct sockaddr *)&addr, sizeof(addr)) != 0)
-	{
-		printf("Can't use the UDP port %d (used by another program?).\n", port);
-		return (false);
-	}
-	if (!*host)
-	{
-		if (!(he = gethostbyname(name)))
-		{
-			printf("Unknown host %s.\n", name);
-			return (false);
-		}
-		memset(&nl.peer, 0, sizeof(nl.peer));
-		nl.peer.sin_family = AF_INET;
-		nl.peer.sin_port = htons(port);
-		memcpy(&nl.peer.sin_addr, he->h_addr_list[0], 4);
-	}
-	return (true);
-}
-
-int	UsbNetLink(char *name, char *peer, const char *key, int delay, int jitter, int loss)
-{
-	static LinkEnd	a;
-	static Queue	in, out;
-	TtyThread		t = {&a, &in, &out, 0, 0, NlFromConsole};
-	bool			host;
-	double			hello = 0, second;
-	int				i, ret = 1;
-#ifdef _WIN32
-	HANDLE			ht, hn;
-#else
-	pthread_t		ht, hn;
-#endif
-
-	setvbuf(stdout, NULL, _IONBF, 0);
-	if (!NlSetKey(key))
-	{
-		printf("-netkey needs the 32 hex digits of the game's link key.\n");
-		return (1);
-	}
-	a.handle = USB_GetHandle();
-	a.name = name;
-	ps1_program_running = true;		// Only the kernel hook answers
-	usb_big_packet_size = 0;
-	usb_quiet = true;
-	start_quiet = true;
-	for (i = 0; (i < 10) && !Start(&a); i++)	// (the program may still be starting)
-		NetSleepMs(500);
-	start_quiet = false;
-	if ((i == 10) && !Start(&a))
-		return (1);
-	memset(&nl, 0, sizeof(nl));
-	nl.kind = a.kind;
-	nl.in = &in;
-	nl.out = &out;
-	nl.delay = delay;
-	nl.jitter = jitter;
-	nl.loss = loss;
-	srand((unsigned int)time(NULL) ^ (unsigned int)(NlNow() * 1000));
-	nl.session = ((uint32_t)rand() << 16) ^ (uint32_t)rand() ^ (uint32_t)NlNow();
-	if (!NlOpen(peer, &host))
-		return (1);
-	nl.guest = !host;
-	nl.relay = nl.peer;		// (a guest's first address: the host, or the lobby's relay)
-	NlFineTimer();
-#ifdef _WIN32
-	InitializeCriticalSection(&queue_lock);
-	InitializeCriticalSection(&nl_lock);
-	SetConsoleCtrlHandler(OnInterrupt, TRUE);
-#else
-	signal(SIGINT, OnInterrupt);
-#endif
-	if (host)
-		printf("Waiting for the other computer on UDP port %s (Ctrl+C to stop)...\n", strrchr(peer, ':') + 1);
-	else
-		printf("Connecting to %s (Ctrl+C to stop)...\n", peer);
-	if (delay || jitter || loss)
-		printf("Test: packets sent delayed by %d ms (+0-%d ms), %d%% dropped\n", delay, jitter, loss);
-	nl_net_done = 0;
-#ifdef _WIN32
-	hn = CreateThread(NULL, 0, NlNetThreadMain, NULL, 0, NULL);
-#else
-	pthread_create(&hn, NULL, NlNetThreadMain, NULL);
-#endif
-	// Until linked: the guest says hello every 250 ms (the console's bytes are kept by its driver meanwhile)
-	while (!nl.connected && !StopRequested())
-	{
-		if (!host && (NlNow() - hello > 250))
-		{
-			NL_LOCK();
-			NlSendData(NL_HELLO);
-			NL_UNLOCK();
-			hello = NlNow();
-		}
-		NetSleepMs(10);
-	}
-	if (!nl.connected)
-		goto stop;
-	// Bytes sent by the console while waiting are dropped (as a cable not plugged yet)
-	if (!Start(&a))
-		goto stop;
-#ifdef _WIN32
-	ht = CreateThread(NULL, 0, (a.kind == END_TTY) ? TtyThreadMain : RingsThreadMain, &t, 0, NULL);
-#else
-	pthread_create(&ht, NULL, (a.kind == END_TTY) ? TtyThreadMain : RingsThreadMain, &t);
-#endif
-	for (second = NlNow(); !StopRequested() && !t.failed; )
-	{
-		NetSleepMs(20);
-		if (NlNow() - second >= 1000)
-		{
-			printf("netlink: rtt %.1f ms (min %.1f)  units %u out %u in  packets %u out %u in  resent %u  "
-				"%u exchanges/s\n", nl.rtt, nl.rtt_min, nl.units_out, nl.units_in, nl.packets_out, nl.packets_in,
-				nl.resent, t.turns);
-			nl.units_out = nl.units_in = nl.packets_out = nl.packets_in = nl.resent = t.turns = 0;
-			second = NlNow();
-		}
-	}
-	stop_requested = 1;
-#ifdef _WIN32
-	WaitForSingleObject(ht, INFINITE);
-#else
-	pthread_join(ht, NULL);
-#endif
-	ret = t.failed ? 1 : 0;
-	if (t.failed)
-		printf("USB error.\n");
-
-stop:
-	stop_requested = 1;
-#ifdef _WIN32
-	WaitForSingleObject(hn, INFINITE);
-#else
-	pthread_join(hn, NULL);
-#endif
-	if (nl.connected)		// (sent at once, not through the delay line of -netdelay)
-	{
-		nl.delay = nl.jitter = nl.loss = 0;
-		for (i = 0; i < 3; i++)
-			NlSendData(NL_BYE);
-	}
-	CloseSocket(nl.s);
-	printf("Link stopped.\n");
 	return (ret);
 }

@@ -33,6 +33,10 @@ class Page(tb.Frame):
         """Another cartridge was chosen at the top of the window (the page may show the previous one's state)."""
         pass
 
+    def on_devices_listed(self):
+        """The cartridges connected were listed again (app.devices)."""
+        pass
+
     def section(self, text, master=None):
         """A titled frame (call track() on it once filled, for pages with several actions)."""
         return tb.Labelframe(master or self, text=text, padding=10)

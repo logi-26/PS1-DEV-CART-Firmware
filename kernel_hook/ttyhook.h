@@ -68,7 +68,8 @@ struct Device	USB_tty_dev =
 };
 
 // Replace the TTY device (stdin/stdout) by one of ours (USB here, serial port or USB link in siotty.h)
-static __attribute__((noinline)) void	ReplaceTTY(struct Device *dev)
+// (global: also used by the serial port driver in the debug monitor)
+__attribute__((noinline)) void	ReplaceTTY(struct Device *dev)
 {
 	syscall_close(0);					// Close stdin/stdout handles
 	syscall_close(1);

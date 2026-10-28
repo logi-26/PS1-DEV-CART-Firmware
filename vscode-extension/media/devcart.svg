@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+  <!-- A cartridge with its connector: the PS1 DEV CART panel -->
+  <path d="M5 3h14v12l-2 2v4H7v-4l-2-2z"/>
+  <path d="M8 6h8v5H8z"/>
+  <path d="M9 17v4M12 17v4M15 17v4"/>
+</svg>

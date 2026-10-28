@@ -45,6 +45,13 @@ $(TARGET).elf: $(OBJS) $(TARGET).ld
 	$(PSN00B_CC) -nostdlib -static -G0 -Wl,-gc-sections -T $(TARGET).ld -Wl,-Map=$(TARGET).map -o $@ $(OBJS) \
 		-Wl,--start-group $(PSN00B_LIBS) -Wl,--end-group
 
+# The tool's symbols next to its copy in ps1transfer/ (without the debug information): the PS1 Dev Cart Manager finds
+# them there (Frame Inspector: DrawOTag and VSync; Memory page)
+SHIPPED_ELF = $(DEVCART_ROOT)ps1transfer/$(TARGET).elf
+
+$(SHIPPED_ELF): $(TARGET).elf
+	$(PSN00B_OBJCOPY) --strip-debug $< $@
+
 $(TARGET).ps-exe: $(TARGET).elf
 	$(ELF2X) -q $< $@
 	printf $(STACK_ADDR_BYTES) | dd of=$@ bs=1 seek=48 conv=notrunc 2> /dev/null

@@ -65,13 +65,13 @@ if not %errorlevel% equ 0 (
 	set clean_failed=1
 )
 
-make -C "%build_dir%\ps1-tools\audiostreamer" %target%
+make -C "%build_dir%\ps1-tools\padtest" %target%
 if not %errorlevel% equ 0 (
 	if not "%target%" == "clean" goto build_error
 	set clean_failed=1
 )
 
-make -C "%build_dir%\ps1-tools\videostreamer" %target%
+make -C "%build_dir%\ps1-tools\videotest" %target%
 if not %errorlevel% equ 0 (
 	if not "%target%" == "clean" goto build_error
 	set clean_failed=1

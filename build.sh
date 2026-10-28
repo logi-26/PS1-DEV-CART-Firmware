@@ -104,7 +104,7 @@ if [ $? -ne 0 ]; then
 	clean_failed=1
 fi
 
-make -C "$build_dir/ps1-tools/audiostreamer" $target
+make -C "$build_dir/ps1-tools/padtest" $target
 if [ $? -ne 0 ]; then
 	if [ ! "$target" = "clean" ]; then
 		build_error
@@ -112,7 +112,7 @@ if [ $? -ne 0 ]; then
 	clean_failed=1
 fi
 
-make -C "$build_dir/ps1-tools/videostreamer" $target
+make -C "$build_dir/ps1-tools/videotest" $target
 if [ $? -ne 0 ]; then
 	if [ ! "$target" = "clean" ]; then
 		build_error

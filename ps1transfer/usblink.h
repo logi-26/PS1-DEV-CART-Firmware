@@ -19,6 +19,7 @@ void	USB_SetHandle(void *handle);
 void	*USB_OpenOther(char *serial);		// Another cartridge, by serial number (NULL: can't open it)
 void	USB_CloseOther(void *handle);
 bool	USB_Exchange(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize);
+extern volatile uint32_t	link_crc_errors;	// Exchange packets received wrong (not used, or written again)
 void	USB_DetectEscaped(void);			// Asks the selected cartridge if it has escaped answers (see main.c)
 extern bool		ps1_program_running;
 extern uint32_t	usb_big_packet_size;
@@ -26,11 +27,13 @@ extern bool		usb_quiet;
 
 // Relays the USB link rings between the opened cartridge and another one until an error: returns the exit code
 int		UsbRelay(char *first_name, char *second_serial);
+// Relay of a debug session (-gdb -relay SERIAL2): started with the program stopped at its entry point, the debugged
+// cartridge's turns taken by the GDB server (RelayTurn: false after a USB error, the relay stopped)
+bool	USB_ExchangeServed(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize);
+bool	RelayBegin(char *first_name, char *second_serial);
+bool	RelayTurn(void);
+void	RelayEnd(void);
 // Connects the USB link of the opened cartridge's program to a TCP server (host:port) until stopped: the exit code
 int		UsbNet(char *name, char *host_port);
-// Links the USB link of the opened cartridge's program to the console of another computer (netplay), until stopped:
-// peer ":port" waits for it (host), "host:port" connects to it; delay/jitter/loss: test conditions (packets sent)
-// key: the game's link key from the Netplay lobby (32 hex digits, packets tagged), NULL: none
-int		UsbNetLink(char *name, char *peer, const char *key, int delay, int jitter, int loss);
 
 #endif

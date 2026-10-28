@@ -5,11 +5,9 @@ This Source Code Form is subject to the terms of the Mozilla Public License, v. 
 If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
-import os
-
 import ttkbootstrap as tb
 
-from devices import GUI_DIR, default_ps1transfer
+from devices import default_ps1transfer
 from pages.base import Page
 from settings import config_dir
 from widgets import FileField
@@ -43,20 +41,9 @@ class SettingsPage(Page):
         tb.Label(self, text="Settings file: %s" % self.app.settings.path, bootstyle="secondary").pack(
             anchor="w", pady=(16, 0))
 
-        # Licenses of the libraries in the Manager executable (FFmpeg for the video/audio streamers, see the notice)
         box = self.section("About")
         box.pack(fill="x", pady=(16, 0))
-        tb.Label(box, text="PS1 Dev Cart Manager %s. Its executable contains FFmpeg (video and audio decoding for "
-                           "the streamer pages) and other open source libraries." % self.app.version,
-                 wraplength=760, justify="left").pack(anchor="w")
-        tb.Button(box, text="Third-party licences", bootstyle="secondary-outline",
-                  command=self.licenses).pack(anchor="w", pady=(6, 0))
-
-    def licenses(self):
-        notice = os.path.join(GUI_DIR, "licenses", "FFMPEG-NOTICE.txt")
-        if not os.path.isfile(notice):
-            return self.app.error("The licence files are missing (licenses folder next to the Manager).")
-        os.startfile(os.path.dirname(notice))
+        tb.Label(box, text="PS1 Dev Cart Manager %s." % self.app.version, wraplength=760, justify="left").pack(anchor="w")
 
     def save(self):
         self.app.settings.set("ps1transfer", self.exe.get())

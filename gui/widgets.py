@@ -63,12 +63,19 @@ class FileField(tb.Frame):
 
 
 class FileList(tb.Frame):
-    """List of files (remembered in the settings) with Add, Remove, Up, Down, Clear. max_files: 0 = no limit."""
+    """List of files (remembered in the settings) with Add, Remove, Up, Down, Clear. max_files: 0 = no limit,
+    on_change: called when the list changes, compact: the buttons in the label's row (less height), remember: False:
+    the list starts empty each time (only the folder of the last file added is remembered), expand: called with the
+    files chosen with Add, returns the files to add (e.g. the TIM files of a Net Yaroze auto script)."""
 
-    def __init__(self, master, app, key, label, filetypes=None, max_files=0, height=6):
+    def __init__(self, master, app, key, label, filetypes=None, max_files=0, height=6, on_change=None, compact=False,
+                 remember=True, expand=None):
         super().__init__(master)
         self.app = app
         self.key = key
+        self.on_change = on_change
+        self.remember = remember
+        self.expand = expand
         self.max_files = max_files
         self.filetypes = filetypes or [("All files", "*.*")]
         head = tb.Frame(self)
@@ -80,28 +87,44 @@ class FileList(tb.Frame):
         row.pack(fill="both", expand=True, pady=(2, 0))
         self.listbox = tb.Listbox(row, height=height, selectmode="extended", activestyle="none", font=MONO_FONT)
         self.listbox.pack(side="left", fill="both", expand=True)
-        buttons = tb.Frame(row)
-        buttons.pack(side="left", fill="y", padx=(6, 0))
+        scroll = tb.Scrollbar(row, orient="vertical", command=self.listbox.yview)
+        scroll.pack(side="left", fill="y")
+        self.listbox.configure(yscrollcommand=scroll.set)
+        buttons = tb.Frame(head if compact else row)
+        buttons.pack(side="right" if compact else "left", fill="y", padx=(6, 0))
         for text, command in (("Add...", self.add), ("Remove", self.remove), ("Up", lambda: self.move(-1)),
                               ("Down", lambda: self.move(1)), ("Clear", self.clear)):
-            tb.Button(buttons, text=text, width=8, bootstyle="secondary-outline", command=command).pack(pady=1)
-        for path in app.settings.field(key, []):
+            tb.Button(buttons, text=text, width=8, bootstyle="secondary-outline", command=command).pack(
+                side="left" if compact else "top", padx=(4, 0) if compact else 0, pady=1)
+        for path in app.settings.field(key, []) if remember else []:
             self.listbox.insert("end", path)
 
     def files(self):
         return list(self.listbox.get(0, "end"))
 
     def _save(self):
-        self.app.settings.set_field(self.key, self.files())
+        if self.remember:
+            self.app.settings.set_field(self.key, self.files())
+        if self.on_change:
+            self.on_change()
 
     def add(self):
-        folder = os.path.dirname(self.files()[-1]) if self.files() else None
+        folder = os.path.dirname(self.files()[-1]) if self.files() else \
+            (self.app.settings.field(self.key + ".folder", "") or None)
         paths = filedialog.askopenfilenames(initialdir=folder, filetypes=self.filetypes, parent=self)
+        if not paths:
+            return
+        self.app.settings.set_field(self.key + ".folder", os.path.dirname(os.path.normpath(paths[0])))
+        if self.expand:
+            paths = self.expand(list(paths))
         for path in paths:
+            path = os.path.normpath(path)
+            if path in self.files():        # (already in the list)
+                continue
             if self.max_files and self.listbox.size() >= self.max_files:
                 self.app.error("At most %d files." % self.max_files)
                 break
-            self.listbox.insert("end", os.path.normpath(path))
+            self.listbox.insert("end", path)
         self._save()
 
     def remove(self):
@@ -205,3 +228,32 @@ class ImageView(tb.Frame):
             img = img.resize((max(1, int(img.width * ratio)), max(1, int(img.height * ratio))), Image.LANCZOS)
         self.photo = ImageTk.PhotoImage(img)
         self.canvas.create_image(cw // 2, ch // 2, image=self.photo, anchor="center")
+
+
+class ScrollFrame(tb.Frame):
+    """A frame whose content (self.inner) scrolls vertically when it is taller than the frame (mouse wheel over it)."""
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        bg = tb.Style().colors.bg
+        self.canvas = tk.Canvas(self, highlightthickness=0, background=bg)
+        self.scroll = tb.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scroll.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scroll.pack(side="left", fill="y")
+        self.inner = tb.Frame(self.canvas)
+        self.window = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self._resize())
+        self.canvas.bind("<Configure>", lambda e: self._resize())
+        self.bind_all("<MouseWheel>", self._wheel, add="+")
+
+    def _resize(self):
+        self.canvas.itemconfigure(self.window, width=max(self.canvas.winfo_width(), self.inner.winfo_reqwidth()))
+        self.canvas.configure(scrollregion=(0, 0, self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()))
+
+    def _wheel(self, event):
+        w = self.winfo_containing(event.x_root, event.y_root)
+        while w is not None and w is not self:
+            w = w.master
+        if w is self and self.inner.winfo_reqheight() > self.canvas.winfo_height():
+            self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")

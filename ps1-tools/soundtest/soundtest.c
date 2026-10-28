@@ -11,6 +11,13 @@
 *			Circle: SEQ start/stop, Triangle/Square: volume, Start: stop all sounds
 * The buttons can also be pressed from the computer: PsyQ pad bits written to REMOTE_PAD_ADRS (e.g. with
 * "ps1transfer -poke"), added to the controller ones.
+* PS1 Dev Cart Manager ("ps1transfer -snd ... -sndlive", see ps1transfer/sndlive.c): the program, note, volume, SEQ and
+* voices are shared with the computer (SoundSync, written at each frame), which can change them (requests applied at
+* the next frame) and play the note (Cross, with REMOTE_PAD_ADRS): its controls and the controller's act on the same
+* state, each shows what the other one does.
+* VAB editor (the manager's Sound Tools): the VAB player reads the program and tone attributes from the VH in RAM (its
+* address in SoundSync.vh_adrs) at each key on, so the computer edits them there; req_refresh applies them at once to
+* the notes sounding too (volume, pan, pitch, ADSR).
 *
 * Built with PSn00bSDK (open source) instead of PsyQ. PsyQ's libsnd is replaced by our own VAB player
 * (programs, tones with their key range, pitch from the center note and fine tune, volume and pan, ADSR) and SEQ player
@@ -36,6 +43,36 @@
 #define	TESTER_MAGIC		0x54444E53	// "SNDT"
 #define	TESTER_MAX_FILES	8
 #define	REMOTE_PAD_ADRS		0x800FFFF0	// Buttons pressed from the computer (PsyQ pad bits)
+
+// State shared with the PS1 Dev Cart Manager ("ps1transfer -sndlive", see ps1transfer/sndlive.c), in the free end of the
+// data block header (0x100 bytes, the file table uses 0x68): written at each frame, and the changes the computer asks
+// for (applied at the next frame, then set back to -1)
+#define	TESTER_SYNC_ADRS	(TESTER_DATA_ADRS + 0x80)
+#define	TESTER_SYNC_MAGIC	0x534E4453	// "SDNS": the tester has the shared state
+
+typedef struct
+{
+	uint32_t	magic;
+	int16_t		kind;				// 0: no sound data, 1: VAB, 2: VAG
+	int16_t		n_programs;
+	int16_t		prog_index;			// Program chosen (index in the programs with tones), its number
+	int16_t		program;
+	int16_t		note;				// 0-127, 60 = C4
+	int16_t		volume;				// Tester volume 0-127
+	int16_t		playing;			// The note is played (Cross held, on the controller or from the computer)
+	int16_t		seq;				// 0: no SEQ, 1: stopped, 2: playing
+	int16_t		seq_bar, seq_loop;
+	uint32_t	voices;				// Voices sounding (bit n: voice n, envelope not ended)
+	uint32_t	vag_rate;			// VAG sample rate (Hz)
+	int16_t		vab_ps, vab_ts, vab_vs;	// VAB programs, tones, VAGs
+	uint16_t	frame;				// Counts the frames
+	uint8_t		prog_map[16];		// Programs with tones (bit n: program n)
+	int16_t		req_prog, req_note, req_volume;	// Asked by the computer, -1: nothing
+	int16_t		req_seq;			// 0: stop, 1: start, -1: nothing
+	int16_t		req_stop;			// 1: stop all sounds, -1: nothing
+	int16_t		req_refresh;		// 1: the VAB attributes edited by the computer applied to the notes sounding
+	uint32_t	vh_adrs, vh_size;	// The VH in RAM (VAB editor), 0: no VAB
+} SoundSync;
 
 enum
 {
@@ -93,8 +130,34 @@ typedef struct
 #define	VAG_HEADER_SIZE	48
 #define	SPU_VOICE(_v_)	((volatile uint16_t *)(0x1F801C00 + (_v_) * 16))	// volL, volR, pitch, start, adsr1, adsr2, envx
 #define	SPU_REG(_a_)	(*((volatile uint16_t *)(_a_)))
-#define	SPU_KEY_ON(_v_)		SPU_REG(((_v_) < 16) ? 0x1F801D88 : 0x1F801D8A) = 1 << ((_v_) & 15)
-#define	SPU_KEY_OFF(_v_)	SPU_REG(((_v_) < 16) ? 0x1F801D8C : 0x1F801D8E) = 1 << ((_v_) & 15)
+
+// Key on / off: the SPU reads its key registers at its own pace (each sample), so voices keyed one write at a time lose
+// some (a write replaces the previous one before it was taken: notes never released, Stop all sounds ignored), and a
+// key off just after the key on of the same voice is not taken (a short SEQ note: never released). The voices are
+// gathered and written at once each frame (SpuKeys), a key off of a voice keyed on in the frame at the next one.
+static uint32_t	key_on, key_off, key_off_next;
+#define	SPU_KEY_ON(_v_)		(key_on |= 1 << (_v_), key_off &= ~(1 << (_v_)), key_off_next &= ~(1 << (_v_)))
+#define	SPU_KEY_OFF(_v_)	((key_on & (1 << (_v_))) ? (key_off_next |= 1 << (_v_)) : (key_off |= 1 << (_v_)))
+
+static void	SpuKeys(void)
+{
+	volatile int	i;
+
+	if (key_off)
+	{
+		SPU_REG(0x1F801D8C) = key_off;
+		SPU_REG(0x1F801D8E) = key_off >> 16;
+		for (i = 0; i < 2000; i++)	// (some SPU samples: the key off taken before a key on of the same voice)
+			;
+	}
+	if (key_on)
+	{
+		SPU_REG(0x1F801D88) = key_on;
+		SPU_REG(0x1F801D8A) = key_on >> 16;
+	}
+	key_off = key_off_next;
+	key_on = key_off_next = 0;
+}
 
 static DISPENV		disp[2];
 static DRAWENV		draw[2];
@@ -257,6 +320,22 @@ static void	VoicePitch(int v)
 	SPU_VOICE(v)[2] = PitchCents(44100, cents);
 }
 
+// The VAB attributes edited by the computer (VAB editor) heard at once on the notes sounding: volume and pan, pitch,
+// ADSR (the tone and key range of a note sounding stay: the next notes use the new ones)
+static void	RefreshVoices(void)
+{
+	int	v;
+
+	for (v = 0; v < VOICES - 1; v++)
+		if (vab && voices[v].tone && SPU_VOICE(v)[6])
+		{
+			VoiceVolume(v);
+			VoicePitch(v);
+			SPU_VOICE(v)[4] = voices[v].tone->adsr1;
+			SPU_VOICE(v)[5] = voices[v].tone->adsr2;
+		}
+}
+
 static int	FreeVoice(void)
 {
 	int	v, best = -1;
@@ -310,6 +389,23 @@ static void	NoteOff(int channel, int note)		// note < 0: all the notes of the ch
 		}
 }
 
+// The tester volume, also for the notes sounding (the VAB voices and the VAG voice): heard at once
+static void	SetVolume(int volume)
+{
+	int	v;
+
+	volume = Clamp(volume, 0, 127);
+	if (volume == master_volume)
+		return;
+	master_volume = volume;
+	for (v = 0; v < VOICES - 1; v++)
+		if (vab && voices[v].tone && SPU_VOICE(v)[6])
+			VoiceVolume(v);
+	if (!vab && vag_data && SPU_VOICE(VAG_VOICE)[6])
+		SPU_VOICE(VAG_VOICE)[0] = SPU_VOICE(VAG_VOICE)[1] = master_volume * 0x3FFF / 127;
+}
+
+// Stop all sounds: every voice silenced at once (volume 0, fastest release), not left to its release
 static void	AllNotesOff(void)
 {
 	int	v;
@@ -317,8 +413,11 @@ static void	AllNotesOff(void)
 	for (v = 0; v < VOICES; v++)
 	{
 		voices[v].on = 0;
-		SPU_KEY_OFF(v);
+		SPU_VOICE(v)[0] = SPU_VOICE(v)[1] = 0;
+		SPU_VOICE(v)[5] &= ~0x1F;		// ADSR release rate: fastest
 	}
+	key_on = key_off_next = 0;
+	key_off = (1 << VOICES) - 1;
 }
 
 /****************************************/
@@ -366,6 +465,7 @@ static void	SeqStart(void)
 	seq_ptr = seq_data + SEQ_HEADER_SIZE;
 	seq_status = 0;
 	seq_acc = 0;
+	seq_ticks = 0;			// (bars counted from the start of the music, at each loop too)
 	seq_wait = SeqVarLen();
 }
 
@@ -556,10 +656,52 @@ static void	VagKeyOff(void)
 	SPU_KEY_OFF(VAG_VOICE);
 }
 
+// The shared state: what does not change (the sound data), the requests cleared, then the magic (the computer waits
+// for it)
+static void	SyncInit(SoundSync *live)
+{
+	int	i;
+
+	memset(live, 0, sizeof(SoundSync));
+	live->kind = vab ? 1 : (vag_data ? 2 : 0);
+	live->n_programs = n_programs;
+	live->vag_rate = vag_data ? vag_rate : 0;
+	if (vab)
+	{
+		live->vab_ps = vab->ps;
+		live->vab_ts = vab->ts;
+		live->vab_vs = vab->vs;
+	}
+	for (i = 0; i < n_programs; i++)
+		live->prog_map[programs[i] >> 3] |= 1 << (programs[i] & 7);
+	if (vab)
+	{
+		live->vh_adrs = (uint32_t)vab;
+		live->vh_size = VhSize(vab);
+	}
+	live->req_prog = live->req_note = live->req_volume = live->req_seq = live->req_stop = live->req_refresh = -1;
+	live->magic = TESTER_SYNC_MAGIC;
+}
+
+static void	SeqPlay(int on)
+{
+	if (!seq_data || (on == seq_playing))
+		return;
+	if (on)
+	{
+		SeqStart();
+		seq_loops = 0;
+		seq_playing = 1;
+	}
+	else
+		SeqStop();
+}
+
 int	main(void)
 {
 	TesterData	*td = (TesterData *)TESTER_DATA_ADRS;
-	uint32_t	pad, opad = 0;
+	SoundSync	*live = (SoundSync *)TESTER_SYNC_ADRS;
+	uint32_t	pad, opad = 0, voice_bits;
 	int			prog_index = 0, note = 60, i, side = 0, is_pal, playing_note = 0, active;
 
 	*((volatile uint32_t *)REMOTE_PAD_ADRS) = 0;
@@ -586,11 +728,30 @@ int	main(void)
 	SPU_REG(0x1F801D82) = 0x3FFF;
 	if (td->magic == TESTER_MAGIC)
 		LoadSounds(td);
+	SyncInit(live);
 
 	SetDispMask(1);
 
 	while (1)
 	{
+		// Changes asked by the computer (before the controller: a note set then played from there is this note)
+		if ((live->req_prog >= 0) && (live->req_prog < n_programs))
+			prog_index = live->req_prog;
+		if ((live->req_note >= 0) && (live->req_note <= 127))
+			note = live->req_note;
+		if ((live->req_volume >= 0) && (live->req_volume <= 127))
+			SetVolume(live->req_volume);
+		if (live->req_seq >= 0)
+			SeqPlay(live->req_seq);
+		if (live->req_stop > 0)
+		{
+			SeqStop();
+			AllNotesOff();
+		}
+		if (live->req_refresh > 0)
+			RefreshVoices();
+		live->req_prog = live->req_note = live->req_volume = live->req_seq = live->req_stop = live->req_refresh = -1;
+
 		pad = (PadRead(1) & 0xFFFF) | *((volatile uint32_t *)REMOTE_PAD_ADRS);
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))
 
@@ -600,8 +761,8 @@ int	main(void)
 		if (PRESSED(PADLdown) && (note > 0))	note--;
 		if (PRESSED(PADR1))						note = (note + 12 > 127) ? 127 : note + 12;
 		if (PRESSED(PADL1))						note = (note < 12) ? 0 : note - 12;
-		if ((pad & PADRup) && (master_volume < 127))	master_volume++;
-		if ((pad & PADRleft) && (master_volume > 0))	master_volume--;
+		if (pad & PADRup)		SetVolume(master_volume + 1);
+		if (pad & PADRleft)		SetVolume(master_volume - 1);
 
 		// Play while Cross is held
 		if (PRESSED(PADRdown))
@@ -620,16 +781,8 @@ int	main(void)
 				VagKeyOff();
 		}
 
-		if (PRESSED(PADRright) && seq_data)
-		{
-			if (seq_playing)
-				SeqStop();
-			else
-			{
-				SeqStart();
-				seq_playing = 1;
-			}
-		}
+		if (PRESSED(PADRright))
+			SeqPlay(!seq_playing);
 		if (PRESSED(PADstart))
 		{
 			SeqStop();
@@ -637,17 +790,19 @@ int	main(void)
 		}
 		opad = pad;
 		SeqUpdate();
+		SpuKeys();
 
 		// Screen (devcart_ui.h): sound data, note/volume, voices (lit while sounding), controls
 		UiTitle("PS1 DEV CART SOUND TESTER", vab ? "VAB" : (vag_data ? "VAG" : "NO DATA"));
 		UiTextPanel(8, 20, 304, 3);
 		UiTextPanel(8, 62, 304, 3);
 		UiTextPanel(8, 104, 304, 2);
-		for (i = active = 0; i < VOICES; i++)
+		for (i = active = 0, voice_bits = 0; i < VOICES; i++)
 		{
 			int	on = (SPU_VOICE(i)[6] != 0);	// Envelope level: voice sounding
 
 			active += on;
+			voice_bits |= on << i;
 			if (on)
 				UiTile(16 + i * 12, 120, 10, 6, UI_OK);
 			else
@@ -671,6 +826,18 @@ int	main(void)
 		FntPrint(fnt_play, "PLAYING  %s", (pad & PADRdown) ? "YES" : "NO");
 		FntPrint(fnt_voices, "VOICES   %d/%d", active, VOICES);
 		UiHelp("</>:PROGRAM UP/DOWN:NOTE L1/R1:OCTAVE\nX:PLAY O:SEQ TRI/SQR:VOLUME START:STOP");
+
+		// The state shown here, for the computer
+		live->prog_index = prog_index;
+		live->program = n_programs ? programs[prog_index] : -1;
+		live->note = note;
+		live->volume = master_volume;
+		live->playing = (pad & PADRdown) ? 1 : 0;
+		live->seq = !seq_data ? 0 : (seq_playing ? 2 : 1);
+		live->seq_bar = seq_playing ? (int)(seq_ticks / (seq_resolution * 4)) + 1 : 0;
+		live->seq_loop = seq_loops;
+		live->voices = voice_bits;
+		live->frame++;
 
 		DrawSync(0);
 		VSync(0);

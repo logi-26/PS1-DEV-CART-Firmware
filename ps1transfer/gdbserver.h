@@ -22,6 +22,9 @@ extern uint32_t	mon_stop_regs, mon_stop_info;
 
 // Program loaded with a break instruction at its entry point (original instruction given), executed in a debug
 // session. Waits for the stop at the entry point, then serves GDB on the port until it detaches or kills.
-int		GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn);
+// relay_serial: another cartridge, the USB link relay with it in the session (link play, both programs with -c link)
+int		GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn, char *relay_serial);
+// The same, without GDB: frames of the program captured on request (PS1 Dev Cart Manager), see the end of gdbserver.c
+int		FrameLive(uint32_t entry_pc, uint32_t entry_insn);
 
 #endif

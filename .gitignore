@@ -1,6 +1,8 @@
-# Build outputs (the ROM, the tools' .ps-exe next to ps1transfer and ps1transfer.exe are kept: ready to use)
+# Build outputs (the ROM, the tools' .ps-exe and their symbols (.elf) next to ps1transfer and ps1transfer.exe are
+# kept: ready to use)
 *.o
 *.elf
+!ps1transfer/*.elf
 *.map
 *.dep
 *.ld.tmp
@@ -24,3 +26,6 @@ gui/dist/
 # Local configuration and Sony license data (never published)
 config/Makefile.conf
 config/LICENSE*.DAT
+
+# Local build tools (toolchains, SDKs, build scripts: see buildtools/README.txt), not published
+buildtools/

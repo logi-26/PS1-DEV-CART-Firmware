@@ -32,11 +32,11 @@ SUMMARY_LINE = re.compile(r"^\d+ save\(s\), \d+/15 blocks used")
 
 
 class CardPage(Page):
-    title = "Memory card"
+    title = "Memory Card Tools"
 
     def build(self):
         s = self.app.settings
-        tb.Label(self, text="Memory card", font=("", 16, "bold")).pack(anchor="w", pady=(0, 8))
+        tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 8))
 
         box = self.section("Whole card")
         box.pack(fill="x", pady=(0, 8))

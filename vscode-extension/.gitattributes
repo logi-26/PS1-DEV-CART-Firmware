@@ -1,0 +1,4 @@
+yaroze/install.sh text eol=lf
+yaroze/specs text eol=lf
+yaroze/toolchain-build/* text eol=lf
+yaroze/*.tar.gz binary

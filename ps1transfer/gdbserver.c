@@ -16,6 +16,7 @@
 * - One hardware breakpoint (hbreak) and one watchpoint (watch/rwatch/awatch) with the COP0 debug registers.
 * - Pause (Ctrl+C / VS Code pause): a 'P' byte, the program stops at the next interrupt.
 * - printf of the program: shown here and sent to GDB (Debug Console in VS Code).
+* - FrameLive ("-frame"): the same session without GDB, for the frame capture (see the end of this file).
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 * If a copy of the MPL was not distributed with this file,
@@ -27,6 +28,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <time.h>
+#include "usblink.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -45,6 +47,7 @@ typedef int		sock_t;
 #endif
 
 #include "gdbserver.h"
+#include "timlive.h"
 #include "../monitor/monitor.h"
 
 #define	BP_INSN			0x0005000D	// "break 5", like GDB for MIPS
@@ -960,12 +963,14 @@ static int	ProcessRx(char *rx, int *rx_len, char *pkt, char *out)
 }
 
 
-int	GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn)
+int	GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn, char *relay_serial)
 {
 	sock_t				listener;
 	struct sockaddr_in	sa;
 	char				*rx, *pkt, *out;
 	int					rx_len = 0, n, state = SERVE, one = 1;
+	bool				relay = false;
+	uint8_t				version = 0;
 #ifdef _WIN32
 	WSADATA				wsa;
 
@@ -990,6 +995,16 @@ int	GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn)
 		return (1);
 	}
 	printf("Stopped at 0x%08X.\n", regs[MON_REG_EPC]);
+	// Link play: the USB link relay with the other cartridge, in this session (the monitor answers its exchange also
+	// while the program is stopped: an exchange crossing a stop goes on, the stop notification is kept)
+	if (relay_serial)
+	{
+		if (!ReadMemRaw(MONITOR_STATE_ADRS + offsetof(MonitorState, version), &version, 1) || (version < 12))
+			printf("The USB link relay in a debug session needs the firmware with the debug monitor version 12 "
+				"(this one: %d): flash the new firmware.\n", version);
+		else
+			relay = RelayBegin("the debugged cartridge", relay_serial);
+	}
 
 	listener = socket(AF_INET, SOCK_STREAM, 0);
 	memset(&sa, 0, sizeof(sa));
@@ -1008,6 +1023,20 @@ int	GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn)
 	{
 		if (running)
 			PollUSB();
+		if (relay && running)
+		{
+			if (!RelayTurn())
+			{
+				printf("USB link relay stopped (USB error).\n");
+				RelayEnd();
+				relay = false;
+			}
+			if (mon_stop_pending)		// (received during the exchange)
+			{
+				mon_stop_pending = false;
+				OnStop();
+			}
+		}
 
 		// New connection (VS Code first checks the port with a connection closed at once)
 		if (client == INVALID_SOCKET)
@@ -1041,11 +1070,536 @@ int	GdbServer(int port, uint32_t entry_pc, uint32_t entry_insn)
 		state = ProcessRx(rx, &rx_len, pkt, out);
 	}
 
+	RelayEnd();		// (nothing without the relay)
 	if (client != INVALID_SOCKET)
 		CloseSocket(client);
 	CloseSocket(listener);
 	free(rx);
 	free(pkt);
 	free(out);
+	return (0);
+}
+
+/****************************************/
+// Frame capture ("ps1transfer -frame -f game.exe", the PS1 Dev Cart Manager's frame inspector)
+//
+// The program runs in a debug session. A capture stops it when it hands an ordering table to the GPU and reads that
+// GPU linked list from its RAM: every packet of GPU commands (polygons, sprites, lines, tiles, draw modes...), with the
+// GPU's draw area and drawing offset (GP1 10h, MON_CMD_GPU_INFO); once the list has been drawn, its draw area is read
+// from VRAM (the frame drawn). Two ways to stop:
+// - DrawOTag given (its address, from the program's symbol file): a COP0 execution breakpoint on its first
+//   instruction, the ordering table is its first argument. The breakpoint is then moved to the return address (the
+//   function goes on), and back to DrawOTag. With VSync given too (a break instruction on it): a frame is the
+//   DrawOTag calls between two VSync calls (e.g. the scene, then the text), read from VRAM at the second one (the
+//   program has waited for the GPU). A program waiting by polling VSync(-1) (e.g. the link tester): a DrawOTag after
+//   such calls starts the next frame if it draws in another area or the frame's first table again (VSync(-1) of the
+//   libraries inside a frame don't). Without VSync: a frame starts at a call drawing in another draw area than the calls
+//   before (double buffering) or drawing the first table seen again (single buffering).
+//   Calls queued by the library (PsyQ's libgpu, while the GPU is busy) are seen too: the table is complete then.
+// - Otherwise: a COP0 data watchpoint on the GPU DMA address register (D2_MADR): the program stops when it starts a
+//   GPU DMA, the address written is read from the registers of the store instruction; lists started from an interrupt
+//   (a library's queue) aren't seen this way. Other uses of the DMA (LoadImage...) are told apart: they don't start a
+//   valid linked list.
+//
+// Commands on the standard input: "capture DRAW [VSYNC] FILE" (DRAW: DrawOTag in hexadecimal, or - for the DMA;
+// VSYNC: VSync, optional; FILE after a tab: the frame's VRAM area as 16-bit pixels), "pad BITS", "padport N", "padtype ID", "padaxes HEX", "padmove DX DY",
+// "padstate" (remote pad, see memlive.c), "quit".
+// Answers: "FRMLIVE ready", "FRMBEGIN", "FRMLIST N ADDR", "FRMPKT N ADDR W0 W1..." (the GPU words of a packet,
+// hexadecimal), "FRMENV X1 Y1 X2 Y2 OX OY" (draw area, offset), "FRMVRAM X Y W H FILE", "FRMEND LISTS PACKETS",
+// "FRMERR text". The program's printf is shown meanwhile.
+
+#define	D2_MADR			0x1F8010A0
+#define	FRAME_NODES		200000		// Nodes of a list at most (a loop is not followed forever)
+#define	FRAME_SECONDS	5
+#define	RAM_CHUNK		2048
+#define	DCIC_HIT_EXEC	(1 << 1)
+
+static uint8_t	*ram_copy;					// The PS1 RAM as read during a stop (2MB, by chunks)
+static uint8_t	ram_read[0x200000 / RAM_CHUNK];
+
+static bool	RamWord(uint32_t adrs, uint32_t *value)
+{
+	uint32_t	chunk;
+
+	adrs &= 0x1FFFFC;
+	chunk = adrs / RAM_CHUNK;
+	if (!ram_read[chunk])
+	{
+		if (!ReadMemRaw(0x80000000 + chunk * RAM_CHUNK, ram_copy + chunk * RAM_CHUNK, RAM_CHUNK))
+			return (false);
+		ram_read[chunk] = 1;
+	}
+	memcpy(value, ram_copy + adrs, 4);
+	return (true);
+}
+
+// COP0 debug registers (applied when the program resumes): execution breakpoint at exec (0: none), or the data
+// watchpoint on writes to D2_MADR (any segment), or nothing
+static bool	FrameBreak(uint32_t exec, bool dma)
+{
+	uint32_t	cop0[5] = {0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0};	// bpc, bpcm, bda, bdam, dcic
+
+	if (exec)
+	{
+		cop0[0] = exec;
+		cop0[4] = DCIC_EXEC | DCIC_ENABLE;
+	}
+	else if (dma)
+	{
+		cop0[2] = D2_MADR;
+		cop0[3] = 0x1FFFFFFC;
+		cop0[4] = DCIC_DATA | DCIC_WRITE | DCIC_ENABLE;
+	}
+	return (WriteMemRaw(MONITOR_STATE_ADRS + offsetof(MonitorState, bpc), (uint8_t *)cop0, sizeof(cop0)));
+}
+
+// The value the stopped store instruction writes (sw rt, offset(base) at the exception PC)
+static bool	StoredValue(uint32_t *value)
+{
+	uint32_t	pc, insn;
+
+	if (!FetchRegs())
+		return (false);
+	pc = regs[MON_REG_EPC] + ((regs[MON_REG_CAUSE] & 0x80000000) ? 4 : 0);	// (in a branch delay slot)
+	if (!ReadWord(pc, &insn) || ((insn >> 26) != 0x2B))
+		return (false);
+	*value = regs[(insn >> 16) & 31];
+	return (true);
+}
+
+typedef struct
+{
+	int			packets;
+	bool		known;				// Draw area and offset known
+	int32_t		area[4], offset[2];	// Draw area (top left, bottom right) and offset
+} FrameEnv;
+
+// The GPU linked list from start: packets of "words << 24 | next" headers, the end at 0xFFFFFF. False if it isn't one
+// (another DMA use). print: its packets as FRMPKT lines; E3/E4/E5 commands met: the draw area and offset in env.
+static bool	WalkList(uint32_t start, int n, bool print, FrameEnv *env)
+{
+	uint32_t	adrs = start & 0x1FFFFC, hdr, w, next;
+	int			nodes, i, count;
+	char		line[16 * 9 + 64];
+
+	if ((start & 3) || ((start & 0xFFFFFF) >= 0x200000))
+		return (false);
+	for (nodes = 0; nodes < FRAME_NODES; nodes++)
+	{
+		if (!RamWord(adrs, &hdr))
+			return (false);
+		count = hdr >> 24;
+		next = hdr & 0xFFFFFF;
+		if ((next != 0xFFFFFF) && ((next >= 0x200000) || (next & 3)))
+			return (false);
+		if (count)
+		{
+			if (print)
+				sprintf(line, "FRMPKT %d %08X", n, 0x80000000 | adrs);
+			for (i = 1; i <= count; i++)
+			{
+				if (!RamWord(adrs + i * 4, &w))
+					return (false);
+				if (print && ((w >> 24) == 0xE3))
+					env->area[0] = w & 0x3FF, env->area[1] = (w >> 10) & 0x3FF;
+				else if (print && ((w >> 24) == 0xE4))
+					env->area[2] = w & 0x3FF, env->area[3] = (w >> 10) & 0x3FF;
+				else if (print && ((w >> 24) == 0xE5))
+				{
+					env->offset[0] = ((int32_t)(w << 21)) >> 21;		// 11-bit signed
+					env->offset[1] = ((int32_t)(w << 10)) >> 21;
+					env->known = true;
+				}
+				if (print && (i <= 16))
+					sprintf(line + strlen(line), " %08X", w);
+			}
+			if (print)
+			{
+				printf("%s\n", line);
+				env->packets++;
+			}
+		}
+		if (next == 0xFFFFFF)
+			return (true);
+		adrs = next;
+	}
+	return (false);
+}
+
+// The GPU's drawing state now (the program stopped): draw area and offset
+static void	GpuEnv(FrameEnv *env)
+{
+	uint32_t	info[4];
+
+	if (!USB_Process(MON_CMD_GPU_INFO, (uint8_t *)info, 0, sizeof(info)))
+		return;
+	env->area[0] = info[0] & 0x3FF;
+	env->area[1] = (info[0] >> 10) & 0x3FF;
+	env->area[2] = info[1] & 0x3FF;
+	env->area[3] = (info[1] >> 10) & 0x3FF;
+	env->offset[0] = ((int32_t)(info[2] << 21)) >> 21;
+	env->offset[1] = ((int32_t)(info[2] << 10)) >> 21;
+	env->known = true;
+}
+
+// One list captured: its packets, the drawing state it is drawn with
+static void	CaptureList(uint32_t start, int n, FrameEnv *env)
+{
+	printf("FRMLIST %d %08X\n", n, start);
+	WalkList(start, n, true, env);
+	if (env->known)
+		printf("FRMENV %d %d %d %d %d %d\n", (int)env->area[0], (int)env->area[1], (int)env->area[2], (int)env->area[3],
+			(int)env->offset[0], (int)env->offset[1]);
+}
+
+// The frame drawn: its draw area read from VRAM (the program is stopped) into the file
+static void	FrameVram(FrameEnv *env, const char *file)
+{
+	int32_t		x = env->area[0], y = env->area[1], w = env->area[2] - x + 1, h = env->area[3] - y + 1;
+	uint8_t		*pixels;
+	FILE		*f;
+
+	if (!*file)
+		return;
+	if (!env->known || (w <= 0) || (h <= 0) || (x + w > 1024) || (y + h > 512))
+	{
+		x = y = 0;	// (no draw area known: the whole VRAM)
+		w = 1024;
+		h = 512;
+	}
+	if (!(pixels = malloc(w * h * 2)))
+		return;
+	if (USB_Process('V', pixels, (x << 16) | y, (w << 16) | h) && (f = fopen(file, "wb")))
+	{
+		fwrite(pixels, 2, w * h, f);
+		fclose(f);
+		printf("FRMVRAM %d %d %d %d %s\n", (int)x, (int)y, (int)w, (int)h, file);
+	}
+	else
+		printf("FRMERR VRAM not read\n");
+	free(pixels);
+}
+
+enum	{CAP_OFF, CAP_EXEC, CAP_DMA};
+
+// A new frame (without VSync): drawn in another area than the last one (double buffering), or its first table again
+static bool	NewFrame(FrameEnv *now, FrameEnv *last, uint32_t table, uint32_t first_table)
+{
+	return (memcmp(now->area, last->area, sizeof(now->area)) || (table == first_table));
+}
+
+// The breakpoint on VSync (a break instruction) wanted or not, written when the program resumes
+static void	VSyncBreak(uint32_t vsync, bool on)
+{
+	Breakpoint	*bp;
+
+	if (vsync && (bp = on ? AddBp(vsync) : FindBp(vsync)))
+		bp->want = on;
+}
+
+// A remote pad command (pad, padport, padstate, padtype, padaxes, padmove): its USB exchange only while the program
+// runs (during a capture, a stop at the breakpoints would be read as its answer: kept until the capture ends)
+#define	PAD_QUEUE	64
+
+static void	FramePadCommand(char *text)
+{
+	char	*cmd = strtok(text, " ");
+
+	if (!cmd)
+		return;
+	if (!strcmp(cmd, "pad"))
+	{
+		if (!RemotePad(strtok(NULL, " ")))
+			printf("FRMERR pad BITS (hexadecimal) or pad off\n");
+	}
+	else if (!strcmp(cmd, "padport"))
+	{
+		if (!RemotePadPort(strtok(NULL, " ")))
+			printf("FRMERR padport 0 (port 1) or padport 1 (port 2)\n");
+	}
+	else if (!strcmp(cmd, "padstate"))
+		RemotePadState();
+	else if (RemotePadDevice(cmd, "FRMERR") < 0)
+		printf("FRMERR unknown command %s\n", cmd);
+}
+
+int	FrameLive(uint32_t entry_pc, uint32_t entry_insn)
+{
+	static char	pad_queue[PAD_QUEUE][256];
+	int			pad_count = 0, i;
+	char		*cmd, *text, *arg, *tab, vram_file[1024] = "";
+	bool		eof = false, at_return = false, in_frame = false, synced = false, armed = false, vs_step = false;
+	bool		vs_poll = false, last_known = false;	// VSync(-1) since the last DrawOTag; its draw area known
+	int			state = CAP_OFF, lists = 0, calls = 0, draws = 0;
+	uint32_t	value, draw = 0, vsync = 0, table, first_table = 0, start_table = 0;
+	time_t		deadline = 0;
+	FrameEnv	env, now, sync, last;
+
+	setvbuf(stdout, NULL, _IONBF, 0);
+	memset(&env, 0, sizeof(env));
+	if (!(ram_copy = malloc(0x200000)))
+		return (1);
+	running = true;
+	if (!WaitStop(STOP_TIMEOUT))
+	{
+		printf("FRMERR the program didn't stop: the firmware in the cartridge needs the debug monitor\n");
+		return (1);
+	}
+	if (!WriteMemRaw(entry_pc, (uint8_t *)&entry_insn, 4) || !FrameBreak(0, false) || !Resume(false, ""))
+	{
+		printf("FRMERR USB error\n");
+		return (1);
+	}
+	printf("FRMLIVE ready\n");
+
+	while (!eof)
+	{
+		if (running && !PollUSB())
+			SleepMs(1);
+		// Stopped: by the capture's breakpoints or watchpoint, or something else (pause, breakpoint, crash: shown)
+		if (!running)
+		{
+			if (vs_step)		// The instruction under the VSync breakpoint executed: the breakpoint back
+			{
+				vs_step = false;
+				VSyncBreak(vsync, state == CAP_EXEC);
+			}
+			else if ((state == CAP_EXEC) && vsync && (stop_reason == MON_REASON_BREAK) && FetchRegs() &&
+				(regs[MON_REG_EPC] == vsync))
+			{
+				// VSync called: a frame boundary (VSync(0) or VSync(n): waiting; VSync(-1) and VSync(1) only return a
+				// counter, e.g. libgpu's DrawSync timeout). The frame (the DrawOTag calls since the last VSync) is
+				// finished (programs wait for the GPU before VSync): read from VRAM.
+				// VSync(-1) outside DrawOTag may be a program polling the counter to wait for the next frame (e.g. the
+				// link tester): remembered, the next DrawOTag tells (see the DrawOTag stop below).
+				if (((int32_t)regs[4] < 0) || (regs[4] == 1))
+				{
+					if (!at_return)
+						vs_poll = true;
+				}
+				else if (in_frame)
+				{
+					FrameVram(&env, vram_file);
+					printf("FRMEND %d %d\n", lists, env.packets);
+					state = CAP_OFF;
+					FrameBreak(0, false);
+					VSyncBreak(vsync, false);
+				}
+				else
+					armed = true;					// The next DrawOTag starts a frame
+				if (state == CAP_EXEC)
+				{
+					VSyncBreak(vsync, false);		// (stepped over, then back)
+					vs_step = true;
+					if (!Resume(true, ""))
+						return (1);
+					continue;
+				}
+			}
+			else if ((state == CAP_EXEC) && (stop_reason == MON_REASON_DEBUG) && FetchRegs())
+			{
+				memset(ram_read, 0, sizeof(ram_read));		// (the program has changed its memory meanwhile)
+				if (at_return)								// Back from DrawOTag: the breakpoint on it again
+				{
+					at_return = false;
+					FrameBreak(draw, false);
+				}
+				else if (regs[MON_REG_EPC] == draw)			// DrawOTag(ot): ot in a0
+				{
+					table = regs[4] & 0xFFFFFF;
+					memset(&now, 0, sizeof(now));
+					GpuEnv(&now);
+					draws++;
+					if (vsync)		// Frames delimited by VSync
+					{
+						// A program waiting with VSync(-1) polled (no VSync(0)): a new frame if it then draws in another
+						// area (double buffering) or its first table again (single buffering). A VSync(-1) of the
+						// libraries between two tables of a frame changes neither.
+						bool	polled = vs_poll && last_known &&
+							(memcmp(now.area, last.area, sizeof(now.area)) || (table == start_table));
+
+						if (vs_poll && !start_table)
+							start_table = table;
+						vs_poll = false;
+						last = now;
+						last_known = true;
+						if (in_frame && polled)		// The next frame: this one done (drawn before the wait)
+						{
+							FrameVram(&env, vram_file);
+							printf("FRMEND %d %d\n", lists, env.packets);
+							state = CAP_OFF;
+							FrameBreak(0, false);
+							VSyncBreak(vsync, false);
+						}
+						else
+						{
+							if (!in_frame && (armed || polled))
+							{
+								in_frame = true;
+								printf("FRMBEGIN\n");
+								env = now;
+								env.packets = 0;
+								start_table = table;
+							}
+							if (in_frame && (lists < 16))
+								CaptureList(table, lists++, &env);
+						}
+					}
+					else if (!in_frame)		// Without VSync: waiting for a frame to start (see NewFrame)
+					{
+						if (!synced)
+						{
+							sync = now;
+							first_table = table;
+							synced = true;
+						}
+						else if (NewFrame(&now, &sync, table, first_table) || (++calls >= 32))
+						{
+							in_frame = true;
+							printf("FRMBEGIN\n");
+							env = now;
+							env.packets = 0;
+							first_table = table;
+							CaptureList(table, lists++, &env);
+						}
+					}
+					else if (NewFrame(&now, &env, table, first_table) || (lists >= 16))	// The next frame: done
+					{
+						FrameVram(&env, vram_file);
+						printf("FRMEND %d %d\n", lists, env.packets);
+						state = CAP_OFF;
+						FrameBreak(0, false);
+					}
+					else				// Another table of the frame (e.g. its text)
+						CaptureList(table, lists++, &env);
+					if (state == CAP_EXEC)	// DrawOTag goes on, until it returns
+					{
+						at_return = true;
+						FrameBreak(regs[31], false);
+					}
+				}
+			}
+			else if ((state == CAP_DMA) && (stop_reason == MON_REASON_DEBUG) && StoredValue(&value))
+			{
+				// The DMA way: the lists of a frame, until it comes back to the first one (the next frame)
+				memset(ram_read, 0, sizeof(ram_read));
+				if (WalkList(value, lists, false, &now))
+				{
+					if (!lists)
+					{
+						printf("FRMBEGIN\n");
+						memset(&env, 0, sizeof(env));
+						GpuEnv(&env);
+						first_table = value;
+					}
+					if (lists && ((value == first_table) || (lists >= 16)))
+					{
+						FrameVram(&env, vram_file);
+						printf("FRMEND %d %d\n", lists, env.packets);
+						state = CAP_OFF;
+						FrameBreak(0, false);
+					}
+					else
+						CaptureList(value, lists++, &env);
+				}
+			}
+			else if (stop_reason == MON_REASON_CRASH)
+			{
+				printf("FRMERR the program crashed (exception %d at %08X)\n", stop_exc, FetchRegs() ? regs[MON_REG_EPC] : 0);
+				state = CAP_OFF;
+				FrameBreak(0, false);
+				VSyncBreak(vsync, false);
+			}
+			if (!Resume(false, ""))
+			{
+				printf("FRMERR USB error\n");
+				return (1);
+			}
+			continue;
+		}
+		if ((state != CAP_OFF) && (time(NULL) > deadline))		// Nothing more: what was captured
+		{
+			USB_WriteBytes((uint8_t *)"P", 1);
+			if (WaitStop(3))
+			{
+				if (lists)
+				{
+					FrameVram(&env, vram_file);
+					printf("FRMEND %d %d\n", lists, env.packets);
+				}
+				else
+					printf("FRMERR no frame: %s\n", !draw ? "no GPU DMA started by the program (give its symbol file: "
+						"DrawOTag)" : !draws ? "DrawOTag wasn't called" : "DrawOTag called, but no frame boundary found "
+						"(no VSync wait, nor a change of draw area)");
+				state = CAP_OFF;
+				vs_step = false;
+				FrameBreak(0, false);
+				VSyncBreak(vsync, false);
+				Resume(false, "");
+			}
+			continue;
+		}
+		if (pad_count && (state == CAP_OFF) && running)		// The pad commands kept during a capture
+		{
+			for (i = 0; i < pad_count; i++)
+				FramePadCommand(pad_queue[i]);
+			pad_count = 0;
+		}
+		if (!LiveNextLine(&text, &eof))
+			continue;
+		if (!strncmp(text, "pad", 3))
+		{
+			if ((state == CAP_OFF) && running && !pad_count)
+				FramePadCommand(text);
+			else
+			{
+				if (pad_count == PAD_QUEUE)		// (full: the oldest one dropped)
+					memmove(pad_queue[0], pad_queue[1], sizeof(pad_queue[0]) * --pad_count);
+				snprintf(pad_queue[pad_count++], sizeof(pad_queue[0]), "%s", text);
+			}
+			continue;
+		}
+		// "capture DRAW [VSYNC]<tab>FILE": the file after the tab (it may have spaces)
+		if ((tab = strchr(text, '\t')))
+			*tab++ = 0;
+		if (!(cmd = strtok(text, " ")))
+			continue;
+		if (!strcmp(cmd, "capture") && (state == CAP_OFF))
+		{
+			// Stopped (at its next interrupt) to set the breakpoints, which apply when it resumes
+			arg = strtok(NULL, " ");
+			draw = (arg && strcmp(arg, "-")) ? strtoul(arg, NULL, 16) : 0;
+			arg = strtok(NULL, " ");
+			vsync = (draw && arg && strcmp(arg, "-")) ? strtoul(arg, NULL, 16) : 0;
+			snprintf(vram_file, sizeof(vram_file), "%s", tab ? tab : "");
+			USB_WriteBytes((uint8_t *)"P", 1);
+			VSyncBreak(vsync, true);
+			if (!WaitStop(3) || !FrameBreak(draw, !draw) || !Resume(false, ""))
+			{
+				printf("FRMERR the program doesn't stop (USB error?)\n");
+				continue;
+			}
+			state = draw ? CAP_EXEC : CAP_DMA;
+			lists = calls = draws = 0;
+			start_table = 0;
+			at_return = in_frame = synced = armed = vs_step = vs_poll = last_known = false;
+			memset(&env, 0, sizeof(env));
+			deadline = time(NULL) + FRAME_SECONDS;
+		}
+		else if (!strcmp(cmd, "quit"))
+			break;
+	}
+	// The program goes on without the breakpoints
+	if (running)
+	{
+		USB_WriteBytes((uint8_t *)"P", 1);
+		if (WaitStop(3))
+		{
+			FrameBreak(0, false);
+			VSyncBreak(vsync, false);
+			Resume(false, "");
+		}
+	}
+	free(ram_copy);
 	return (0);
 }

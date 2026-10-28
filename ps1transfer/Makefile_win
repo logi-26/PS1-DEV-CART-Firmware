@@ -40,9 +40,9 @@ OBJDIR_RELEASE = obj\\Release
 DEP_RELEASE = 
 OUT_RELEASE = ps1transfer.exe
 
-OBJ_DEBUG = $(OBJDIR_DEBUG)\\lodepng.o $(OBJDIR_DEBUG)\\main.o $(OBJDIR_DEBUG)\\gdbserver.o $(OBJDIR_DEBUG)\\synthbridge.o $(OBJDIR_DEBUG)\\usblink.o $(OBJDIR_DEBUG)\\profiler.o
+OBJ_DEBUG = $(OBJDIR_DEBUG)\\lodepng.o $(OBJDIR_DEBUG)\\main.o $(OBJDIR_DEBUG)\\gdbserver.o $(OBJDIR_DEBUG)\\synthbridge.o $(OBJDIR_DEBUG)\\usblink.o $(OBJDIR_DEBUG)\\profiler.o $(OBJDIR_DEBUG)\\timlive.o $(OBJDIR_DEBUG)\\sndlive.o $(OBJDIR_DEBUG)\\mdllive.o $(OBJDIR_DEBUG)\\memlive.o
 
-OBJ_RELEASE = $(OBJDIR_RELEASE)\\lodepng.o $(OBJDIR_RELEASE)\\main.o $(OBJDIR_RELEASE)\\gdbserver.o $(OBJDIR_RELEASE)\\synthbridge.o $(OBJDIR_RELEASE)\\usblink.o $(OBJDIR_RELEASE)\\profiler.o
+OBJ_RELEASE = $(OBJDIR_RELEASE)\\lodepng.o $(OBJDIR_RELEASE)\\main.o $(OBJDIR_RELEASE)\\gdbserver.o $(OBJDIR_RELEASE)\\synthbridge.o $(OBJDIR_RELEASE)\\usblink.o $(OBJDIR_RELEASE)\\profiler.o $(OBJDIR_RELEASE)\\timlive.o $(OBJDIR_RELEASE)\\sndlive.o $(OBJDIR_RELEASE)\\mdllive.o $(OBJDIR_RELEASE)\\memlive.o
 
 all: debug release
 
@@ -73,6 +73,15 @@ $(OBJDIR_DEBUG)\\usblink.o: usblink.c
 
 $(OBJDIR_DEBUG)\\profiler.o: profiler.c
 	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c profiler.c -o $(OBJDIR_DEBUG)\\profiler.o
+
+$(OBJDIR_DEBUG)\\timlive.o: timlive.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c timlive.c -o $(OBJDIR_DEBUG)\\timlive.o
+$(OBJDIR_DEBUG)\\sndlive.o: sndlive.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c sndlive.c -o $(OBJDIR_DEBUG)\\sndlive.o
+$(OBJDIR_DEBUG)\\mdllive.o: mdllive.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c mdllive.c -o $(OBJDIR_DEBUG)\\mdllive.o
+$(OBJDIR_DEBUG)\\memlive.o: memlive.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c memlive.c -o $(OBJDIR_DEBUG)\\memlive.o
 
 $(OBJDIR_DEBUG)\\synthbridge.o: synthbridge.c
 	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c synthbridge.c -o $(OBJDIR_DEBUG)\\synthbridge.o
@@ -106,6 +115,15 @@ $(OBJDIR_RELEASE)\\usblink.o: usblink.c
 
 $(OBJDIR_RELEASE)\\profiler.o: profiler.c
 	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c profiler.c -o $(OBJDIR_RELEASE)\\profiler.o
+
+$(OBJDIR_RELEASE)\\timlive.o: timlive.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c timlive.c -o $(OBJDIR_RELEASE)\\timlive.o
+$(OBJDIR_RELEASE)\\sndlive.o: sndlive.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c sndlive.c -o $(OBJDIR_RELEASE)\\sndlive.o
+$(OBJDIR_RELEASE)\\mdllive.o: mdllive.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c mdllive.c -o $(OBJDIR_RELEASE)\\mdllive.o
+$(OBJDIR_RELEASE)\\memlive.o: memlive.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c memlive.c -o $(OBJDIR_RELEASE)\\memlive.o
 
 $(OBJDIR_RELEASE)\\synthbridge.o: synthbridge.c
 	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c synthbridge.c -o $(OBJDIR_RELEASE)\\synthbridge.o

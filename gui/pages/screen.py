@@ -16,7 +16,10 @@ from pages.base import Page
 from settings import config_dir
 from widgets import ImageView
 
+AUTO = "Screen on the TV (auto)"
 PRESETS = [
+    # (where the program shows its screen, told by the PS1 DEV CART tools, e.g. the TIM viewer: "ps1transfer -v auto")
+    (AUTO, (0, 0, 320, 240)),
     ("Screen at 0,0 (320x240)", (0, 0, 320, 240)),
     ("Screen at 0,240 (320x240)", (0, 240, 320, 240)),
     ("Screen at 0,256 (320x240)", (0, 256, 320, 240)),
@@ -27,7 +30,7 @@ PRESETS = [
 
 
 class ScreenPage(Page):
-    title = "Screen"
+    title = "Screen Capture"
 
     def build(self):
         s = self.app.settings
@@ -79,6 +82,8 @@ class ScreenPage(Page):
             sb.configure(state="normal" if values is None else "disabled")
 
     def args(self):
+        if self.preset.get() == AUTO:
+            return ["-v", "auto", "-f", self.png]
         return ["-v"] + [sb.get() for sb in self.xywh] + ["-f", self.png]
 
     def capture(self, quiet=False):
@@ -95,6 +100,10 @@ class ScreenPage(Page):
         if code == 0 and os.path.isfile(self.png):
             with Image.open(self.png) as im:
                 self.view.show(im.convert("RGB"))
+            if self.preset.get() == AUTO:      # (where ps1transfer found the screen)
+                found = [line for line in output if line.startswith("Screen on the TV")]
+                self.info.configure(text=found[-1] if found else "Screen on the TV not known: 0,0 (320x240)")
+                return
             self.info.configure(text="%s x %s at %s,%s" % (self.xywh[2].get(), self.xywh[3].get(),
                                                           self.xywh[0].get(), self.xywh[1].get()))
 

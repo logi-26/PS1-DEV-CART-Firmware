@@ -30,7 +30,7 @@ SECTIONS {
     ASSERT(mon_regs == mon_stack + 512, "monitor: the profiler's RAM area (monitor stack, registers) is not in one piece")
     ASSERT(SIZEOF(.data) == 0, "monitor: no writable variables (it runs from flash)")
     ASSERT(SIZEOF(.bss) == 0, "monitor: no writable variables (it runs from flash)")
-    ASSERT(. - MONITOR_ADDR <= 0x3800, "monitor: bigger than its place in the cartridge flash")
+    ASSERT(. - MONITOR_ADDR <= 0x5F00, "monitor: bigger than its place in the cartridge flash (0x19000-0x1EF00, see cartrom/rom.s)")
 
     /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.note*) }
 }

@@ -20,6 +20,9 @@
 #include <unistd.h>
 #include <time.h>
 #include <stddef.h>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 #include <sys/stat.h>
 #include "lodepng.h"
 #include "crc.h"
@@ -27,6 +30,7 @@
 #include "synthbridge.h"
 #include "usblink.h"
 #include "profiler.h"
+#include "timlive.h"
 #include "../ps1-tools/cardtool/cardserver.h"
 #include "../monitor/monitor.h"
 
@@ -120,11 +124,82 @@ static bool	PcdrvPathAllowed(const char *name)
 	return (true);
 }
 
+// "@input": a file of the lines given to ps1transfer's standard input (e.g. by the PS1 Dev Cart Manager), which the
+// program reads to get commands while the file server runs (the PS1 DEV CART VIDEO TESTER): a read returns what has
+// arrived, at once (0 bytes if nothing). A thread reads the input into a ring (one writer, one reader).
+#define	INPUT_RING	8192
+static uint8_t				input_ring[INPUT_RING];
+static volatile uint32_t	input_head, input_tail;
+static int					pcdrv_input_fd = -1;
+static bool					input_started;
+
+#ifdef _WIN32
+static DWORD WINAPI	InputThread(LPVOID arg)
+#else
+static void	*InputThread(void *arg)
+#endif
+{
+	int	c;
+
+	(void)arg;
+	while ((c = getchar()) != EOF)
+	{
+		while (input_head - input_tail >= INPUT_RING)	// (full: the program doesn't read it)
+#ifdef _WIN32
+			Sleep(10);
+#else
+			usleep(10000);
+#endif
+		input_ring[input_head % INPUT_RING] = (uint8_t)c;
+		input_head++;
+	}
+	return (0);
+}
+
+static void	InputStart(void)
+{
+	if (input_started)
+		return;
+	input_started = true;
+#ifdef _WIN32
+	CreateThread(NULL, 0, InputThread, NULL, 0, NULL);
+#else
+	{
+		pthread_t	t;
+
+		pthread_create(&t, NULL, InputThread, NULL);
+		pthread_detach(t);
+	}
+#endif
+}
+
+static uint32_t	InputRead(uint8_t *data, uint32_t size)
+{
+	uint32_t	n = 0;
+
+	while ((n < size) && (input_tail != input_head))
+		data[n++] = input_ring[input_tail++ % INPUT_RING];
+	return (n);
+}
+
 // Opens a file for the program: file number, or -1 (refused, not found, no free file number)
 static int	PcdrvOpen(char *name, const char *fmode, const char *op, const char *mode)
 {
 	int	i;
 
+	if (!strcmp(name, "@input"))
+	{
+		for (i = 2; (i < PCDRV_MAX_FD) && PCdrvFD[i]; i++)
+			;
+		if (i == PCDRV_MAX_FD)
+			return (-1);
+		PCdrvFD[i] = stdin;		// (a marker: read from the ring)
+		pcdrv_input_fd = i;
+		snprintf(pcdrv_files[i].name, sizeof(pcdrv_files[i].name), "%s", name);
+		pcdrv_files[i].read = pcdrv_files[i].written = 0;
+		InputStart();
+		return (i);
+	}
 	if (!PcdrvPathAllowed(name))
 	{
 		PcdrvLog("PCDRV: \"%s\" refused, outside the served folder (-pcdrvany allows any path)\n", name);
@@ -167,6 +242,7 @@ enum
 	CMD_CRASH,
 	CMD_PEEK,
 	CMD_POKE,
+	CMD_MEMLIVE,
 	CMD_HOT,
 	CMD_INFO,
 	CMD_FLASH_ROM,
@@ -175,7 +251,8 @@ enum
 	CMD_RELAY,
 	CMD_NET,
 	CMD_PROF,
-	CMD_NETLINK
+	CMD_SPU,
+	CMD_BOOT_DISC
 };
 
 /****************************************/
@@ -244,6 +321,8 @@ uint32_t	atohex(char *str)
 #define	USB_READ_TIMEOUT	5		// Seconds without data before a read fails (e.g. PS1 running a program, not answering)
 #define	USB_READ_POLL_MS	100		// Windows: FT_Read returns after this time so the timeout can be checked
 #define	MAX_PACKET_SIZE	2048	// 2k max for reliability
+#define	RESET_QUIET_MS	2500	// -r after a stopped transfer: the PS1 quiet this long (its acknowledgment wait ended)
+#define	RESET_DRAIN_S	12		// (at most: a program sending all the time, e.g. its printf)
 
 // Execute command param: TTY mode set by the kernel hook when the program starts, see usb.h
 #define	EXEC_TTY_MODE_USB	0	// printf/TTY redirected to USB (default)
@@ -337,6 +416,8 @@ uint32_t	usb_big_packet_size;	// 0 = firmware only supports MAX_PACKET_SIZE pack
 bool		ps1_program_running;	// A program runs: only the kernel hook answers (2KB packets)
 uint8_t		fw_features;			// FEATURE_* of the firmware, 0 with the original firmware
 bool		vram_live;				// -live: -v reads the screen also at the menu
+bool		vram_auto;				// -v auto: the screen on the TV, told by the program (TIM viewer, timlive.c)
+const char	*spu_file;				// -spu: file written with the SPU RAM and registers
 uint32_t	hook_packet_size = MAX_PACKET_SIZE;	// Packets of the kernel hook/debug monitor (file server, live access)
 bool		hook_packet_detected;
 
@@ -419,6 +500,7 @@ void	USB_DetectPacketSize(void)
 // The menu shows the device ID (USB serial number, only readable from the computer), sent with the 'I'
 // command when the menu runs (the firmware saves it in the cartridge flash when it changes)
 #define	FEATURE_DEVICE_ID		(1 << 1)
+#define	FEATURE_BOOT_DISC		(1 << 3)	// 'C' command at the menu: the CD drive unlocked and the disc booted
 #define	DEVICE_ID_SIZE			16
 
 // USB serial number of the opened cartridge (at least 64 bytes)
@@ -510,13 +592,35 @@ static bool	USB_WriteTo(void *handle, uint8_t *data, uint32_t size)
 #endif
 }
 
-bool	USB_Exchange(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize)
-{
-	uint8_t		cmd[1+4+4+1], ack, crc;
-	uint32_t	size = (wsize << 16) | rsize;
-	int			retry;
+void	PC_FileServer(void);
 
-	cmd[0] = 'X';
+volatile uint32_t	link_crc_errors;	// Exchange packets received wrong (USB link relay, see ExchangeCmd)
+
+// letter: 'X' (the kernel hook's), or MON_CMD_EXCHANGE for the relay of a debug session (also answered by the debug
+// monitor while the program is stopped). served: what arrives before the answer is handled, not taken for it: a stop
+// notification or a PCDRV request (Data Link Escape: PC_FileServer, the selected cartridge must be this one), the
+// program's text.
+// The PS1 answers it in an interrupt (kernel hook), with the program stopped meanwhile: the command, the written packet
+// and both acknowledgements ('N') go in one USB write, so that it never waits there for the computer (three USB round
+// trips, a few milliseconds at each exchange: the program's frames disturbed). The CRCs are checked afterwards: a
+// written packet received wrong is written again whole by the next exchange, a read one received wrong is not used
+// (rdata unchanged).
+// Debug session (served): the program can stop (breakpoint, pause) before the command is answered; the monitor's stop
+// notification then takes the command's first byte for the computer's answer, and the exchange is not answered. So the
+// command goes alone, and the rest once it is answered ('G': the kernel hook or the monitor then goes to the end); a
+// stop notification before: the exchange is skipped (true, nothing read: the next one writes everything again).
+static bool	ExchangeCmd(void *handle, char letter, bool served, uint32_t adrs, uint8_t *wdata, uint32_t wsize,
+	uint8_t *rdata, uint32_t rsize)
+{
+	uint8_t			out[1+4+4+1 + MAX_PACKET_SIZE + 2], in[MAX_PACKET_SIZE];	// (one relay thread per cartridge)
+	uint8_t			*cmd = out, ack, crc;
+	uint32_t		size = (wsize << 16) | rsize;
+	int				n;
+	bool			stopped;
+
+	if ((wsize > MAX_PACKET_SIZE) || (rsize > MAX_PACKET_SIZE))
+		return (false);
+	cmd[0] = letter;
 	cmd[1] = adrs >> 24;
 	cmd[2] = adrs >> 16;
 	cmd[3] = adrs >> 8;
@@ -526,34 +630,61 @@ bool	USB_Exchange(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, u
 	cmd[7] = size >> 8;
 	cmd[8] = size;
 	cmd[9] = CRC8_Compute(cmd, 1+4+4);
-	if (!USB_WriteTo(handle, cmd, sizeof(cmd)) || !USB_ReadFrom(handle, &ack, 1) || (ack != 'G'))
+	memcpy(out + 10, wdata, wsize);
+	out[10 + wsize] = 'N';		// Written packet taken (its CRC is checked below)
+	out[11 + wsize] = 'N';		// Read packet taken
+	if (!USB_WriteTo(handle, out, served ? 10 : 12 + wsize))
 		return (false);
-	// Written packet: the PS1 answers its CRC, then waits for N (next) or A (again)
-	for (retry = 3; ; retry--)
+	// The answer: 'G', or escaped "DLE g" (the firmware answers the command after a 'Q' that way, also after the 'Q' alone
+	// asking whether it has escaped answers: USB_EscapedAnswers); "DLE q": that 'Q''s own answer, late
+	for (n = 0; ; n++)
 	{
-		if (!USB_WriteTo(handle, wdata, wsize) || !USB_ReadFrom(handle, &crc, 1))
+		if (!USB_ReadFrom(handle, &ack, 1) || (ack == 'B') || (n > 65536))
 			return (false);
-		ack = (crc == CRC8_Compute(wdata, wsize)) ? 'N' : 'A';
-		if (!USB_WriteTo(handle, &ack, 1))
-			return (false);
-		if (ack == 'N')
+		if (ack == 'G')
 			break;
-		if (retry == 1)
+		if (ack == 16)
+		{
+			if (!USB_ReadFrom(handle, &ack, 1) || (ack == 'b'))
+				return (false);
+			if (ack == 'g')
+				break;
+			if (ack == 'q')
+				continue;
+			if (!served)
+				return (false);
+			stopped = mon_stop_pending;
+			PC_FileServerCmd(ack);		// PCDRV request or stop notification (its command byte read)
+			if (mon_stop_pending && !stopped)
+				return (true);			// The program stopped: the exchange isn't answered (skipped)
+			continue;
+		}
+		if (!served)
 			return (false);
+		putchar(ack);
 	}
-	// Read packet and its CRC
-	for (retry = 3; ; retry--)
-	{
-		if (!USB_ReadFrom(handle, rdata, rsize) || !USB_ReadFrom(handle, &crc, 1))
-			return (false);
-		ack = (crc == CRC8_Compute(rdata, rsize)) ? 'N' : 'A';
-		if (!USB_WriteTo(handle, &ack, 1))
-			return (false);
-		if (ack == 'N')
-			return (true);
-		if (retry == 1)
-			return (false);
-	}
+	if (served && !USB_WriteTo(handle, out + 10, 2 + wsize))	// (answered: the rest at once)
+		return (false);
+	if (!USB_ReadFrom(handle, &crc, 1) || !USB_ReadFrom(handle, in, rsize) || !USB_ReadFrom(handle, &ack, 1))
+		return (false);
+	if (crc != CRC8_Compute(wdata, wsize))
+		link_crc_errors++;
+	if (ack != CRC8_Compute(in, rsize))
+		link_crc_errors++;
+	else
+		memcpy(rdata, in, rsize);
+	return (true);
+}
+
+bool	USB_Exchange(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize)
+{
+	return (ExchangeCmd(handle, 'X', false, adrs, wdata, wsize, rdata, rsize));
+}
+
+// The relay of a debug session (gdbserver.c): the debugged cartridge's exchange, the stop notifications kept
+bool	USB_ExchangeServed(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize)
+{
+	return (ExchangeCmd(handle, MON_CMD_EXCHANGE, true, adrs, wdata, wsize, rdata, rsize));
 }
 
 // Escaped answers (see usb.h): 'Q' before each command, the firmware answers "DLE g" / "DLE b" instead of 'G' / 'B', so
@@ -600,6 +731,16 @@ static uint32_t	NowMs(void)
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 #endif
+}
+
+// After an upload (its progress line ended): its transfer rate and time
+static void	PrintUploadTime(uint32_t bytes, uint32_t start_ms)
+{
+	uint32_t	ms = NowMs() - start_ms;
+
+	printf((ms < 10000) ? "\nTransfer rate: %u KB/s\nTime taken: %.2f seconds\n" :
+		"\nTransfer rate: %u KB/s\nTime taken: %.1f seconds\n",
+		ms ? (uint32_t)((uint64_t)bytes * 1000 / 1024 / ms) : 0, ms / 1000.0);
 }
 
 static int	USB_EscapedAnswers(void)
@@ -669,7 +810,7 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 		packet_size = MON_VRAM_LINES(size >> 16) * (size >> 16) * 2;
 		size = (size >> 16) * (size & 0xFFFF) * 2;
 	}
-	if (cmd == MON_CMD_SPU_WRITE)
+	if ((cmd == MON_CMD_SPU_WRITE) || (cmd == MON_CMD_SPU_READ))
 		packet_size = MON_SPU_PACKET;
 
 	if (cmd == 'V')
@@ -744,7 +885,7 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 	{
 		if (ack == 'G')
 		{
-			if ((cmd == 'D') || (cmd == 'd') || (cmd == 'V'))
+			if ((cmd == 'D') || (cmd == 'd') || (cmd == 'V') || (cmd == MON_CMD_GPU_INFO) || (cmd == MON_CMD_SPU_READ))
 			{
 				while (size)	// get all packets
 				{
@@ -974,7 +1115,7 @@ void	PC_FileServerCmd(int first)
 					answer = (fd >> 24) & 0xFF;
 					fd &= 0xFFFFFF;
 
-					if (fd < PCDRV_MAX_FD)
+					if ((fd < PCDRV_MAX_FD) && ((int)fd != pcdrv_input_fd))
 					{
 						if (PCdrvFD[fd])
 						{
@@ -985,7 +1126,9 @@ void	PC_FileServerCmd(int first)
 				break;
 
 				case 'R':	// Read file
-					if ((fd < PCDRV_MAX_FD) && PCdrvFD[fd])
+					if ((fd < PCDRV_MAX_FD) && PCdrvFD[fd] && ((int)fd == pcdrv_input_fd))
+						ret_value = InputRead(data, data_size);
+					else if ((fd < PCDRV_MAX_FD) && PCdrvFD[fd])
 					{
 						ret_value = fread(data, 1, data_size, PCdrvFD[fd]);
 						pcdrv_files[fd].read += ret_value;
@@ -1045,7 +1188,9 @@ void	PC_FileServerCmd(int first)
 					{
 						if (PCdrvFD[fd])
 						{
-							ret_value = fclose(PCdrvFD[fd]);
+							ret_value = ((int)fd == pcdrv_input_fd) ? 0 : fclose(PCdrvFD[fd]);
+							if ((int)fd == pcdrv_input_fd)
+								pcdrv_input_fd = -1;
 							PCdrvFD[fd] = NULL;
 							if (pcdrv_log)
 								PcdrvLog("pcdrv=close fd=%d name=\"%s\" read=%u written=%u\n", (int)fd,
@@ -1113,6 +1258,7 @@ uint32_t	UploadNetYarozeStart(uint32_t exe_adrs, uint32_t entry)
 
 bool	UploadNetYarozeLibrary(char *filename, uint32_t exe_adrs, uint32_t exe_size)
 {
+	uint32_t	start_ms;
 	uint8_t		*data, *ptr;
 	uint32_t	adrs = LIBPS_DEFAULT_ADRS;
 	int			size;
@@ -1146,8 +1292,12 @@ bool	UploadNetYarozeLibrary(char *filename, uint32_t exe_adrs, uint32_t exe_size
 	libps_adrs = adrs;
 	libps_size = size;
 	printf("Uploading Net Yaroze library %u bytes to 0x%X...\n", size, adrs);
+	start_ms = NowMs();
 	ret = USB_Process('U', ptr, adrs, size);
-	printf("\n");
+	if (ret)
+		PrintUploadTime(size, start_ms);
+	else
+		printf("\n");
 	free(data);
 
 	return (ret);
@@ -1384,7 +1534,9 @@ bool	UploadAutoData(uint32_t exe_adrs, uint32_t exe_size, uint32_t lib_adrs, uin
 #define	VIEWER_DATA_END		0x801E0000	// Below the PS1 DEV CART firmware (0x801EF000) which receives the data
 #define	VIEWER_MAGIC		0x56444D54	// "TMDV"
 #define	VIEWER_MAX_TIM		8
-#define	VIEWER_HEADER_SIZE	0x100
+#define	VIEWER_MAX_TOD		16			// TOD animations (-tod)
+#define	VIEWER_TOD_TABLE	0x40		// Number of TODs, then address, size and name (24 bytes) of each
+#define	VIEWER_HEADER_SIZE	0x400		// (the shared state of -mdllive at 0x300, see mdllive.c)
 
 // The PS1 tools (model viewer, sound tester) are looked for next to the ps1transfer executable
 #define	TOOL_NAME_MAX	64
@@ -1464,9 +1616,9 @@ int	SoundFileType(char *name, uint8_t *data, int size)
 #define	TIMVIEW_DATA_ADRS	0x80100000
 #define	TIMVIEW_DATA_END	0x801E0000	// Below the PS1 DEV CART firmware (0x801EF000) which receives the data
 #define	TIMVIEW_MAGIC		0x564D4954	// "TIMV"
-#define	TIMVIEW_MAX_FILES	16
+#define	TIMVIEW_MAX_FILES	32
 #define	TIMVIEW_NAME_LEN	24
-#define	TIMVIEW_HEADER_SIZE	0x400
+#define	TIMVIEW_HEADER_SIZE	0x800
 
 bool	UploadTimData(char **files, int count)
 {
@@ -1528,6 +1680,7 @@ out:
 
 #define	CARD_FILENAME		"cardtool.ps-exe"
 #define	LINKTEST_FILENAME	"linktest.ps-exe"	// Link cable tester (linktest folder), "-link" option
+#define	PADTEST_FILENAME	"padtest.ps-exe"		// Control tester (padtest folder), "-padtest" option
 #define	CARD_DATA_ADRS		0x80100000
 #define	CARD_MAGIC			0x44524143	// "CARD"
 #define	CARD_IMAGE_OFFSET	0x100
@@ -2027,11 +2180,12 @@ out:
 	return (ret);
 }
 
-// Data block: header (magic, TMD address, number of TIM, TIM addresses) then the TMD and TIM files
-bool	UploadModelData(char *model, char **tims, int tim_count)
+// Data block: header (magic, TMD address, number of TIM, TIM addresses; at VIEWER_TOD_TABLE the TOD table) then the
+// TMD, TIM and TOD files
+bool	UploadModelData(char *model, char **tims, int tim_count, char **tods, int tod_count)
 {
 	uint8_t		*block, *file;
-	uint32_t	*header, offset = VIEWER_HEADER_SIZE;
+	uint32_t	*header, offset = VIEWER_HEADER_SIZE, *tod_table;
 	int			i, size;
 	bool		ret = false;
 
@@ -2040,16 +2194,19 @@ bool	UploadModelData(char *model, char **tims, int tim_count)
 	header = (uint32_t *)block;
 	header[0] = VIEWER_MAGIC;
 	header[2] = tim_count;
+	tod_table = (uint32_t *)(block + VIEWER_TOD_TABLE);
+	tod_table[0] = tod_count;
 
-	for (i = -1; i < tim_count; i++)
+	for (i = -1; i < tim_count + tod_count; i++)
 	{
-		char	*name = (i < 0) ? model : tims[i];
+		char		*name = (i < 0) ? model : ((i < tim_count) ? tims[i] : tods[i - tim_count]);
+		uint32_t	id = (i < 0) ? 0x41 : ((i < tim_count) ? 0x10 : 0x50);
 
 		if (!(file = SystemGetFile(name, &size)))
 			goto out;
-		if ((size < 8) || (*((uint32_t *)file) != ((i < 0) ? 0x41 : 0x10)))
+		if ((size < 8) || ((*((uint32_t *)file) & ((id == 0x50) ? 0xFF : 0xFFFFFFFF)) != id))
 		{
-			printf("'%s' is not a %s file !\n", name, (i < 0) ? "TMD" : "TIM");
+			printf("'%s' is not a %s file !\n", name, (i < 0) ? "TMD" : ((i < tim_count) ? "TIM" : "TOD"));
 			free(file);
 			goto out;
 		}
@@ -2062,13 +2219,27 @@ bool	UploadModelData(char *model, char **tims, int tim_count)
 		memcpy(block + offset, file, size);
 		if (i < 0)
 			header[1] = VIEWER_DATA_ADRS + offset;
-		else
+		else if (i < tim_count)
 			header[3 + i] = VIEWER_DATA_ADRS + offset;
+		else
+		{
+			// TOD: address, size, name (file name without its folder, shown by the viewer)
+			uint32_t	*entry = tod_table + 1 + (i - tim_count) * 8;
+			char		*base = name + strlen(name);
+
+			while ((base > name) && (base[-1] != '/') && (base[-1] != '\\'))
+				base--;
+			entry[0] = VIEWER_DATA_ADRS + offset;
+			entry[1] = size;
+			strncpy((char *)(entry + 2), base, 23);
+			printf("TOD: %s (%d bytes, %d frames)\n", name, size, (int)((uint32_t *)file)[1]);
+		}
 		offset += (size + 3) & ~3;
 		free(file);
 	}
 
-	printf("Uploading model and %d texture(s), %u bytes to 0x%X...\n", tim_count, offset, VIEWER_DATA_ADRS);
+	printf("Uploading model, %d texture(s) and %d animation(s), %u bytes to 0x%X...\n", tim_count, tod_count, offset,
+		VIEWER_DATA_ADRS);
 	ret = USB_Process('U', block, VIEWER_DATA_ADRS, offset);
 	printf(ret ? "\n" : "\nUSB error.\n");
 
@@ -2152,7 +2323,72 @@ bool	LoadSymbolsElf(uint8_t *elf, int size)
 	return (true);
 }
 
-// Symbol file: ELF executable, GNU ld map file ("   0x80010000   main") or nm output ("80010000 T main")
+// ECOFF symbol table (Net Yaroze executable, not stripped): the symbolic header (HDRR) gives the external symbols
+// (functions, variables, and the Net Yaroze library's functions as absolute symbols: VSync, DrawSync...) and the
+// local ones of each file descriptor (static functions and variables)
+#define	ECOFF_HDRR_MAGIC	0x7009
+#define	ECOFF_ST_GLOBAL		1
+#define	ECOFF_ST_STATIC		2
+#define	ECOFF_ST_PROC		6
+#define	ECOFF_ST_STATICPROC	14
+
+static bool	EcoffSymbolClass(uint32_t bits, bool external)
+{
+	uint32_t	st = bits & 0x3F, sc = (bits >> 6) & 0x1F;
+
+	// Storage class: text, data, bss, absolute, sdata, sbss, rdata
+	if ((sc != 1) && (sc != 2) && (sc != 3) && (sc != 5) && (sc != 13) && (sc != 14) && (sc != 15))
+		return (false);
+	return (external ? ((st == ECOFF_ST_GLOBAL) || (st == ECOFF_ST_PROC)) :
+		((st == ECOFF_ST_STATIC) || (st == ECOFF_ST_STATICPROC)));	// (global procedures are also external)
+}
+
+bool	LoadSymbolsEcoff(uint8_t *ecoff, int size)
+{
+	uint32_t	symptr = Le32(ecoff + 8), i, j;
+	uint8_t		*h = ecoff + symptr;
+	uint32_t	isym, sym_off, ss_off, ss_ext_off, ifd, fd_off, iext, ext_off;
+
+	if ((Le16(ecoff) != ECOFF_MAGIC) || !symptr || (symptr + 96 > (uint32_t)size) || (Le16(h) != ECOFF_HDRR_MAGIC))
+		return (false);
+	isym = Le32(h + 32);
+	sym_off = Le32(h + 36);
+	ss_off = Le32(h + 60);
+	ss_ext_off = Le32(h + 68);
+	ifd = Le32(h + 72);
+	fd_off = Le32(h + 76);
+	iext = Le32(h + 88);
+	ext_off = Le32(h + 92);
+	if ((ext_off + iext * 16 > (uint32_t)size) || (sym_off + isym * 12 > (uint32_t)size) ||
+		(fd_off + ifd * 72 > (uint32_t)size))
+		return (false);
+	for (i = 0; i < iext; i++)		// EXTR: flags (2), file (2), SYMR: name (4), value (4), st/sc/index (4)
+	{
+		uint8_t		*e = ecoff + ext_off + i * 16;
+		uint32_t	name = ss_ext_off + Le32(e + 4);
+
+		if (EcoffSymbolClass(Le32(e + 12), true) && (name < (uint32_t)size) && memchr(ecoff + name, 0, size - name))
+			AddSymbol(Le32(e + 8), (char *)ecoff + name);
+	}
+	for (i = 0; i < ifd; i++)		// FDR: names (issBase at 8), symbols (isymBase at 16, csym at 20)
+	{
+		uint8_t		*fd = ecoff + fd_off + i * 72;
+		uint32_t	iss_base = Le32(fd + 8), isym_base = Le32(fd + 16), csym = Le32(fd + 20);
+
+		for (j = 0; (j < csym) && (isym_base + j < isym); j++)
+		{
+			uint8_t		*s = ecoff + sym_off + (isym_base + j) * 12;
+			uint32_t	name = ss_off + iss_base + Le32(s);
+
+			if (EcoffSymbolClass(Le32(s + 8), false) && (name < (uint32_t)size) && memchr(ecoff + name, 0, size - name))
+				AddSymbol(Le32(s + 4), (char *)ecoff + name);
+		}
+	}
+	return (true);
+}
+
+// Symbol file: ELF executable, Net Yaroze ECOFF executable, GNU ld map file ("   0x80010000   main") or nm output
+// ("80010000 T main")
 void	LoadSymbols(char *filename)
 {
 	FILE		*f;
@@ -2174,6 +2410,14 @@ void	LoadSymbols(char *filename)
 		if (elf && !LoadSymbolsElf(elf, n))
 			printf("'%s' is not a 32-bit little endian ELF file !\n", filename);
 		free(elf);
+	}
+	else if ((magic[0] | (magic[1] << 8)) == ECOFF_MAGIC)
+	{
+		uint8_t	*ecoff = SystemGetFile(filename, &n);
+
+		if (ecoff && !LoadSymbolsEcoff(ecoff, n))
+			printf("'%s': no symbol table in this ECOFF executable (stripped?)\n", filename);
+		free(ecoff);
 	}
 	else if ((f = fopen(filename, "r")))
 	{
@@ -2237,7 +2481,8 @@ void	SaveLastExe(char *exe)
 void	AutoLoadSymbols(char *symfile)
 {
 	static const char	*exts[] = {".elf", ".map", ".sym", ".ELF", ".MAP", ".SYM"};	// (ELF: static functions too)
-	char				exe[4096], cand[4200], *dot, *sep;
+	char				exe[4096], full[4096], cand[4200], *dot, *sep;
+	uint8_t				magic[2] = {0};
 	FILE				*f;
 	int					i;
 
@@ -2254,6 +2499,14 @@ void	AutoLoadSymbols(char *symfile)
 	fgets(exe, sizeof(exe), f);
 	fclose(f);
 	exe[strcspn(exe, "\r\n")] = 0;
+	// A Net Yaroze ECOFF executable (e.g. "main" of an auto script) has its own symbols, unless a file is given
+	// next to it
+	if ((f = fopen(exe, "rb")))
+	{
+		fread(magic, 1, 2, f);
+		fclose(f);
+	}
+	strcpy(full, exe);
 	dot = strrchr(exe, '.');
 	sep = strrchr(exe, '\\') > strrchr(exe, '/') ? strrchr(exe, '\\') : strrchr(exe, '/');
 	if (dot && (!sep || (dot > sep)))
@@ -2267,6 +2520,11 @@ void	AutoLoadSymbols(char *symfile)
 			LoadSymbols(cand);
 			return;
 		}
+	}
+	if ((magic[0] | (magic[1] << 8)) == ECOFF_MAGIC)
+	{
+		printf("Symbols of the last executable (ECOFF): ");
+		LoadSymbols(full);
 	}
 }
 
@@ -2324,6 +2582,17 @@ const char	*SymbolAt(uint32_t adrs, uint32_t *start)
 		return (NULL);
 	*start = s->adrs;
 	return (s->name);
+}
+
+// A symbol of this name is loaded (profiler: the waiting functions of the program are known)
+bool	SymbolExists(const char *name)
+{
+	int	i;
+
+	for (i = 0; i < symbol_count; i++)
+		if (!strcmp(symbols[i].name, name))
+			return (true);
+	return (false);
 }
 
 void	PrintAddress(uint32_t adrs)
@@ -3109,7 +3378,8 @@ typedef struct
 
 static void	HotConsole(void);
 
-static bool	HotService(char cmd, uint8_t *data, uint32_t param, uint32_t size)
+// A command run by the debug monitor while the program runs ('M' service): VRAM read/write... (also timlive.c)
+bool	HotService(char cmd, uint8_t *data, uint32_t param, uint32_t size)
 {
 	uint8_t	service = MON_CMD_SERVICE;
 
@@ -3298,6 +3568,7 @@ int main(int argc, char *argv[])
 {
 	int			deviceid = 0;
 	int			x, y, w, h, i, ret, cmd = CMD_UNKNOWN;
+	uint32_t	start_ms;						// Upload start (its rate and time shown)
 	uint32_t	size = 0, adrs = 0x80010000, *ptr32, poke_value = 0;
 	char		*adrs_str = NULL;
 	uint8_t		*data = NULL, *ptr;
@@ -3306,18 +3577,23 @@ int main(int argc, char *argv[])
 	char		*timview_files[TIMVIEW_MAX_FILES];
 	int			sound_count = 0, timview_count = 0, card_mode = 0, card_slot = 1;
 	bool		link_test = false;
+	bool		pad_test = false;	// -padtest: the control tester, with the remote pad
 	char		*card_file = NULL;
 	int			tim_count = 0;
 	bool		ttymode = false, reset = false, list = false;
 	int			tty_mode = EXEC_TTY_MODE_USB;	// Default = redirect enabled (old behaviour)
 	bool		tty_given = false;				// -c given
 	char		*net_host = NULL;				// -net host:port
-	char		*netlink_peer = NULL;			// -netlink :port (host) or host:port (guest)
-	char		*netlink_key = NULL;			// -netkey: the game's link key (Netplay lobby)
-	int			nl_delay = 0, nl_jitter = 0, nl_loss = 0;	// -netdelay ms[,jitter[,loss%]] (tests)
 	ProfOptions	prof = {1000, 0, false, NULL, NULL, 0, NULL};	// -prof [rate[,counter]], -json, -csv, -idle
 	bool		prof_on = false, prof_fill = true;	// -nofill: no RAM fill (RAM use not measured)
+	bool		tim_live = false;	// -timlive: the TIM viewer linked with the GUI (timlive.c)
+	bool		snd_live = false;	// -sndlive: the sound tester linked with the GUI (sndlive.c)
+	bool		mdl_live = false;	// -mdllive: the model viewer linked with the GUI (mdllive.c)
+	bool		remote_pad = false;	// -pad: a controller port driven from the computer (monitor/monitor.h, EXEC_PAD)
+	char		*tod_files[VIEWER_MAX_TOD];
+	int			tod_count = 0;
 	int			gdb_port = 0;					// -gdb: debug session with the GDB server on this port
+	bool		frame_live = false;				// -frame: debug session for the frame capture (gdbserver.c)
 	uint32_t	gdb_entry = 0, gdb_entry_insn = 0;
 	HotFile		hot_files[HOT_MAX_FILES];			// -hot: files sent to the running program
 	int			hot_count = 0;
@@ -3343,6 +3619,11 @@ int main(int argc, char *argv[])
 					cmd = CMD_UPLOAD;
 				break;
 
+				case 'b':	// The menu boots the disc in the drive (unlocked first: burned and import discs)
+					if (!strcmp(argv[i], "-bootcd"))
+						cmd = CMD_BOOT_DISC;
+				break;
+
 				case 'd':	// Download file from specified address and size
 					cmd = CMD_DOWNLOAD;
 				break;
@@ -3360,7 +3641,8 @@ int main(int argc, char *argv[])
 							goto usage;
 						}
 						relay_serial = argv[++i];
-						cmd = CMD_RELAY;
+						if (!gdb_port)		// (with -gdb: the relay in the debug session)
+							cmd = CMD_RELAY;
 						break;
 					}
 					reset = true;
@@ -3455,38 +3737,6 @@ int main(int argc, char *argv[])
 						prof_fill = false;
 						break;
 					}
-					if (!strcmp(argv[i], "-netlink"))	// Netplay: the USB link to another computer's console (usblink.c)
-					{
-						if (i + 1 >= argc)
-						{
-							printf(":port or host:port needed following -netlink\n");
-							goto usage;
-						}
-						netlink_peer = argv[++i];
-						if (cmd == CMD_UNKNOWN)		// (with -e: after the program is executed)
-							cmd = CMD_NETLINK;
-						break;
-					}
-					if (!strcmp(argv[i], "-netkey"))	// -netlink: the game's link key (given by the Netplay lobby)
-					{
-						if (i + 1 >= argc)
-						{
-							printf("32 hex digits needed following -netkey\n");
-							goto usage;
-						}
-						netlink_key = argv[++i];
-						break;
-					}
-					if (!strcmp(argv[i], "-netdelay"))	// -netlink tests: packets sent delayed, jitter, loss
-					{
-						if (i + 1 >= argc)
-						{
-							printf("ms[,jitter[,loss%%]] needed following -netdelay\n");
-							goto usage;
-						}
-						sscanf(argv[++i], "%d,%d,%d", &nl_delay, &nl_jitter, &nl_loss);
-						break;
-					}
 					if (!strcmp(argv[i], "-net"))	// The program's USB link connected to a TCP server (usblink.c)
 					{
 						if (i + 1 >= argc)
@@ -3545,6 +3795,16 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'm':	// TMD model to display with the model viewer
+					if (!strcmp(argv[i], "-memlive"))	// Memory of the running program on request (memlive.c)
+					{
+						cmd = CMD_MEMLIVE;
+						break;
+					}
+					if (!strcmp(argv[i], "-mdllive"))	// Model viewer: commands of the GUI on the input (mdllive.c)
+					{
+						mdl_live = true;
+						break;
+					}
 					if (!strcmp(argv[i], "-mclist") || !strcmp(argv[i], "-mcexport") || !strcmp(argv[i], "-mcimport") ||
 						!strcmp(argv[i], "-mcdelete") || !strcmp(argv[i], "-mccopy") || !strcmp(argv[i], "-mcformat"))
 					{
@@ -3586,6 +3846,21 @@ int main(int argc, char *argv[])
 				break;
 
 				case 't':	// TIM texture for the model viewer (can be used several times)
+					if (!strcmp(argv[i], "-timlive"))	// TIM viewer: commands of the GUI on the input (timlive.c)
+					{
+						tim_live = true;
+						break;
+					}
+					if (!strcmp(argv[i], "-tod"))	// TOD animation for the model viewer (with -m)
+					{
+						if ((i + 1 >= argc) || (tod_count >= VIEWER_MAX_TOD))
+						{
+							printf("TOD file needed following -tod (max %d)\n", VIEWER_MAX_TOD);
+							goto usage;
+						}
+						tod_files[tod_count++] = argv[++i];
+						break;
+					}
 					if (!strcmp(argv[i], "-tim"))	// TIM file for the TIM and VRAM viewer
 					{
 						if ((i + 1 >= argc) || (timview_count >= TIMVIEW_MAX_FILES))
@@ -3618,6 +3893,13 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'f':	// file
+					if (!strcmp(argv[i], "-frame"))	// Frame capture (debug session, commands on the input, gdbserver.c)
+					{
+						frame_live = true;
+						cmd = CMD_EXECUTE;
+						reset = true;	// The PS1 only accepts a reset command while a program runs
+						break;
+					}
 					if (!strcmp(argv[i], "-flash"))	// Flash a cartridge ROM (with ar_flash.ps-exe, readback check)
 					{
 						if (i + 1 >= argc)
@@ -3645,6 +3927,18 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'p':	// PCDRV path
+					if (!strcmp(argv[i], "-pad"))	// Remote pad: a port driven from the computer (-memlive, -frame)
+					{
+						remote_pad = true;
+						break;
+					}
+					if (!strcmp(argv[i], "-padtest"))	// Control tester (padtest.ps-exe next to ps1transfer), remote pad on
+					{
+						pad_test = remote_pad = true;
+						cmd = CMD_EXECUTE;
+						reset = true;	// The PS1 only accepts a reset command while a program runs
+						break;
+					}
 					if (!strcmp(argv[i], "-prof"))	// Profiler of the running program (profiler.c)
 					{
 						prof_on = true;
@@ -3707,6 +4001,16 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'v':	// VRAM x y w h
+					if ((i + 1 < argc) && !strcmp(argv[i + 1], "auto"))	// The screen on the TV (PS1 DEV CART tools)
+					{
+						vram_auto = true;
+						x = y = 0;
+						w = 320;
+						h = 240;
+						i++;
+						cmd = CMD_VRAM;
+						break;
+					}
 					if (i + 4 < argc)
 					{
 						x = atoi(argv[i + 1]);
@@ -3730,6 +4034,17 @@ int main(int argc, char *argv[])
 				break;
 
 				case 's':	// size (size of download in decimal)
+					if (!strcmp(argv[i], "-spu"))	// SPU RAM and registers of the running program to a file
+					{
+						if (i + 1 >= argc)
+						{
+							printf("-spu needs the file to write\n");
+							goto usage;
+						}
+						spu_file = argv[++i];
+						cmd = CMD_SPU;
+						break;
+					}
 					if (!strcmp(argv[i], "-synth"))	// SPU synth bridge, commands on the standard input (synthbridge.c)
 					{
 						cmd = CMD_SYNTH;
@@ -3753,6 +4068,11 @@ int main(int argc, char *argv[])
 							goto usage;
 						}
 						i++;
+						break;
+					}
+					if (!strcmp(argv[i], "-sndlive"))	// Sound tester: commands of the GUI on the input (sndlive.c)
+					{
+						snd_live = true;
 						break;
 					}
 					if (!strcmp(argv[i], "-snd"))	// Sound file for the sound tester (VH, VB, VAB, SEQ, VAG)
@@ -3860,6 +4180,9 @@ int main(int argc, char *argv[])
 	// The link cable tester is executed with -link (on both consoles), unless another program is given with -f
 	if (link_test && !filename)
 		filename = GetToolPath(argv[0], LINKTEST_FILENAME);
+	// The control tester is executed with -padtest (the remote pad on: the Remote Controller page drives it)
+	if (pad_test && !filename)
+		filename = GetToolPath(argv[0], PADTEST_FILENAME);
 	if (card_mode && !filename)
 	{
 		char	*sep, *sep2;
@@ -3905,8 +4228,10 @@ int main(int argc, char *argv[])
 	}
 
 	if (!filename && !reset && (cmd != CMD_CRASH) && (cmd != CMD_PEEK) && (cmd != CMD_POKE) && (cmd != CMD_HOT) &&
+		(cmd != CMD_MEMLIVE) &&
 		(cmd != CMD_INFO) && (cmd != CMD_FLASH_ROM) && (cmd != CMD_SYNTH) &&
-		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_NETLINK))
+		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_SPU) &&
+		(cmd != CMD_BOOT_DISC))
 	{
 		printf("No file specified.\n");
 		goto usage;
@@ -3941,7 +4266,7 @@ int main(int argc, char *argv[])
 	// -gdb: reset only if a program runs (the menu firmware may be a test build running from RAM)
 	if ((cmd == CMD_FLASH_ROM) && !(flash_data = LoadRom(flash_rom)))
 		goto failed;
-	if (gdb_port || (cmd == CMD_FLASH_ROM))
+	if (gdb_port || frame_live || (cmd == CMD_FLASH_ROM) || (cmd == CMD_BOOT_DISC))
 	{
 		ps1_program_running = true;		// Kept if it can't be read (program with an older kernel hook)
 		USB_DetectPacketSize();
@@ -3973,12 +4298,31 @@ int main(int argc, char *argv[])
 		// resetting (-r and -e options combined)
 		// On Windows, it works fine, the data upload seems to wait that USB becomes ready after reset
 
+		// The PS1 can be in the middle of a transfer for a ps1transfer that was stopped (e.g. the console of a program,
+		// ended by an IDE): it goes on sending, and takes the bytes of a command as the acknowledgments of its packets
+		// (each one: the packet sent again). Its data read until it is quiet (it has given up waiting for an
+		// acknowledgment, about 1-2 seconds), then the reset again.
 		printf("Resetting the PS1...\n");
-		if (!USB_Process('R', NULL, 0, 0))
-#ifndef _WIN32
-			if (!USB_Process('R', NULL, 0, 0))	// Try another time just in case but sometimes it still fails on Linux
-#endif
+		for (i = 0; !USB_Process('R', NULL, 0, 0); i++)
+		{
+			uint8_t	c;
+			int		quiet = 0;
+			time_t	start = time(NULL);
+
+			if (i == 3)
 				goto USB_error;
+			printf("The PS1 didn't take the reset: waiting until it is quiet (a transfer stopped?)...\n");
+			while ((quiet < RESET_QUIET_MS) && (time(NULL) - start < RESET_DRAIN_S))
+			{
+				if (USB_ReadByteNoWait(&c))
+					quiet = 0;
+				else
+				{
+					SleepMs(5);
+					quiet += 5;
+				}
+			}
+		}
 
 #ifndef _WIN32
 		// Closing and opening again the USB device seems to help but not in every case
@@ -4023,7 +4367,15 @@ int main(int argc, char *argv[])
 				goto USB_error;
 			if (auto_count && !UploadAutoData(adrs, size, libps_adrs, libps_size))	// Prints its own error
 				goto failed;
-			if (model && !UploadModelData(model, tims, tim_count))	// Prints its own file or USB error
+			// The profiler's RAM fill (free RAM above the program) would overwrite data files loaded above it
+			for (i = 0; prof_on && prof_fill && (i < auto_count); i++)
+				if (auto_data[i].adrs + auto_data[i].size > adrs + size)
+				{
+					printf("Profiler: %s is above the program, the free RAM isn't filled (RAM use not measured)\n",
+						auto_data[i].path);
+					prof_fill = false;
+				}
+			if (model && !UploadModelData(model, tims, tim_count, tod_files, tod_count))	// Prints its own file or USB error
 				goto failed;
 			if (sound_count && !UploadSoundData(sound_files, sound_count))
 				goto failed;
@@ -4034,7 +4386,7 @@ int main(int argc, char *argv[])
 				ttymode = false;
 				goto failed;
 			}
-			if (gdb_port)
+			if (gdb_port || frame_live)
 			{
 				// The firmware must have the debug monitor (its kernel hook state holds a magic number)
 				uint32_t	magic = 0;
@@ -4058,10 +4410,12 @@ int main(int argc, char *argv[])
 				tty_mode |= EXEC_DEBUG;
 			}
 			printf("Uploading %u bytes to 0x%X...\n", size, adrs);
+			start_ms = NowMs();
 			if (USB_Process('U', ptr, adrs, size))
 			{
+				PrintUploadTime(size, start_ms);
 				// Net Yaroze: the library start code runs first (stub), like with the boot disc
-				if (libps && libps_init && !gdb_port)
+				if (libps && libps_init && !gdb_port && !frame_live)
 				{
 					uint32_t	stub = UploadNetYarozeStart(adrs, *(uint32_t *)&data[16]);
 
@@ -4069,7 +4423,7 @@ int main(int argc, char *argv[])
 						goto USB_error;
 					*(uint32_t *)&data[16] = stub;
 				}
-				printf("\nExecuting...\n");
+				printf("Executing...\n");
 
 				// The TTY redirect choice is sent with the Execute command so it is known before the program starts
 				printf("TTY: %s\n", ((tty_mode & ~EXEC_DEBUG) == EXEC_TTY_MODE_USB) ? "redirected to USB" :
@@ -4077,7 +4431,22 @@ int main(int argc, char *argv[])
 					(((tty_mode & ~EXEC_DEBUG) == EXEC_TTY_MODE_LINK) ? "USB link driver (-relay)" : "BIOS device kept")));
 				if (prof_on && prof_fill)
 					printf("Profiler: free RAM filled to measure what the program uses\n");
-				if (!USB_Process('E', &data[8 + 4 + 4], tty_mode | ((prof_on && prof_fill) ? EXEC_PROF_FILL : 0), 15 * 4))
+				if (remote_pad)
+				{
+					MonitorState	ms;
+
+					if (USB_Process('D', (uint8_t *)&ms, MONITOR_STATE_ADRS, sizeof(ms)) && (ms.magic == MONITOR_MAGIC) &&
+						(ms.version >= 8))
+						printf("Remote pad: controller port 1 can be driven from the computer%s\n",
+							(ms.version >= 9) ? " (port 2 too: padport 1)" : "");
+					else
+					{
+						printf("Remote pad: the firmware in the cartridge is too old (flash the new one)\n");
+						remote_pad = false;
+					}
+				}
+				if (!USB_Process('E', &data[8 + 4 + 4], tty_mode | ((prof_on && prof_fill) ? EXEC_PROF_FILL : 0) |
+					(remote_pad ? EXEC_PAD : 0), 15 * 4))
 					goto USB_error;
 				// Initial stack pointer (header s_addr + s_size, 0: the one of the firmware, unknown)
 				if (*(uint32_t *)&data[0x30])
@@ -4085,12 +4454,6 @@ int main(int argc, char *argv[])
 				// Your executable (not a PS1 DEV CART tool): its symbol file is used automatically by -crash, -peek, @names
 				if (!model && !sound_count && !timview_count && !card_mode && !link_test)
 					SaveLastExe(filename);
-				if (netlink_peer)	// Netplay: linked to the other computer's console
-				{
-					if (UsbNetLink(serial ? serial : "PS1", netlink_peer, netlink_key, nl_delay, nl_jitter, nl_loss))
-						goto failed;
-					goto done;
-				}
 				if (prof_on)	// Profiler of the program just started
 				{
 					prof.symfile = symfile;
@@ -4104,14 +4467,17 @@ int main(int argc, char *argv[])
 						goto failed;
 					goto done;
 				}
-				if (gdb_port)
+				if (gdb_port || frame_live)
 				{
 					// The program runs: only the debug monitor/kernel hook answers (2KB packets)
 					ps1_program_running = true;
 					usb_big_packet_size = 0;
 					if (path)
 						chdir(path);	// PCDRV files of the program
-					GdbServer(gdb_port, gdb_entry, gdb_entry_insn);
+					if (frame_live)
+						exit_code = FrameLive(gdb_entry, gdb_entry_insn);
+					else
+						GdbServer(gdb_port, gdb_entry, gdb_entry_insn, relay_serial);
 					goto done;
 				}
 			}
@@ -4152,6 +4518,13 @@ int main(int argc, char *argv[])
 		}
 		break;
 
+		case CMD_MEMLIVE:	// Memory read/written on request while the program runs (the GUI's watch list)
+			if (path)
+				chdir(path);	// (its file server: PCDRV files of the program)
+			if (MemLive())
+				goto failed;
+		break;
+
 		case CMD_POKE:	// Write a 1/2/4 bytes little endian value
 		{
 			uint8_t	buf[4] = {poke_value, poke_value >> 8, poke_value >> 16, poke_value >> 24};
@@ -4167,8 +4540,10 @@ int main(int argc, char *argv[])
 		case CMD_UPLOAD:
 		case CMD_FLASH:
 			printf("Uploading %u bytes to 0x%X...\n", size, adrs);
+			start_ms = NowMs();
 			if (USB_Process('U', ptr, adrs, size))
 			{
+				PrintUploadTime(size, start_ms);
 				if (cmd == CMD_FLASH)
 				{
 					printf("Flashing Action Replay...\n");
@@ -4215,6 +4590,23 @@ int main(int argc, char *argv[])
 			PrintInfo();
 		break;
 
+		case CMD_BOOT_DISC:
+			// After a reset (a program was running): the menu answers a few seconds later
+			for (i = 0; reset && !(fw_features & FEATURE_BOOT_DISC) && (i < 10); i++)
+			{
+				SleepMs(1000);
+				USB_DetectPacketSize();
+			}
+			if (!(fw_features & FEATURE_BOOT_DISC))
+			{
+				printf("The firmware of this cartridge can't boot the disc: flash the latest ROM.\n");
+				goto failed;
+			}
+			if (!USB_Process('C', NULL, 0, 0))
+				goto USB_error;
+			printf("The PS1 boots the disc (messages on the TV).\n");
+		break;
+
 		case CMD_FLASH_ROM:
 			if (!FlashRom(flash_rom, flash_data, argv[0]))
 				goto failed;
@@ -4240,16 +4632,6 @@ int main(int argc, char *argv[])
 				goto failed;
 		break;
 
-		case CMD_NETLINK:
-			if (!ps1_program_running)
-			{
-				printf("Start a program using the USB link first (-c link, or psxcomb's USB link; or add -e -f).\n");
-				goto failed;
-			}
-			if (UsbNetLink(serial ? serial : "PS1", netlink_peer, netlink_key, nl_delay, nl_jitter, nl_loss))
-				goto failed;
-		break;
-
 		case CMD_PROF:
 			if (!ps1_program_running)
 			{
@@ -4271,6 +4653,52 @@ int main(int argc, char *argv[])
 				goto failed;
 		break;
 
+		case CMD_SPU:
+		{
+			// The debug monitor reads them (DMA) through its 'M' service while the program runs, or directly when the
+			// program is stopped in it. File: the 512KB of SPU RAM, then the 512 bytes of SPU registers.
+			MonitorState	ms;
+			uint8_t			*spu = malloc(MON_SPU_RAM_SIZE + MON_SPU_REGS_SIZE);
+			bool			stopped, ok;
+			FILE			*f;
+
+			if (!spu)
+				goto failed;
+			if (!ps1_program_running)
+			{
+				printf("No program runs: the SPU RAM is read while a program runs (by the debug monitor)\n");
+				goto failed;
+			}
+			if (!USB_Process('D', (uint8_t *)&ms, MONITOR_STATE_ADRS, 16))
+				goto USB_error;
+			if ((ms.magic != MONITOR_MAGIC) || (ms.version < 10))
+			{
+				printf("The firmware in the cartridge is too old to read the SPU RAM (debug monitor version 10): "
+					"flash the new one\n");
+				goto failed;
+			}
+			stopped = (ms.reason != MON_REASON_NONE);
+			printf("Reading the SPU registers and RAM (512KB)...\n");
+			ok = stopped ? USB_Process(MON_CMD_SPU_READ, spu + MON_SPU_RAM_SIZE, MON_SPU_REGS, MON_SPU_REGS_SIZE) :
+				HotService(MON_CMD_SPU_READ, spu + MON_SPU_RAM_SIZE, MON_SPU_REGS, MON_SPU_REGS_SIZE);
+			ok = ok && (stopped ? USB_Process(MON_CMD_SPU_READ, spu, 0, MON_SPU_RAM_SIZE) :
+				HotService(MON_CMD_SPU_READ, spu, 0, MON_SPU_RAM_SIZE));
+			if (!ok)
+				goto USB_error;
+			if (!(f = fopen(spu_file, "wb")) || (fwrite(spu, 1, MON_SPU_RAM_SIZE + MON_SPU_REGS_SIZE, f) !=
+				MON_SPU_RAM_SIZE + MON_SPU_REGS_SIZE))
+			{
+				printf("Can't write %s\n", spu_file);
+				if (f)
+					fclose(f);
+				goto failed;
+			}
+			fclose(f);
+			printf("SPU RAM and registers written to %s\n", spu_file);
+			free(spu);
+		}
+		break;
+
 		case CMD_VRAM:
 			data = malloc(w*h*(sizeof(uint16_t)+3));
 			if (!data)
@@ -4287,10 +4715,22 @@ int main(int argc, char *argv[])
 				MonitorState	ms;
 				bool			service = ps1_program_running && USB_Process('D', (uint8_t *)&ms, MONITOR_STATE_ADRS, 16) &&
 										(ms.magic == MONITOR_MAGIC) && (ms.version >= 2) && (ms.reason == MON_REASON_NONE);
+				bool			held = false, ok;
 
+				// -v auto: the screen on the TV as the program tells it (the TIM viewer: held on a complete frame)
+				if (vram_auto)
+				{
+					if (ps1_program_running && (held = TimViewScreen(&x, &y)))
+						printf("Screen on the TV (TIM viewer): %d,%d\n", x, y);
+					else
+						printf("The screen on the TV isn't known for this program: 0,0 (320x240)\n");
+				}
 				printf("Downloading live VRAM from coordinate %d,%d of size %d,%d...\n", x, y, w, h);
-				if (!(service ? HotService('V', ptr, (x << 16) | y, (w << 16) | h) :
-					USB_Process('V', ptr, (x << 16) | y, (w << 16) | h)))
+				ok = service ? HotService('V', ptr, (x << 16) | y, (w << 16) | h) :
+					USB_Process('V', ptr, (x << 16) | y, (w << 16) | h);
+				if (held)
+					TimViewRelease();
+				if (!ok)
 					goto USB_error;
 				ptr += w * h * sizeof(uint16_t);
 			}
@@ -4335,6 +4775,7 @@ usage:
 	printf("\t-u Upload file to specified address\n");
 	printf("\t-d Download file from specified address and size\n");
 	printf("\t-v Download VRAM image from following parameters: x y w h\n");
+	printf("\t-spu file Write the SPU RAM (512KB) then the SPU registers (512 bytes, 0x1F801C00) of the running program to file (SPU RAM Viewer)\n");
 	printf("\t-live With -v at the menu: the screen as it is now (default: the VRAM saved at boot)\n");
 	printf("\t   (live screenshot if a program runs, otherwise the VRAM saved at the last boot)\n");
 	printf("\t-d/-u/-v also work while a program runs (memory peek/poke, live screenshots) with the PS1 DEV CART firmware\n");
@@ -4361,6 +4802,8 @@ usage:
 	printf("\t-n serial (open the PS1 DEV CART device with this USB serial number, stable unlike -z)\n");
 	printf("\t-l List connected USB devices with their index and serial number\n");
 	printf("\t-flash rom.rom Flash a cartridge ROM (ar_flash.ps-exe next to ps1transfer), then read it back to check\n");
+	printf("\t-bootcd Boot the disc in the drive (the CD drive unlocked first: burned and import discs, no modchip)\n");
+	printf("\t   Same as START + SELECT on the menu. Not on Japanese consoles (licensed discs still boot).\n");
 	printf("\t-info Cartridge state as key=value lines (device, state: menu/running/stopped/crashed, firmware...)\n");
 	printf("\t-synth SPU synth (synth.ps-exe next to ps1transfer): 16 sample slots, slot n plays on MIDI channel n.\n");
 	printf("\t   Commands on its input: midi HEX..., load SLOT file.vag, clear SLOT, set SLOT PARAM VALUE, state, reset, quit\n");
@@ -4369,8 +4812,16 @@ usage:
 	printf("\t-auto auto -y libps.exe Net Yaroze auto script (siocons): its program and \"dload\" data files\n");
 	printf("\t-m model.tmd (display a TMD model with the model viewer, tmdviewer.ps-exe next to ps1transfer)\n");
 	printf("\t-t texture.tim (texture for -m, can be used up to %d times)\n", VIEWER_MAX_TIM);
+	printf("\t-tod anim.tod (TOD animation for -m, up to %d: played, paused, stepped on the PS1)\n", VIEWER_MAX_TOD);
+	printf("\t-mdllive With -m: commands on the input for the PS1 Dev Cart Manager (TOD, frame, play, view; state lines)\n");
+	printf("\t-memlive Memory of the running program read/written on request (PS1 Dev Cart Manager's watch list), its printf and file server meanwhile\n");
+	printf("\t-padtest Run the control tester (padtest.ps-exe next to ps1transfer) with -pad: the controllers of both ports as a program sees them, real or emulated (Remote Controller page)\n");
+	printf("\t-pad With -e: a controller port can be driven from the computer (-memlive \"pad\"/\"padport\" commands), for programs using the BIOS pad functions; port 2 needs the debug monitor version 9\n");
+	printf("\t-frame -f game.exe Frame capture (PS1 Dev Cart Manager): the program runs in a debug session, \"capture\" on the input reads the GPU packets of a frame\n");
 	printf("\t-snd file (play VH+VB/VAB banks, SEQ music, VAG samples with the sound tester, up to %d files)\n", TESTER_MAX_FILES);
+	printf("\t-sndlive With -snd: commands on the input for the PS1 Dev Cart Manager (program, note, volume, play, SEQ; state lines)\n");
 	printf("\t-tim file.tim (TIM and VRAM viewer: VRAM map, overlaps, CLUTs, up to %d files)\n", TIMVIEW_MAX_FILES);
+	printf("\t-timlive With -tim -c: commands on the input for the PS1 Dev Cart Manager (live palette, VRAM read)\n");
 	printf("\t-mcbackup card.mcd (save the memory card to a 128KB image), -mcrestore card.mcd (write it back,\n");
 	printf("\t   confirmation on the PS1), -slot 1|2 (default 1)\n");
 	printf("\t-link [yaroze] Link cable tester (run it on both consoles, e.g. with -n serial): serial port used like\n");
@@ -4379,12 +4830,6 @@ usage:
 	printf("\t-relay SERIAL2 USB link relay between the cartridge of -n and SERIAL2 (both run -link usb), until stopped\n");
 	printf("\t-net host:port Connects the USB link of the running program (psxcomb USB link, or -c link) to a TCP\n");
 	printf("\t   server, until stopped; with -e -f program.ps-exe: executes it first (printf kept on the BIOS device)\n");
-	printf("\t-netlink :port | host:port Netplay: links the USB link of the running program (-c link Net Yaroze game, or\n");
-	printf("\t   psxcomb USB link) to the console of another computer running -netlink, over UDP. One computer waits\n");
-	printf("\t   (:port, the host: its router must forward the UDP port), the other connects (host:port), until stopped\n");
-	printf("\t   -netkey hex: the game's link key (32 hex digits, both computers; given by the Netplay lobby): packets\n");
-	printf("\t   without it are ignored (another computer can't link in). Without -netkey, anyone can link in first\n");
-	printf("\t   -netdelay ms[,jitter[,loss%%]]: packets sent delayed and dropped (to test as if far away)\n");
 	printf("\t-prof [rate[,counter]] Profiler of the running program (with -e -f program.ps-exe: started first, its free\n");
 	printf("\t   RAM filled to measure what it uses, -nofill: not filled): CPU load and the functions where the time goes\n");
 	printf("\t   (symbols: .map/.elf next to the program, or -sym), GPU busy, frames, DMA, stack, RAM, SPU voices, every\n");
@@ -4412,6 +4857,24 @@ done:
 	memset(PCdrvFD, 0, sizeof(PCdrvFD));
 	if (path)
 		chdir(path);
+	// -timlive: the TIM viewer just executed takes the GUI's commands (live palette, VRAM), the file server goes on
+	if (tim_live && timview_count && ftdi && !exit_code)
+	{
+		exit_code = TimLive();
+		ttymode = false;
+	}
+	// -mdllive: the model viewer just executed shares its animation and view controls with the GUI
+	if (mdl_live && model && ftdi && !exit_code)
+	{
+		exit_code = MdlLive();
+		ttymode = false;
+	}
+	// -sndlive: the sound tester just executed shares its controls with the GUI (program, note, volume, SEQ, voices)
+	if (snd_live && sound_count && ftdi && !exit_code)
+	{
+		exit_code = SndLive();
+		ttymode = false;
+	}
 	// -c alone (attach): the file server needs the packet size (a query can fail while the program prints)
 	for (i = 0; ttymode && ftdi && !hook_packet_detected && (i < 3); i++)
 		USB_DetectPacketSize();

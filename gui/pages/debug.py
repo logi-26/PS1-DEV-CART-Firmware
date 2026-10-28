@@ -19,11 +19,11 @@ from widgets import FileField, ImageView, MonoText, PS1_EXE_TYPES, labeled
 
 
 class DebugPage(Page):
-    title = "Debug"
+    title = "Debug Server"
 
     def build(self):
         s = self.app.settings
-        tb.Label(self, text="Debug", font=("", 16, "bold")).pack(anchor="w", pady=(0, 8))
+        tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 8))
 
         box = self.section("Crash report")
         box.pack(fill="x", pady=(0, 8))

@@ -9,6 +9,7 @@ This Source Code Form is subject to the terms of the Mozilla Public License, v. 
 If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
+import ctypes
 import os
 import subprocess
 import sys
@@ -19,7 +20,9 @@ from ttkbootstrap.dialogs import Messagebox
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from devices import default_ps1transfer, list_devices, parse_info, run_quick  # noqa: E402
+from livelink import FRAME_CAPTURE, LIVE_LINK, LIVE_PROTOCOL  # noqa: E402
 from pages import PAGES  # noqa: E402
+from pages.console import ConsolePage  # noqa: E402
 from runner import Runner  # noqa: E402
 from settings import Settings  # noqa: E402
 from widgets import MonoText  # noqa: E402
@@ -27,7 +30,41 @@ from widgets import MonoText  # noqa: E402
 APP_VERSION = "1.0"     # PS1 DEV CART release (the same as the firmware, ps1transfer and the PS1 tools)
 APP_TITLE = "PS1 Dev Cart Manager " + APP_VERSION
 
+def resource(*parts):
+    """A file that comes with the GUI (icons/...): next to this script, or in the PyInstaller bundle."""
+    return os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))), *parts)
+
+
+def title_bar_dark(window, dark):
+    """Windows 10 (1809 and later) and 11: the title bar of a window dark or light (DWM's immersive dark mode), like
+    the theme. Nothing elsewhere."""
+    if sys.platform != "win32":
+        return
+    try:
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        for attribute in (20, 19):      # DWMWA_USE_IMMERSIVE_DARK_MODE (19 before Windows 10 20H1)
+            if not ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value),
+                                                              ctypes.sizeof(value)):
+                break
+        # Drawn again at once (Windows 10 keeps a shown window's title bar until it is activated): WM_NCACTIVATE,
+        # inactive then as it is
+        active = ctypes.windll.user32.GetForegroundWindow() == hwnd
+        ctypes.windll.user32.SendMessageW(hwnd, 0x86, not active, 0)
+        ctypes.windll.user32.SendMessageW(hwnd, 0x86, active, 0)
+    except Exception:  # noqa: BLE001 (older Windows: the title bar stays as it is)
+        pass
+
+
 STATE_STYLES = {"menu": "info", "running": "success", "stopped": "warning", "crashed": "danger", "unknown": "secondary"}
+
+
+# Pages renamed: their earlier names (the last page shown is saved by its name)
+OLD_PAGE_NAMES = {"Run Yaroze": "Run Net Yaroze", "Console": "Console & File Server", "Memory": "Memory Peek/Poke",
+                  "Hot reload": "Hot Reload", "Screen": "Screen Capture", "Debug": "Debug Server",
+                  "Model viewer": "Model & Animation Viewer", "TIM / VRAM": "VRAM Viewer", "Sound": "Sound Tools",
+                  "Memory card": "Memory Card Tools", "Link test": "Link Connection Test"}
 
 
 class App(tb.Window):
@@ -45,18 +82,24 @@ class App(tb.Window):
         else:
             self.geometry("1180x800")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._set_icon()
+        # The title bars follow the theme: this window's once shown, and the dialogs' (with the icon) when they open
+        self.bind("<Map>", lambda e: e.widget is self and title_bar_dark(self, self.dark_theme()), add="+")
+        self.bind_class("Toplevel", "<Map>", self._dialog_shown, add="+")
 
         self.runner = Runner(self, self._on_text, self._on_progress, self._on_task, self._on_pcdrv)
         self.devices = []
         self.pages = {}
         self.current = None
         self.task_stopped = False   # The running task was stopped by the user
+        self.live_listeners = []    # Pages told about the live link (live_line, live_stopped, using_live)
+        self.live_ready = False     # The live link answers (MEMLIVE/FRMLIVE ready)
         self.server_folder = None   # Folder served to the PS1 by the running task (PCDRV)
 
         self._build_top()
         self._build_body()
         self._build_bottom()
-        self.show_page(self.settings.field("app.page", "Run"))
+        self.show_page(self.settings.field("app.page", "Run PSX"))
         self.after(200, self.refresh_devices)
         self.after(400, self._update_preview)
 
@@ -98,7 +141,7 @@ class App(tb.Window):
             page.place(relx=0, rely=0, relwidth=1, relheight=1)
             self.pages[cls.title] = page
             text = cls.title if cls.phase == 1 else cls.title + " (soon)"
-            b = tb.Button(side, text=text, width=19, bootstyle="secondary-link",
+            b = tb.Button(side, text=text, width=24, bootstyle="secondary-link",
                           command=lambda t=cls.title: self.show_page(t))
             b.pack(fill="x", pady=1)
             self.side_buttons[cls.title] = b
@@ -120,8 +163,9 @@ class App(tb.Window):
     # ---------------------------------------------------------------- pages
 
     def show_page(self, title):
-        if title not in self.pages:
-            title = "Run"
+        title = OLD_PAGE_NAMES.get(title, title)    # (the last page, saved by an earlier version)
+        if title not in self.pages:     # (e.g. "Run" of earlier versions)
+            title = PAGES[0].title
         self.current = self.pages[title]
         self.current.tkraise()
         self.current.on_show()
@@ -195,13 +239,13 @@ class App(tb.Window):
             full.append("-pcdrvlog")
             if self.settings.field("console.pcdrvany", False):
                 full.append("-pcdrvany")
-            self.pages["Console"].files_started()
+            self.pages[ConsolePage.title].files_started()
         self.server_folder = server     # Shown in the top bar while the task runs
         self.progress.configure(value=0)
         if not quiet:
             self.log.append("\n> %s\n" % subprocess.list2cmdline(["ps1transfer"] + self._device_args(device) + args))
             if console:
-                self.pages["Console"].append("\n--- %s ---\n" % name)
+                self.pages[ConsolePage.title].append("\n--- %s ---\n" % name)
 
         def done(code, output):
             if on_done:
@@ -214,6 +258,48 @@ class App(tb.Window):
         self.task_stopped = False
         self.runner.start(full, name, long_running=long_running, quiet=quiet, cwd=cwd, on_line=on_line, on_done=done,
                           console=console, stdin=stdin, log_filter=log_filter)
+
+    # ---------------------------------------------------------------- live link
+
+    def live_task(self):
+        """LIVE_LINK or FRAME_CAPTURE if one runs (it takes commands: live_send), else None."""
+        task = self.runner.task
+        return task.name if task and task.name in (LIVE_LINK, FRAME_CAPTURE) else None
+
+    def live_listen(self, page):
+        if page not in self.live_listeners:
+            self.live_listeners.append(page)
+
+    def live_send(self, line):
+        return self.live_task() is not None and self.runner.send(line)
+
+    def live_start(self, args=None, name=LIVE_LINK, cwd=None):
+        """Starts the live link (default: ps1transfer -memlive, attached to the program running), unless one runs."""
+        if self.live_task() == name:
+            return
+        if cwd is None:
+            folder = self.settings.field("console.pcdrv", "")
+            cwd = folder if folder and os.path.isdir(folder) else None
+        self.run(args or ["-memlive"], name, long_running=True, stdin=True, console=True, cwd=cwd,
+                 on_line=lambda line: self.after(0, self._live_line, line),
+                 log_filter=lambda line: not line.startswith(LIVE_PROTOCOL),
+                 on_done=lambda code, out: self.after(0, self._live_done))
+
+    def live_release(self):
+        """A page doesn't use the live link any more: stopped if no other page uses it (not the frame capture)."""
+        if self.live_task() == LIVE_LINK and not any(p.using_live() for p in self.live_listeners):
+            self.stop_task()
+
+    def _live_line(self, line):
+        if line.startswith(("MEMLIVE ready", "FRMLIVE ready")):
+            self.live_ready = True
+        for page in self.live_listeners:
+            page.live_line(line)
+
+    def _live_done(self):
+        self.live_ready = False
+        for page in self.live_listeners:
+            page.live_stopped()
 
     @staticmethod
     def _file_server_folder(args, cwd):
@@ -245,10 +331,10 @@ class App(tb.Window):
     def _on_text(self, task, text):
         self.log.append(text)
         if task.console:
-            self.pages["Console"].append(text)
+            self.pages[ConsolePage.title].append(text)
 
     def _on_pcdrv(self, task, line):
-        self.pages["Console"].files_event(line)
+        self.pages[ConsolePage.title].files_event(line)
 
     def _on_progress(self, done, total):
         self.progress.configure(value=100.0 * done / total if total else 0)
@@ -279,6 +365,8 @@ class App(tb.Window):
         pick = next((v for v in values if v.split(" ")[0] == wanted), values[0] if values else "")
         changed = pick.split(" ")[0] != self.device.get().split(" ")[0]
         self.device.set(pick)
+        for page in self.pages.values():
+            page.on_devices_listed()
         if changed:
             self._notify_device()
         if not values:
@@ -327,6 +415,32 @@ class App(tb.Window):
             self.settings.set("theme", theme)
         except Exception as e:  # noqa: BLE001 (unknown theme name)
             self.error(str(e))
+        title_bar_dark(self, self.dark_theme())
+
+    def dark_theme(self):
+        try:
+            return self.style.theme.type == "dark"
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _set_icon(self):
+        """The PS1 DEV CART icon (the cartridge of the VS Code extension's panel), for every window."""
+        # (iconphoto's "default" for all the windows shows Windows' generic icon instead: each window gets it)
+        self._icons = []
+        try:
+            self._icons = [tb.PhotoImage(file=resource("icons", "ps1devcart-%d.png" % s)) for s in (256, 48, 32, 16)]
+            self.iconphoto(False, *self._icons)
+        except Exception:  # noqa: BLE001 (icons missing: ttkbootstrap's)
+            pass
+
+    def _dialog_shown(self, event):
+        window = event.widget
+        if self._icons:
+            try:
+                window.iconphoto(False, *self._icons)
+            except Exception:  # noqa: BLE001
+                pass
+        title_bar_dark(window, self.dark_theme())
 
     def confirm(self, message):
         return Messagebox.yesno(message, APP_TITLE, parent=self) in ("Yes", "yes", True)

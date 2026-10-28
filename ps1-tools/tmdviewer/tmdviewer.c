@@ -1,13 +1,25 @@
 /*
 * PS1 DEV CART TMD model viewer
-* Uploaded and executed by "ps1transfer -m model.tmd [-t texture.tim ...]"
+* Uploaded and executed by "ps1transfer -m model.tmd [-t texture.tim ...] [-tod anim.tod ...]"
 *
-* ps1transfer uploads a data block at VIEWER_DATA_ADRS (header + TMD + TIMs) before executing this program.
+* ps1transfer uploads a data block at VIEWER_DATA_ADRS (header + TMD + TIMs + TODs) before executing this program.
 * The TIM images are loaded in VRAM at their own position (TMD textures refer to these VRAM positions),
 * the model is centered using its bounding box.
 *
+* TOD animations (Sony's format, as played by PsyQ's TOD sample functions TodSetFrame/TodSetPacket): the frames'
+* packets create the objects and link them to the TMD objects (rsdlink's IDs: TMD object n = ID n + 1), set their
+* parent (a hierarchy of local coordinates, as GsCOORDINATE2) and attributes, and move them (rotation, scale,
+* translation, absolute or from the previous frame). Each object is drawn with its own matrix. The animation plays at
+* the file's time resolution (1/60 s units), loops, can be paused, stepped, played slower or faster. A TOD that
+* doesn't create its objects (it continues another animation) starts from the end of the first TOD that does (as
+* PsyQ's sample plays APPEAR.TOD before the others). Light, camera and matrix packets are not used (counted).
+*
 * Controls:	D-pad: rotate X/Y, L1/R1: rotate Z, Triangle/Cross: zoom in/out, Start: reset view,
-*			Select: hide/show the information text
+*			Select: hide/show the information text,
+*			with TODs: Circle: play/pause, L2/R2: previous/next frame (held: repeat), Square: next TOD
+* PS1 Dev Cart Manager ("ps1transfer -m ... -mdllive", see ps1transfer/mdllive.c): the TOD, frame, playback and view
+* are shared with the computer (ModelSync, written at each frame), which can change them (requests applied at the next
+* frame): its controls and the controller's act on the same viewer.
 *
 * Built with PSn00bSDK (open source) instead of PsyQ. PsyQ's libgs (GsSortObject4) is replaced by our own
 * TMD renderer with the GTE: all the polygon types (triangles and quads; flat or gouraud; textured or not; lit with
@@ -34,6 +46,14 @@
 #define	VIEWER_DATA_ADRS	0x80100000
 #define	VIEWER_MAGIC		0x56444D54	// "TMDV"
 #define	VIEWER_MAX_TIM		8
+#define	VIEWER_MAX_TOD		16
+
+typedef struct
+{
+	uint32_t	adrs;
+	uint32_t	size;
+	char		name[24];
+} TodEntry;
 
 typedef struct
 {
@@ -41,7 +61,42 @@ typedef struct
 	uint32_t	tmd_adrs;
 	uint32_t	tim_count;
 	uint32_t	tim_adrs[VIEWER_MAX_TIM];
+	uint32_t	reserved[5];
+	uint32_t	tod_count;					// (0x40)
+	TodEntry	tods[VIEWER_MAX_TOD];
 } ViewerData;
+
+// State shared with the PS1 Dev Cart Manager ("ps1transfer -mdllive", see ps1transfer/mdllive.c), in the data block
+// header: written at each frame, and the changes the computer asks for (applied at the next frame, then set back)
+#define	VIEWER_SYNC_ADRS	(VIEWER_DATA_ADRS + 0x300)
+#define	VIEWER_SYNC_MAGIC	0x534C444D	// "MDLS"
+#define	REQ_NONE			-32768
+
+typedef struct
+{
+	uint32_t	magic;
+	int16_t		tod_count;
+	int16_t		tod;				// TOD played (-1: none)
+	int16_t		frame;				// Its frame (frame number of the file)
+	int16_t		first, last;		// Its first and last frame numbers
+	int16_t		playing, loop;
+	int16_t		speed;				// Percent
+	int16_t		rot_x, rot_y, rot_z;	// View (4096 = 360 degrees)
+	int16_t		objects;			// Objects drawn
+	int32_t		dist, dist_min, dist_max;	// Camera distance and its limits
+	int32_t		polygons;			// Polygons drawn
+	int32_t		skipped;			// Packets not used (light, camera, matrix...)
+	int16_t		req_tod, req_frame, req_play, req_loop, req_speed, req_view;	// REQ_NONE: nothing; view 1: reset
+	int16_t		req_rot;			// 1: the view rotation below
+	int16_t		req_rot_x, req_rot_y, req_rot_z;
+	int32_t		req_dist;			// -1: nothing
+} ModelSync;
+// (offsets used by ps1transfer/mdllive.c)
+_Static_assert(__builtin_offsetof(ModelSync, dist) == 28, "ModelSync: see mdllive.c");
+_Static_assert(__builtin_offsetof(ModelSync, req_tod) == 48, "ModelSync: see mdllive.c");
+_Static_assert(__builtin_offsetof(ModelSync, req_rot) == 60, "ModelSync: see mdllive.c");
+_Static_assert(__builtin_offsetof(ModelSync, req_dist) == 68 && sizeof(ModelSync) == 72, "ModelSync: see mdllive.c");
+_Static_assert(__builtin_offsetof(ViewerData, tod_count) == 0x40, "ViewerData: see UploadModelData in main.c");
 
 #define	SCREEN_W		320
 #define	SCREEN_H		240
@@ -52,6 +107,10 @@ typedef struct
 
 #define	ROT_SPEED		32				// 4096 = 360 degrees
 #define	ZOOM_SPEED		40				// 1/1024 of the distance per frame
+#define	MAX_TOD_OBJ		64				// TOD objects (parts and joints)
+#define	MAX_TOD_FRAMES	8192			// Frames of all the TODs
+#define	STEP_DELAY		20				// L2/R2 held: frames before the repeat, then a frame every STEP_REPEAT
+#define	STEP_REPEAT		3
 
 // TMD primitive: olen, ilen (data words), flag, mode, then the data
 #define	TMD_FLAG_LGT	1				// No lighting: colors given
@@ -70,6 +129,7 @@ typedef struct
 	SVECTOR		*normals;
 	uint32_t	*primitives;
 	uint32_t	n_primitives;
+	uint32_t	n_vertices;
 } TmdObject;
 
 static DISPENV		disp[2];
@@ -81,7 +141,7 @@ static TmdObject	objects[MAX_OBJECTS];
 
 static int			n_objects, n_vertices, n_primitives, n_textures, n_drawn;
 static int			fnt_info;		// Text of the info panel (devcart_ui.h)
-static int32_t		model_radius;
+static int32_t		model_radius, model_radius_all;	// The model's size, and with the animation's moves
 static VECTOR		model_center;
 
 static void	LoadTextures(ViewerData *vd)
@@ -131,6 +191,7 @@ static int	LoadModel(uint32_t *tmd)
 		objects[i].normals = (SVECTOR *)(base + obj[2]);
 		objects[i].primitives = (uint32_t *)(base + obj[4]);
 		objects[i].n_primitives = obj[5];
+		objects[i].n_vertices = obj[1];
 		n_vertices += obj[1];
 		n_primitives += obj[5];
 		for (j = 0; j < obj[1]; j++, v++)
@@ -168,6 +229,439 @@ static int	LoadModel(uint32_t *tmd)
 		(int)max[1], (int)min[2], (int)max[2], (int)model_radius);
 
 	return (n_objects);
+}
+
+/****************************************/
+// TOD animation (Sony's format: header ID 0x50, version, time resolution; number of frames; then each frame: size in
+// words and number of packets, frame number, packets: object ID, type, flags, length in words, data)
+
+enum	{TOD_ATTR, TOD_COORD, TOD_TMDID, TOD_PARENT, TOD_MATRIX, TOD_TMDDATA, TOD_LIGHT, TOD_CAMERA, TOD_OBJCTL};
+
+typedef struct
+{
+	uint32_t	id;				// TOD object ID, TOD_FREE: free slot
+	int16_t		tmd;			// TMD object drawn, -1: none (a joint)
+	int16_t		parent;			// Index of the parent, -1: world
+	uint32_t	attr;			// Bit 31: not displayed (GsDOFF)
+	SVECTOR		rot;			// Coordinate parameters (GsCOORD2PARAM)
+	VECTOR		scale, trans;
+	MATRIX		coord;			// Local matrix (in the parent's coordinates)
+} TodObj;
+
+typedef struct
+{
+	TodObj	obj[MAX_TOD_OBJ];
+	int		n;
+} TodTable;
+
+typedef struct
+{
+	uint32_t	**frames;		// Frame pointers (in the frame pool)
+	int			n_frames;
+	int			res;			// 1/60 s per frame number
+	int			first, last;	// Frame numbers
+	int			creates;		// Creates its objects (else continues the first TOD that does)
+	char		name[24];
+} Tod;
+
+#define	TOD_FREE		0xFFFFFFFF
+
+static Tod			tods[VIEWER_MAX_TOD];
+static int			n_tods;
+static uint32_t		*frame_pool[MAX_TOD_FRAMES];
+static int			frame_pool_used;
+static TodTable		table, setup;		// Objects now, and at the end of the first TOD that creates them
+static int			have_setup;
+static int			cur_tod = -1, next_frame, cur_frame, playing = 1, looping = 1, speed = 100, skipped;
+static uint32_t		tod_clock;			// Time in 1/60 s, 8 bits of fraction
+static MATRIX		world[MAX_TOD_OBJ];
+static uint8_t		world_state[MAX_TOD_OBJ];	// 0: to compute, 1: computing, 2: done
+
+static void	LoadTods(ViewerData *vd)
+{
+	int	i, f, k;
+
+	for (i = 0; (i < vd->tod_count) && (i < VIEWER_MAX_TOD); i++)
+	{
+		uint32_t	*p = (uint32_t *)vd->tods[i].adrs, *end = p + vd->tods[i].size / 4, *fp;
+		Tod			*t = &tods[n_tods];
+		int			n = p[1];
+
+		if (((p[0] & 0xFF) != 0x50) || (frame_pool_used + n > MAX_TOD_FRAMES))
+			continue;
+		memcpy(t->name, vd->tods[i].name, sizeof(t->name));
+		t->name[sizeof(t->name) - 1] = 0;
+		t->res = (p[0] >> 16) ? (p[0] >> 16) : 1;
+		t->frames = &frame_pool[frame_pool_used];
+		t->creates = 0;
+		for (f = 0, fp = p + 2; (f < n) && (fp + 2 <= end) && (fp[0] & 0xFFFF); f++, fp += fp[0] & 0xFFFF)
+		{
+			uint32_t	*pk = fp + 2;
+
+			t->frames[f] = fp;
+			for (k = 0; (k < (fp[0] >> 16)) && (pk < end); k++, pk += (pk[0] >> 24) ? (pk[0] >> 24) : 1)
+				if ((((pk[0] >> 16) & 15) == TOD_OBJCTL) && !((pk[0] >> 20) & 15))
+					t->creates = 1;
+		}
+		if (!f)
+			continue;
+		t->n_frames = f;
+		t->first = t->frames[0][1];
+		t->last = t->frames[f - 1][1];
+		frame_pool_used += f;
+		n_tods++;
+		printf("TOD %s: %d frames (%d..%d), %d/60 s per frame%s\n", t->name, f, t->first, t->last, t->res,
+			t->creates ? ", creates its objects" : "");
+	}
+}
+
+static int	FindObj(uint32_t id)
+{
+	int	i;
+
+	for (i = 0; i < table.n; i++)
+		if (table.obj[i].id == id)
+			return (i);
+	return (-1);
+}
+
+static void	InitObj(TodObj *o, uint32_t id)
+{
+	static const MATRIX	identity = {{{ONE, 0, 0}, {0, ONE, 0}, {0, 0, ONE}}, {0, 0, 0}};
+
+	o->id = id;
+	o->tmd = -1;
+	o->parent = -1;
+	o->attr = 0;
+	o->rot.vx = o->rot.vy = o->rot.vz = 0;
+	o->scale.vx = o->scale.vy = o->scale.vz = ONE;
+	o->trans.vx = o->trans.vy = o->trans.vz = 0;
+	o->coord = identity;
+}
+
+static void	CreateObj(uint32_t id)
+{
+	int	i;
+
+	if (FindObj(id) >= 0)
+		return;
+	for (i = 0; (i < table.n) && (table.obj[i].id != TOD_FREE); i++)	// A free slot, else at the end
+		;
+	if (i >= MAX_TOD_OBJ)
+		return;
+	if (i == table.n)
+		table.n++;
+	InitObj(&table.obj[i], id);
+}
+
+static void	RemoveObj(uint32_t id)
+{
+	int	i = FindObj(id), j;
+
+	if (i < 0)
+		return;
+	table.obj[i].id = TOD_FREE;
+	for (j = 0; j < table.n; j++)			// (its children are now in the world)
+		if (table.obj[j].parent == i)
+			table.obj[j].parent = -1;
+	while (table.n && (table.obj[table.n - 1].id == TOD_FREE))
+		table.n--;
+}
+
+// One packet (as TodSetPacket): returns the next one
+static uint32_t	*TodPacket(uint32_t *pk)
+{
+	uint32_t	hdr = pk[0], *d = pk + 1;
+	int			type = (hdr >> 16) & 15, flag = (hdr >> 20) & 15, len = hdr >> 24, i;
+	int32_t		*l = (int32_t *)d;
+	int16_t		*h = (int16_t *)d;
+	TodObj		dummy, *o;
+
+	i = FindObj(hdr & 0xFFFF);
+	o = (i >= 0) ? &table.obj[i] : &dummy;
+	if (i < 0)
+		InitObj(&dummy, TOD_FREE);
+	switch (type)
+	{
+		case TOD_ATTR:
+			o->attr = (o->attr & d[0]) | d[1];
+			break;
+		case TOD_COORD:
+			if (flag & 1)		// From the previous frame: rotation, scale, translation added (scale multiplied)
+			{
+				if (flag & 2)
+				{
+					o->rot.vx += l[0] / 360;
+					o->rot.vy += l[1] / 360;
+					o->rot.vz += l[2] / 360;
+					l += 3;
+				}
+				if (flag & 4)
+				{
+					h = (int16_t *)l;
+					o->scale.vx = o->scale.vx * h[0] / 4096;
+					o->scale.vy = o->scale.vy * h[1] / 4096;
+					o->scale.vz = o->scale.vz * h[2] / 4096;
+					l += 2;
+				}
+				if (flag & 8)
+				{
+					o->trans.vx += l[0];
+					o->trans.vy += l[1];
+					o->trans.vz += l[2];
+				}
+				RotMatrix(&o->rot, &o->coord);
+				ScaleMatrix(&o->coord, &o->scale);
+				TransMatrix(&o->coord, &o->trans);
+			}
+			else				// Absolute values (only the ones given change)
+			{
+				if (flag & 2)
+				{
+					o->rot.vx = l[0] / 360;
+					o->rot.vy = l[1] / 360;
+					o->rot.vz = l[2] / 360;
+					l += 3;
+					RotMatrix(&o->rot, &o->coord);
+				}
+				if (flag & 4)
+				{
+					h = (int16_t *)l;
+					o->scale.vx = h[0];
+					o->scale.vy = h[1];
+					o->scale.vz = h[2];
+					l += 2;
+					if (!(flag & 2))
+						RotMatrix(&o->rot, &o->coord);
+					ScaleMatrix(&o->coord, &o->scale);
+				}
+				if (flag & 8)
+				{
+					o->trans.vx = l[0];
+					o->trans.vy = l[1];
+					o->trans.vz = l[2];
+					TransMatrix(&o->coord, &o->trans);
+				}
+			}
+			break;
+		case TOD_TMDID:		// rsdlink's TMD IDs: object n has ID n + 1
+			o->tmd = (((d[0] & 0xFFFF) >= 1) && ((d[0] & 0xFFFF) <= n_objects)) ? (d[0] & 0xFFFF) - 1 : -1;
+			break;
+		case TOD_PARENT:
+			if ((i >= 0) && (!d[0] || (d[0] == 0xFFFF)))
+				o->parent = -1;
+			else if (i >= 0)
+			{
+				int	parent = FindObj(d[0]);
+
+				o->parent = (parent != i) ? parent : -1;
+			}
+			break;
+		case TOD_OBJCTL:
+			if (flag == 0)
+				CreateObj(hdr & 0xFFFF);
+			else if (flag == 1)
+				RemoveObj(hdr & 0xFFFF);
+			break;
+		default:			// Matrix, TMD data, light, camera, user packets
+			skipped++;
+			break;
+	}
+	return (pk + (len ? len : 1));
+}
+
+static void	TodFrame(Tod *t, int index)
+{
+	uint32_t	*fp = t->frames[index], *pk = fp + 2;
+	int			i;
+
+	for (i = 0; i < (fp[0] >> 16); i++)
+		pk = TodPacket(pk);
+}
+
+// The TOD from its start: the objects as it expects them, its first frame
+static void	TodStart(int index)
+{
+	Tod	*t = &tods[index];
+
+	cur_tod = index;
+	if (t->creates || !have_setup)
+		table.n = 0;
+	else
+		table = setup;
+	next_frame = 0;
+	while ((next_frame < t->n_frames) && (t->frames[next_frame][1] <= t->first))
+		TodFrame(t, next_frame++);
+	cur_frame = t->first;
+	tod_clock = (uint32_t)t->first * t->res << 8;
+}
+
+// The TOD's frames up to frame f (back: from its start again)
+static void	TodGoTo(int f)
+{
+	Tod	*t = &tods[cur_tod];
+
+	f = (f < t->first) ? t->first : ((f > t->last) ? t->last : f);
+	if (f < cur_frame)
+		TodStart(cur_tod);
+	while ((next_frame < t->n_frames) && (t->frames[next_frame][1] <= f))
+		TodFrame(t, next_frame++);
+	cur_frame = f;
+}
+
+// Frame f shown (step, seek): the playback time starts from it
+static void	TodSeek(int f)
+{
+	TodGoTo(f);
+	tod_clock = (uint32_t)cur_frame * tods[cur_tod].res << 8;
+}
+
+// Playback: the TOD's time goes on by the video frames elapsed (PAL: 1.2/60 s each; a big model takes several to
+// draw, its animation keeps its speed), at the speed chosen
+static void	TodTick(int is_pal, int vsyncs)
+{
+	Tod			*t = &tods[cur_tod];
+	uint32_t	target;
+
+	if (!playing)
+		return;
+	tod_clock += (uint32_t)speed * 256 * (is_pal ? 6 : 5) * vsyncs / 500;
+	target = (tod_clock >> 8) / t->res;
+	if (target > t->last)
+	{
+		if (looping)
+			TodStart(cur_tod);
+		else
+		{
+			TodSeek(t->last);
+			playing = 0;
+		}
+	}
+	else if (target > cur_frame)
+		TodGoTo(target);		// (the time keeps its fraction of a frame)
+}
+
+// World matrix of an object: its parents' matrices, then its own (as GsGetLw)
+static MATRIX	*World(int i)
+{
+	TodObj	*o = &table.obj[i];
+
+	if (world_state[i] == 2)
+		return (&world[i]);
+	if ((o->parent >= 0) && (o->parent < table.n) && (world_state[o->parent] != 1))	// (1: a loop, ignored)
+	{
+		MATRIX	*pw;
+
+		world_state[i] = 1;
+		pw = World(o->parent);
+		CompMatrixLV(pw, &o->coord, &world[i]);
+	}
+	else
+		world[i] = o->coord;
+	world_state[i] = 2;
+	return (&world[i]);
+}
+
+static int	Drawn(TodObj *o)
+{
+	return ((o->id != TOD_FREE) && (o->tmd >= 0) && !(o->attr & 0x80000000));
+}
+
+// The camera framing: the bounding box of the vertices drawn in the world (each object moved by its world matrix with
+// the GTE, as drawn), over the frames of a TOD
+static int32_t	box_min[3], box_max[3];
+static int		box_n;
+
+static void	BoxAdd(void)
+{
+	int32_t	*min = box_min, *max = box_max;
+	int		i, j, k;
+
+	memset(world_state, 0, sizeof(world_state));
+	for (i = 0; i < table.n; i++)
+	{
+		TmdObject	*obj;
+		MATRIX		*w;
+
+		if (!Drawn(&table.obj[i]))
+			continue;
+		obj = &objects[table.obj[i].tmd];
+		w = World(i);
+		gte_SetRotMatrix(w);
+		gte_SetTransMatrix(w);
+		for (j = 0; j < obj->n_vertices; j++)
+		{
+			int32_t	v[3];
+
+			gte_ldv0(&obj->vertices[j]);
+			gte_rtv0tr();
+			gte_stlvnl(v);
+			for (k = 0; k < 3; k++)
+			{
+				if (v[k] < min[k])
+					min[k] = v[k];
+				if (v[k] > max[k])
+					max[k] = v[k];
+			}
+		}
+		box_n++;
+	}
+}
+
+// A TOD chosen: the camera on its whole motion (the objects every 4 frames), then played from its start
+static void	TodSelect(int index)
+{
+	Tod		*t = &tods[index];
+	int32_t	d;
+	int		f, k;
+
+	for (k = 0; k < 3; k++)
+	{
+		box_min[k] = 0x7FFFFFFF;
+		box_max[k] = -0x7FFFFFFF;
+	}
+	box_n = 0;
+	TodStart(index);
+	BoxAdd();
+	for (f = 4; f < t->n_frames; f += 4)
+	{
+		TodGoTo(t->frames[f][1]);
+		BoxAdd();
+	}
+	TodGoTo(t->last);
+	BoxAdd();
+	if (box_n)
+	{
+		model_center.vx = (box_min[0] + box_max[0]) / 2;
+		model_center.vy = (box_min[1] + box_max[1]) / 2;
+		model_center.vz = (box_min[2] + box_max[2]) / 2;
+		model_radius_all = 16;
+		for (k = 0; k < 3; k++)
+		{
+			d = (box_max[k] - box_min[k]) / 2;
+			if (d > model_radius_all)
+				model_radius_all = d;
+		}
+	}
+	TodStart(index);
+}
+
+// The TODs ready: the objects at the end of the first one that creates them (for the others), the first TOD playing
+static void	TodInit(void)
+{
+	int	i;
+
+	for (i = 0; i < n_tods; i++)
+		if (tods[i].creates)
+		{
+			TodStart(i);
+			TodSeek(tods[i].last);
+			setup = table;
+			have_setup = 1;
+			break;
+		}
+	TodSelect(0);
+	skipped = 0;
 }
 
 /****************************************/
@@ -414,13 +908,40 @@ static void	SetMatrices(SVECTOR *rot, int32_t dist)
 	gte_SetTransMatrix(&ls);
 }
 
+// TOD: each object drawn with its world matrix, seen from the camera (as SetMatrices: rotation around the center)
+static void	DrawTod(SVECTOR *rot, int32_t dist, uint32_t *otp)
+{
+	VECTOR	center = {-model_center.vx, -model_center.vy, -model_center.vz}, t;
+	MATRIX	view, ls, llm;
+	int		i;
+
+	RotMatrix(rot, &view);
+	ApplyMatrixLV(&view, &center, &t);
+	view.t[0] = t.vx;
+	view.t[1] = t.vy;
+	view.t[2] = t.vz + dist;
+	memset(world_state, 0, sizeof(world_state));
+	for (i = 0; i < table.n; i++)
+	{
+		if (!Drawn(&table.obj[i]))
+			continue;
+		CompMatrixLV(&view, World(i), &ls);			// (uses the GTE matrices: before they are set)
+		MulMatrix0((MATRIX *)&light_dir, &ls, &llm);
+		gte_SetLightMatrix(&llm);
+		gte_SetRotMatrix(&ls);
+		gte_SetTransMatrix(&ls);
+		DrawObject(&objects[table.obj[i].tmd], otp);
+	}
+}
+
 int	main(void)
 {
 	ViewerData	*vd = (ViewerData *)VIEWER_DATA_ADRS;
+	ModelSync	*live = (ModelSync *)VIEWER_SYNC_ADRS;
 	SVECTOR		rot = {0, 0, 0};
 	int32_t		dist, dist_default, dist_min, dist_max;
 	uint32_t	pad, opad = 0;
-	int			i, side = 0, ok = 0, show_info = 1, is_pal;
+	int			i, side = 0, ok = 0, show_info = 1, is_pal, held = 0, drawn, vsync_last, vsyncs;
 
 	// Same video mode as the console region, like the PS1 DEV CART menu (BIOS version string: 'E' = Europe = PAL)
 	is_pal = (*((char *)0xBFC7FF52) == 'E');
@@ -434,7 +955,7 @@ int	main(void)
 	}
 	FntLoad(960, 256);
 	UiInit(draw);	// (background: UI_BG)
-	fnt_info = UiOpenText(8, 20, 304, 2);
+	fnt_info = UiOpenText(8, 20, 304, 3);
 
 	// GTE: projection plane at 320 (as GsSetProjection(SCREEN_W)), screen center, average Z of 3/4 vertices
 	InitGeom();
@@ -449,13 +970,24 @@ int	main(void)
 	{
 		LoadTextures(vd);
 		ok = LoadModel((uint32_t *)vd->tmd_adrs);
+		if (ok)
+			LoadTods(vd);
 	}
+	model_radius_all = model_radius;
+	if (n_tods)
+		TodInit();
 
-	// Camera distance from the model size: the whole model is visible at the start
-	dist_default = model_radius * 3;
+	// Camera distance from the model size (with a TOD: its whole motion): the whole model is visible at the start
+	dist_default = model_radius_all * 3;
 	dist_min = model_radius / 4;
-	dist_max = model_radius * 40;
+	dist_max = ((model_radius_all > model_radius) ? model_radius_all : model_radius) * 40;
 	dist = dist_default;
+
+	// Shared state: the requests cleared, then the magic (the computer waits for it)
+	memset(live, 0, sizeof(ModelSync));
+	live->req_tod = live->req_frame = live->req_play = live->req_loop = live->req_speed = live->req_view = REQ_NONE;
+	live->req_dist = -1;
+	vsync_last = VSync(-1);
 
 	SetDispMask(1);
 	printf("Video mode %s, camera distance %d (min %d, max %d)\n", is_pal ? "PAL" : "NTSC", (int)dist, (int)dist_min,
@@ -464,6 +996,41 @@ int	main(void)
 	while (1)
 	{
 		pad = PadRead(1);
+
+		// Changes asked by the computer
+		if ((live->req_tod >= 0) && (live->req_tod < n_tods))
+		{
+			TodSelect(live->req_tod);
+			dist = dist_default = model_radius_all * 3;
+			playing = 1;
+		}
+		if ((live->req_frame != REQ_NONE) && n_tods)
+		{
+			TodSeek(live->req_frame);
+			playing = 0;
+		}
+		if (live->req_play != REQ_NONE)
+			playing = live->req_play ? 1 : 0;
+		if (live->req_loop != REQ_NONE)
+			looping = live->req_loop ? 1 : 0;
+		if ((live->req_speed > 0) && (live->req_speed <= 800))
+			speed = live->req_speed;
+		if (live->req_rot == 1)
+		{
+			rot.vx = live->req_rot_x;
+			rot.vy = live->req_rot_y;
+			rot.vz = live->req_rot_z;
+		}
+		if (live->req_dist >= 0)
+			dist = (live->req_dist < dist_min) ? dist_min : ((live->req_dist > dist_max) ? dist_max : live->req_dist);
+		if (live->req_view == 1)
+		{
+			rot.vx = rot.vy = rot.vz = 0;
+			dist = dist_default;
+		}
+		live->req_tod = live->req_frame = live->req_play = live->req_loop = live->req_speed = live->req_view = REQ_NONE;
+		live->req_rot = 0;
+		live->req_dist = -1;
 
 		if (pad & PADLup)		rot.vx -= ROT_SPEED;
 		if (pad & PADLdown)		rot.vx += ROT_SPEED;
@@ -480,16 +1047,52 @@ int	main(void)
 		}
 		if ((pad & PADselect) && !(opad & PADselect))
 			show_info = !show_info;
+		if (n_tods)
+		{
+			if ((pad & PADRright) && !(opad & PADRright))
+				playing = !playing;
+			if ((pad & PADRleft) && !(opad & PADRleft))
+			{
+				TodSelect((cur_tod + 1) % n_tods);
+				dist = dist_default = model_radius_all * 3;
+				playing = 1;
+			}
+			// L2/R2: a frame back/forward (paused), held: repeated
+			if (pad & (PADL2 | PADR2))
+			{
+				if (!held || ((held >= STEP_DELAY) && !((held - STEP_DELAY) % STEP_REPEAT)))
+				{
+					playing = 0;
+					TodSeek(cur_frame + ((pad & PADR2) ? 1 : -1));
+				}
+				held++;
+			}
+			else
+				held = 0;
+			vsyncs = VSync(-1) - vsync_last;
+			TodTick(is_pal, (vsyncs < 1) ? 1 : ((vsyncs > 10) ? 10 : vsyncs));
+		}
+		vsync_last = VSync(-1);
 		opad = pad;
+		rot.vx &= 4095;
+		rot.vy &= 4095;
+		rot.vz &= 4095;
 
 		side ^= 1;
 		ClearOTagR(ot[side], OT_LEN);
 		packet_ptr = packet[side];
 		packet_end = packet[side] + PACKET_SIZE;
 		n_drawn = 0;
-		SetMatrices(&rot, dist);
-		for (i = 0; i < n_objects; i++)
-			DrawObject(&objects[i], ot[side]);
+		if (n_tods)
+			DrawTod(&rot, dist, ot[side]);
+		else
+		{
+			SetMatrices(&rot, dist);
+			for (i = 0; i < n_objects; i++)
+				DrawObject(&objects[i], ot[side]);
+		}
+		for (i = drawn = 0; i < table.n; i++)
+			drawn += n_tods && Drawn(&table.obj[i]);
 
 		// Screen (devcart_ui.h): title bar over the model, model details and controls (SELECT shows/hides them)
 		if (!ok)
@@ -504,7 +1107,17 @@ int	main(void)
 
 			sprintf(right, "%d POLYGONS", n_primitives);
 			UiTitle("PS1 DEV CART TMD VIEWER", right);
-			if (show_info)
+			if (show_info && n_tods)
+			{
+				Tod	*t = &tods[cur_tod];
+
+				UiTextPanel(8, 20, 304, 3);
+				FntPrint(fnt_info, "TOD %d/%d %s\nFRAME %d/%d  %s%s  %d%%\nOBJECTS %d  POLYGONS %d", cur_tod + 1, n_tods,
+					t->name, cur_frame, t->last, playing ? "PLAYING" : "PAUSED", looping ? " LOOP" : "", speed, drawn,
+					n_drawn);
+				UiHelp("DPAD/L1/R1:ROT TRI/X:ZOOM START:VIEW\nO:PLAY L2/R2:FRAME SQUARE:NEXT TOD");
+			}
+			else if (show_info)
 			{
 				UiTextPanel(8, 20, 304, 2);
 				FntPrint(fnt_info, "OBJECTS %d  VERTICES %d\nPOLYGONS %d  TIMS %d", n_objects, n_vertices, n_primitives,
@@ -512,6 +1125,26 @@ int	main(void)
 				UiHelp("D-PAD L1/R1:ROTATE  TRI/X:ZOOM\nSTART:RESET  SELECT:HIDE INFO");
 			}
 		}
+
+		// The state shown here, for the computer
+		live->tod_count = n_tods;
+		live->tod = n_tods ? cur_tod : -1;
+		live->frame = n_tods ? cur_frame : 0;
+		live->first = n_tods ? tods[cur_tod].first : 0;
+		live->last = n_tods ? tods[cur_tod].last : 0;
+		live->playing = playing;
+		live->loop = looping;
+		live->speed = speed;
+		live->rot_x = rot.vx;
+		live->rot_y = rot.vy;
+		live->rot_z = rot.vz;
+		live->objects = n_tods ? drawn : n_objects;
+		live->dist = dist;
+		live->dist_min = dist_min;
+		live->dist_max = dist_max;
+		live->polygons = n_drawn;
+		live->skipped = skipped;
+		live->magic = VIEWER_SYNC_MAGIC;	// (once the state is written: the computer waits for it)
 
 		DrawSync(0);
 		VSync(0);

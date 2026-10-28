@@ -16,7 +16,7 @@
 
 #define	MONITOR_STATE_ADRS	0x8000DF00	// MonitorState (kernel hook RAM, see kernel_hook/ps-exe_noheader_kernel_hook.ld)
 #define	MONITOR_MAGIC		0x31474244	// "DBG1": the kernel hook supports the debug monitor
-#define	MONITOR_ROM_ADRS	0x1F01C800	// Monitor in the cartridge flash (after the menu images, see cartrom/rom.s)
+#define	MONITOR_ROM_ADRS	0x1F019000	// Monitor in the cartridge flash (after the menu images, see cartrom/rom.s)
 #define	MONITOR_RAM_ADRS	0x801C0000	// Monitor copied to RAM by a firmware test build running from RAM
 
 // Why the program stopped (MonitorState.reason)
@@ -27,6 +27,9 @@
 #define	MON_REASON_CRASH	4	// Unresolved exception (BIOS A(40h)), e.g. bus error, or a break before the vectors are set
 #define	MON_REASON_SERVICE	5	// 'M' byte while the program runs: one command (e.g. hot reload), then the program goes on
 #define	MON_REASON_PROFILE	6	// Profiler on (MonitorState.prof_on): called at each ReturnFromException, samples at the timer ticks
+#define	MON_REASON_PAD_SETUP	7	// Remote pad (EXEC_PAD): called by the firmware before it executes the program
+#define	MON_REASON_SIO_SETUP	8	// Serial port / USB link tty driver ("-c sio", "-c link"; regs = 1: USB link) installed
+#define	MON_REASON_SIO_UPDATE	9	// Its work at each exception (kernel_hook/siotty.h: the driver is in the monitor)
 
 // Execute command param (tty mode byte): debug session, the hook installs the exception vectors
 #define	EXEC_DEBUG			0x80
@@ -37,6 +40,17 @@
 #define	MON_CMD_SERVICE		'M'	// Single byte sent to the running program: the monitor runs the command packet that follows
 #define	MON_CMD_VRAM_WRITE	'W'	// param = x << 16 | y, size = w << 16 | h: VRAM write, MON_VRAM_LINES() lines per packet
 #define	MON_CMD_SPU_WRITE	'S'	// param = SPU RAM address, size = bytes: SPU RAM write, MON_SPU_PACKET bytes per packet
+#define	MON_CMD_GPU_INFO	'X'	// size = 16: the GPU's draw area top left, bottom right, drawing offset and version (GP1
+								// 10h info 3, 4, 5, 7), 4 words: the frame capture (monitor version 8)
+#define	MON_CMD_SPU_READ	'Y'	// param = SPU RAM address (multiple of 64), size = bytes (multiple of 64): SPU RAM read
+								// (DMA), MON_SPU_PACKET bytes per packet; param MON_SPU_REGS: the SPU registers
+								// (0x1F801C00-0x1F801DFF, size MON_SPU_REGS_SIZE) instead (monitor version 10)
+#define	MON_CMD_EXCHANGE	'Z'	// param = address, size = write size << 16 | read size: the USB link exchange (the kernel
+								// hook's 'X': written at the address, then what follows read), by the kernel hook and
+								// the monitor (also while the program is stopped, monitor version 12)
+#define	MON_SPU_REGS		0xFFFFFFFF
+#define	MON_SPU_REGS_SIZE	512
+#define	MON_SPU_RAM_SIZE	0x80000
 
 // Lines of a VRAM write packet (at most 2KB), SPU write packet size
 #define	MON_VRAM_LINES(_w_)	((2048 / ((_w_) * 2)) ? (2048 / ((_w_) * 2)) : 1)
@@ -46,8 +60,15 @@
 // 2 = live screenshots ('V') only through the 'M' service (the kernel hook doesn't have them any more);
 // 3 = profiler (MON_REASON_PROFILE); 4 = escaped answers ('Q' before a command, see usb.h); 5 = crash screen drawn in
 // the program's draw area, its last frame kept in VRAM (MON_CRASH_FRAME); 6 = the kernel hook ends with the
-// ReturnFromException stored at 0x8000DF7C (psxdevcart: the hook run from a BIOS interrupt handler, PsyQo programs)
-#define	MONITOR_VERSION		6
+// ReturnFromException stored at 0x8000DF7C (psxdevcart: the hook run from a BIOS interrupt handler, PsyQo programs);
+// 7 = profiler: GPUSTAT of the program in MonitorState.prof_gpustat (video mode: PAL/NTSC frame budget);
+// 8 = remote pad (EXEC_PAD, MonitorState.pad_buf), GPU info (MON_CMD_GPU_INFO), the serial port / USB link tty
+// driver (moved from the kernel hook: MON_REASON_SIO_SETUP, MON_REASON_SIO_UPDATE);
+// 9 = remote pad: player 2 too (MonitorState.pad_buf2, the active port in pad_port, both reusing profiler fields:
+// see the remote pad comment below); 10 = SPU RAM and registers read (MON_CMD_SPU_READ: the SPU RAM viewer);
+// 11 = remote pad devices: mouse, NeGcon, analog pads, GunCon (PadDevice); 12 = the USB link exchange also while the
+// program is stopped (MON_CMD_EXCHANGE: the relay of a debug session, ps1transfer -gdb -relay)
+#define	MONITOR_VERSION		12
 
 // Profiler ("ps1transfer -prof"). A root counter not used by the program interrupts it (rate set by the computer):
 // the exception vector goes to the monitor's sampler (copied to RAM), which sends a sample to the computer at each tick, without waiting (dropped if the USB FIFO is full), between
@@ -86,6 +107,31 @@
 // Execute command param (tty mode byte): the firmware fills the free RAM above the program with PROF_FREE_PATTERN
 // (not kept in KernelHookParams.tty_mode)
 #define	EXEC_PROF_FILL		0x40
+
+// Remote pad ("ps1transfer -pad"): either controller port driven from the computer, for programs reading the pads
+// with the BIOS (InitPAD/StartPAD: PsyQ's PadInit, Net Yaroze, PSn00bSDK's InitPAD). Execute command param bit (not
+// kept in tty_mode): the firmware calls the monitor (MON_REASON_PAD_SETUP), which points the BIOS function InitPAD
+// (B0 table entry 0x12) to its own code: the buffers of both ports are kept (pad_buf: port 1, pad_buf2: port 2, see
+// below), then the BIOS InitPAD is called (pad_orig). The kernel hook then calls the monitor at each exception
+// (prof_on set, prof_armed PROF_ARMED_PAD): when the computer has pressed buttons (prof_seq bit 0), they are added to
+// the buffer of the port currently selected (pad_port, 0 or 1; the computer's "padport" command, see
+// ps1transfer/memlive.c) the BIOS has filled (a digital pad: status 0, ID 0x41, buttons active low), prof_target
+// holding them (PsyQ pad bits: PADLup...). Only one port is driven at a time (switching is instant: the next frame
+// uses the new port's buffer); a real controller on the other port keeps working normally.
+// No profiling meanwhile (the same fields): pad_buf2 reuses prof_draw, pad_port reuses prof_frames (monitor version
+// 9; an older monitor only drives port 1 and doesn't keep pad_buf2/pad_port, see ps1transfer/memlive.c).
+// Devices (monitor version 11): the computer chooses the controller the program sees (PadDevice.type, its ID byte,
+// buf[1]); the whole reply is written then: buttons (prof_target: ~(buf[2] << 8 | buf[3])), then 4 bytes: analog
+// pads RX RY LX LY, NeGcon twist I II L, GunCon X and Y (16-bit), mouse the motion of the frame (dx, dy: from the
+// totals of the computer, each given once, when the BIOS has filled the buffer again: our reply overwritten).
+#define	EXEC_PAD			0x20
+#define	PROF_ARMED_PAD		5
+#define	PAD_DIGITAL			0x41
+#define	PAD_MOUSE			0x12
+#define	PAD_NEGCON			0x23
+#define	PAD_ANALOG_JOY		0x53
+#define	PAD_ANALOG			0x73
+#define	PAD_GUNCON			0x63
 
 // Stop notification sent by the PS1 (like a PCDRV request): 'B', param = regs address, size = reason << 8 | ExcCode
 #define	MON_NOTIFY_STOP		'B'
@@ -126,7 +172,22 @@ typedef struct
 	uint32_t	ram_lo, ram_hi;	// Free RAM filled with PROF_FREE_PATTERN by the firmware (Execute), 0 = not filled
 	uint32_t	ram_pos, ram_dirty, ram_run, ram_maxrun;	// RAM scan (monitor)
 	uint32_t	prof_call;		// (unused since the sampler handles the ticks itself: set by older ps1transfer)
+	uint32_t	prof_gpustat;	// GPUSTAT at the last SPU voices packet (monitor version 7, 0: not known)
+	// Remote pad (monitor version 8, EXEC_PAD)
+	uint32_t	pad_buf;		// Pad buffer of port 1 given to InitPAD by the program, 0: not called yet
+	uint32_t	pad_orig;		// The BIOS InitPAD
 } MonitorState;
+
+// Remote pad device (monitor version 11): in MonitorState.ram_lo... (the profiler's RAM scan, unused meanwhile)
+typedef struct
+{
+	uint8_t		type;		// PAD_*: the ID byte of the reply, 0: digital pad (buttons added to a real pad's)
+	uint8_t		reserved;
+	int16_t		mouse_x, mouse_y;	// Mouse: motion totals (computer)
+	int16_t		given_x, given_y;	// Mouse: motion given to the program (monitor)
+	uint8_t		axes[4];	// Reply bytes 4-7
+} PadDevice;
+#define	MON_STATE_PAD_DEVICE	72	// offsetof(MonitorState, ram_lo)
 #endif
 
 // MonitorState.prof_draw after a crash (monitor version 5): the crash screen is drawn in the program's draw area
@@ -135,5 +196,8 @@ typedef struct
 
 #define	MON_STATE_ENTRY		4	// Offsets used by the assembly code
 #define	MON_STATE_CHAIN80	40
+#define	MON_STATE_PAD_BUF	104
+#define	MON_STATE_PAD_ORIG	108
+#define	MON_STATE_PAD_BUF2	68	// Port 2's pad buffer (monitor version 9): reuses prof_draw, see the remote pad comment
 
 #endif

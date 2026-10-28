@@ -6,6 +6,7 @@ If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
 import ttkbootstrap as tb
+from ttkbootstrap.dialogs import Messagebox
 
 from pages.base import Page
 from widgets import labeled
@@ -19,10 +20,11 @@ MODES = [MODE_PSYQ, MODE_YAROZE, MODE_USB, MODE_YAROZE_USB]
 OLD_MODES = {"Serial (PsyQ: libcomb)": MODE_PSYQ, "Serial (Yaroze: tty)": MODE_YAROZE, "USB Link": MODE_USB,
              "USB Link (Yaroze: tty)": MODE_YAROZE_USB}		# (names saved by older versions)
 RELAY_MODES = (MODE_USB, MODE_YAROZE_USB)
+RELAY_TASK = "USB link relay"				# The relay's task (also started by Run Linked of the Run pages)
 
 
 class LinkTestPage(Page):
-    title = "Link test"
+    title = "Link Connection Test"
 
     def build(self):
         tb.Label(self, text="Link cable tester", font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))
@@ -50,7 +52,11 @@ class LinkTestPage(Page):
         box.pack(fill="x", pady=(12, 0))
         tb.Label(box, text="Run your program on both consoles then start the relay", wraplength=760, justify="left",
                  bootstyle="secondary").pack(anchor="w")
-        tb.Button(box, text="Start the relay", bootstyle="primary", command=self.relay).pack(anchor="w", pady=(8, 0))
+        row = tb.Frame(box)
+        row.pack(anchor="w", pady=(8, 0))
+        tb.Button(row, text="Start the relay", bootstyle="primary", command=self.relay).pack(side="left")
+        tb.Button(row, text="Stop the relay", bootstyle="danger-outline", command=self.stop_relay).pack(
+            side="left", padx=(8, 0))
 
     def on_show(self):
         serials = [d["serial"] for d in self.app.devices]
@@ -74,7 +80,15 @@ class LinkTestPage(Page):
         """USB link relay between the two consoles (their programs already run), until it is stopped."""
         pair = self._pair()
         if pair:
-            self.app.run(["-relay", pair[1]], "USB link relay", device=pair[0], long_running=True, stdin=True)
+            self.app.run(["-relay", pair[1]], RELAY_TASK, device=pair[0], long_running=True, stdin=True)
+
+    def stop_relay(self):
+        """Stops the relay (started here or by Run Linked): asked to quit, it ends between two USB transfers."""
+        task = self.app.runner.task
+        if task and task.name == RELAY_TASK:
+            self.app.stop_task()
+        else:
+            Messagebox.show_info("The USB link relay isn't running.", self.title, parent=self.app)
 
     def start(self):
         pair = self._pair()
@@ -90,6 +104,6 @@ class LinkTestPage(Page):
         def relay(code, out):
             # USB link: the relay copies the data between the two consoles until it is stopped
             if code == 0:
-                self.app.run(["-relay", b], "USB link relay", device=a, long_running=True, stdin=True)
+                self.app.run(["-relay", b], RELAY_TASK, device=a, long_running=True, stdin=True)
 
         self.app.run(args, "Link test " + a, device=a, on_done=second)

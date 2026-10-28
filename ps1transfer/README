@@ -15,7 +15,11 @@ v1.4 update: New software reset feature and kernel_hook contributed by david4599
 Parameters:
 -u Command to Upload a specified file from your computer to a specified address in the Playstation 1 memory.
 -d Command to Download a file from a specified address and size in the Playstation 1 memory to your computer in the specified file.
+-spu file Write the SPU RAM (512KB) then the SPU registers (512 bytes, 0x1F801C00-0x1F801DFF) of the running program
+   to file (read by the debug monitor, version 10: PS1 Dev Cart Manager's SPU RAM Viewer)
 -v Command to Download the Video RAM content of the Playstation 1 to a PNG image on your computer using the following parameters: x_position y_position width height
+   -v auto: the 320x240 screen on the TV, where the program shows it (the TIM viewer tells it, and holds a complete
+   frame while it is read); 0,0 for other programs
    While a program runs, it is a live screenshot read from the GPU. At the PS1 DEV CART menu, it is the VRAM saved at the last boot
    (e.g. the last screen of your program after a reset or a crash).
 -e Command to Transfer and Execute a specified Playstation 1 executable (PS-X EXE)
@@ -43,50 +47,84 @@ Parameters:
    when it connects to the menu and remembered in the cartridge flash)
 -m Display a TMD model with the model viewer (tmdviewer.ps-exe, built from the "tmdviewer" folder, must be next to ps1transfer)
 -t TIM texture for the model viewer, can be used several times (up to 8)
+-tod TOD animation for the model viewer (Sony's format, e.g. from rsdlink/Animator), up to 16
+-mdllive With -m: the model viewer takes commands on the input (PS1 Dev Cart Manager), acting as its controller does:
+   "tod I" (TOD I from its start), "frame F" (shown, paused), "play 0/1", "loop 0/1", "speed P" (percent),
+   "rot X Y Z" (view, 4096 = 360 degrees), "dist D" (camera distance), "view" (reset), "quit". It prints
+   "MDLINFO TODS DIST_MIN DIST_MAX" at the start, then "MDLSTATE TOD FRAME FIRST LAST PLAYING LOOP SPEED ROT_X ROT_Y
+   ROT_Z DIST OBJECTS POLYGONS SKIPPED" each time the viewer's state changes (also with its controller)
 -snd Sound file for the sound tester (soundtest.ps-exe next to ps1transfer): VH, VB, VAB, SEQ or VAG, up to 8 files
--tim TIM file for the TIM and VRAM viewer (timviewer.ps-exe next to ps1transfer), up to 16 files
+-sndlive With -snd: the sound tester takes commands on the input (PS1 Dev Cart Manager), acting as its controller does:
+   "program I" (index of the programs with tones), "note N" (0-127, 60 = C4), "volume V" (0-127, also for the notes
+   sounding), "play [N]" / "release" (Cross held), "seq 0/1" (SEQ stop/start), "stop" (all sounds), "vabwrite OFFSET
+   HEX" (VAB editor: bytes written in the VH the tester plays, applied at once to the notes sounding), "vabread" (the
+   VH: "SNDVH HEX"), "spuregs" (the SPU registers: "SNDSPU HEX", debug monitor version 10), "quit". It prints
+   "SNDINFO KIND PROGRAMS VAB_PS VAB_TS VAB_VS VAG_RATE", "SNDPROGS P0 P1..." at the start, then
+   "SNDSTATE PROG_INDEX PROGRAM NOTE VOLUME PLAYING SEQ BAR LOOP VOICES" each time the tester's state changes (also with
+   its controller; VOICES: hexadecimal, bit n = voice n sounding)
+-tim TIM file for the TIM and VRAM viewer (timviewer.ps-exe next to ps1transfer), up to 32 files
+-timlive With -tim -c: the viewer takes commands on the input (PS1 Dev Cart Manager): "clut I ROW V0 V1..." writes a
+   CLUT row of TIM I (16-bit colours in hexadecimal) in the viewer's copy and in VRAM, "read" prints the CLUTs as the
+   console has them (TIMCLUT lines), "vram FILE" (FILE after a tab) writes the whole VRAM (1024x512, 16-bit),
+   "select I ROW" shows TIM I (CLUT row ROW, -1: unchanged) on the console, "state" prints the TIM and CLUT row the
+   console shows and if its text is shown ("TIMSEL I ROW TEXT"), "text 0/1" hides/shows the console's info panel and
+   controls, "move I IX IY CX CY" moves TIM I in VRAM (image at IX,IY, CLUT at CX,CY, -1 -1: no CLUT; the viewer
+   clears the old areas, a save on the PS1 keeps the new position), "quit"
 -mcbackup Save a memory card to a 128KB image file (cardtool.ps-exe next to ps1transfer)
 -mcrestore Write a memory card image (128KB raw or DexDrive .gme) to a memory card, confirmation on the PS1
 -slot Memory card slot 1 or 2 for -mcbackup/-mcrestore (default 1)
+-padtest Control tester (padtest.ps-exe next to ps1transfer), with -pad: both controller ports as a program sees
+   them through the BIOS (device, buttons, sticks, NeGcon, mouse pointer, GunCon sight), real or emulated
 -link [yaroze] Link cable tester (linktest.ps-exe next to ps1transfer), run it on both consoles. The serial port is
    used like a game using the link cable library (libcomb), or with "yaroze" like a Net Yaroze game ("tty:" driver,
    as -c sio), or with "usb" no serial port: psxcomb on the USB link, the consoles are linked through their
    cartridges and this computer (see -relay)
--relay SERIAL2 USB link relay between the cartridge of -n and the cartridge SERIAL2, until stopped (Ctrl+C)
+-relay SERIAL2 USB link relay between the cartridge of -n and the cartridge SERIAL2, until stopped (Ctrl+C, or a line
+   / the end of the standard input when it is a pipe). With -gdb: the relay runs in the debug session (link play
+   debugged on the cartridge of -n, both programs with -c link; firmware with the debug monitor version 12)
+-r With a program to run: if the PS1 doesn't take the reset (a transfer stopped half way, e.g. a program's console
+   ended), its data are read until it is quiet, then the reset again
 -net host:port Connects the USB link of the running program (psxcomb USB link, or -c link) to a TCP server, until
    stopped (Ctrl+C); with -e -f program.ps-exe: executes it first, printf kept on the BIOS device (unless -c).
-   Example: ps1-tools/audiostreamer/ (radio and audio files): python audio_server.py, then
-   ps1transfer -r -e -f audiostreamer.ps-exe -net 127.0.0.1:7777
--netlink :port | host:port Netplay: links the USB link of the running program (a Net Yaroze game run with -c link,
-   or a program using psxcomb's USB link) to the console of another computer running -netlink, over UDP, until
-   stopped. One computer waits (:port, the host; its router must forward this UDP port to it), the other one
-   connects (host:port). Units numbered, every packet carries the ones not acknowledged yet (a lost packet is covered
-   by the next one), sent as soon as the console gives them. Prints the round trip time every second.
-   Example: ps1transfer -n SERIAL -r -y libps.exe -e -f game.exe -c link -netlink :7010   (host)
-            ps1transfer -n SERIAL -r -y libps.exe -e -f game.exe -c link -netlink 1.2.3.4:7010   (guest)
--netkey hex With -netlink: the game's link key, 32 hex digits, the same on both computers (the Netplay lobby gives
-   one for each game). Every packet ends with an 8-byte tag (HMAC-SHA256 of the packet with the key), packets
-   without the right tag are ignored: another computer can't link in, send units or stop the link. Without -netkey
-   (packets version 1) anyone can link in first.
--netdelay ms[,jitter[,loss%]] With -netlink: the packets sent are delayed (and dropped), to try a far connection
--prof [rate[,counter]] Profiler of the running program, until stopped (Ctrl+C): every second CPU load (time outside
-   VSync/DrawSync/CdSync...), GPU busy, frames, DMA, CD-ROM busy, lowest stack pointer, RAM used, SPU voices, and the
-   functions where the time goes (symbols: .elf/.map next to the program, or -sym); at the end, the functions with
-   their share of the time. With -e -f program.ps-exe: executed first, its free RAM filled to measure what it uses.
-   RAM is shown of the 2MB: kernel + program (all of it counted) + the free RAM written, e.g. "RAM 1980/2048 KB
-   (program 1518 KB + 398/398 KB free written)".
+-prof [rate[,counter]] Profiler of the running program, until stopped (Ctrl+C): every second what limits the frame
+   rate (ok, cpu, gpu, vsync: the frame misses the VBlank, capped, cd), CPU load (time outside VSync/DrawSync/CdSync...)
+   and the time waiting for the VBlank, the GPU, the CD-ROM, GPU busy, frames and frame time against the budget of the
+   video mode (50/60 Hz, debug monitor 7), DMA, CD-ROM busy, stack (lowest SP, deepest), RAM used and free (largest
+   free block), SPU voices (most at once), and the functions where the time goes (symbols: .elf/.map/.sym next to the
+   program, the symbols of a Net Yaroze ECOFF executable, or -sym); at the end, averages and peaks, the verdict, hints
+   (BIOS time, printf, the function to optimise first, low RAM, SPU voices...), and the functions with their share of
+   the time and their caller (seen in the return address). With -e -f program.ps-exe (or -auto): executed first, its
+   free RAM filled to measure what it uses (not with data files of an auto script above the program). RAM is shown
+   of the 2MB: kernel + program (all of it counted) + the free RAM written, e.g. "RAM 1980/2048 KB, 68 KB free
+   (largest block 52 KB)".
    rate: samples a second (default 1000, about 4% of the program's time), counter: root counter used (default 0).
    Needs the debug monitor version 3; not during a -gdb session (works with -c sio / -c link: link play).
 -nofill With -prof -e: the free RAM is not filled (RAM use not measured), e.g. data uploaded there with -u
 -json With -prof: "PROF {...}" lines (PS1 Dev Cart Manager) instead of the text summary
--csv file With -prof: one line per second in a CSV file
+-csv file With -prof: one line per second in a CSV file (also the waits, frame time, video mode budget and verdict)
 -idle f1,f2 With -prof: more functions where the program waits (not CPU load), names or addresses as shown
 -gdb [port] Debug the executable given with -f with GDB or VS Code (GDB server on localhost, default port 3333)
+-frame -f game.exe Frame capture (PS1 Dev Cart Manager's Frame Inspector): the program runs in a debug session;
+   "capture DRAWOTAG [VSYNC]<tab>FILE" on the input stops it when it calls DrawOTag (between two VSync calls: one
+   frame; "-" instead of the address: at its GPU DMA) and prints the GPU packets of its ordering tables ("FRMPKT N ADDR
+   W0 W1..."), the draw area and offset (GP1 10h), and writes the frame drawn (VRAM) to FILE. Also "pad", "padport", "padstate"
+-pad With -e: a controller port can be driven from the computer ("pad BITS" of -memlive or -frame: PsyQ pad bits
+   in hexadecimal, "pad off"; "padport 0" port 1 (default), "padport 1" port 2; "padstate": "MEMPAD READY BUF1 BUF2
+   MONVER"; "padtype ID" another device: 41 digital pad, 73 DualShock, 53 analog joystick, 23 NeGcon, 12 mouse,
+   63 GunCon, then "pad BITS" its reply's buttons, "padaxes HEX" its 4 other bytes (sticks RX RY LX LY, NeGcon twist I
+   II L, GunCon X Y 16-bit), "padmove DX DY" mouse motion). For programs reading their pads through the BIOS
+   (InitPAD); the firmware needs the debug monitor version 8, version 9 for port 2, version 11 for the other devices
+-memlive Memory of the running program read/written on request ("read ADDR SIZE", "write ADDR HEX"), the remote pad
+   ("pad", "padport", "padstate", "padtype", "padaxes", "padmove"), "screen FILE" (the frame being drawn, 16-bit
+   pixels: "MEMSCREEN X Y W H FILE"); its printf is shown and its files served meanwhile
 -hot file[@where] Hot reload a file into the running program (VRAM, SPU RAM or RAM), can be used several times
 -watch With -hot: send each file again when it changes on disk, and show the printf of the program
 -flash rom.rom Flash a cartridge ROM: checked first (128KB, cartridge boot header), uploaded to RAM, flashed by the
    flasher (ar_flash.ps-exe next to ps1transfer, it shows its progress on the TV and reports here), then the PS1 is
    reset and the flash is read back and compared. Exit code 0 only if the readback is identical.
+-bootcd Boot the disc in the drive, like START + SELECT on the menu: the CD drive is unlocked first (burned and
+   import discs, no modchip; not on Japanese consoles), then SYSTEM.CNF and the game are loaded as the BIOS does.
+   A program running is reset first. The messages are on the TV.
 -info Cartridge state as key=value lines: device, state (menu, running, stopped, crashed), firmware, features, monitor,
    monitor_version, escaped_answers (1: answers after a DLE, text a program prints can't be taken for them)
 -progress Transfer progress as progress=done/total lines instead of the "bytes remaining" text
@@ -100,6 +138,9 @@ The available memory to upload your data or an executable in the Playstation 1 w
 A debugging screen with registers and stack dump will show up on your Playstation 1 whenever your program crash.
 The psxpcdrv folder is a library and an example to read and write files of your computer acting as a file server
 (the PCDRV functions PCinit, PCopen, PCcreat, PClseek, PCread, PCwrite, PCclose over USB).
+The file server has a file "@input": the lines given to ps1transfer's standard input (e.g. by the PS1 Dev Cart
+Manager), which a program opens and reads to get commands while the file server runs; a read returns at once with what
+has arrived (0 bytes if nothing). The PS1 DEV CART VIDEO TESTER (ps1-tools/videotest) takes its commands this way.
 You can deactivate the cartridge by toggling the top switch to off (right position),
 the Playstation 1 will then boot normally but the USB hardware will remain usable,
 once the Playstation 1 booted you can switch the cartridge back on to allow the flash chip to be updated by a custom program (for example if you bricked your cartridge).
@@ -155,6 +196,9 @@ Symbol files: GNU ld map file (-Wl,-Map=game.map), nm output (nm game.elf > game
 C++ (e.g. PsyQo programs): nm -C game.elf > game.sym gives readable names ("Game::draw(int, int)").
 Addresses can be given as @symbol or @symbol+offset (-a, -peek, -poke):
 ps1transfer -peek @player -s 32        hexadecimal dump with symbol names (live while the program runs)
+ps1transfer -memlive                   memory read/written on request (PS1 Dev Cart Manager's watch list): commands
+                                       "read ADDR SIZE" ("MEMREAD ADDR HEX"), "write ADDR HEX", "quit" on the input;
+                                       the program's printf is shown and its files served meanwhile
 ps1transfer -poke @lives 3 -s 1        write a 1, 2 or 4 bytes value
 ps1transfer -d -f table.bin -a @table -s 1024
 
@@ -274,6 +318,15 @@ open("tty:"), read, write and the ioctls work like with the serial port driver. 
 own thread, with one "exchange" transfer (kernel hook command 'X': the computer's half of the driver buffers written,
 the PS1's half read) each time the kernel hook answers; the driver lets the hook answer before each read and after each
 write of the program, so bytes written leave at once and bytes arriving are read in the same frame.
+The PS1 answers an exchange with the program stopped (interrupts off), so the computer sends it in one USB write: the
+command, its half of the buffers and both acknowledgements, the CRCs checked afterwards (a read half received wrong
+isn't used, a written one is written again by the next exchange); the PS1 never waits there for the computer. Each
+exchange takes about 0.75 ms of the program's time (a busy loop on both consoles: 4% of the CPU at one exchange per
+frame; with an answer after each USB round trip, as before: 16%, which disturbed games' frames, e.g. flickering).
+In a debug session (-gdb -relay) the debugged program can stop before its exchange is answered (its stop notification
+would take the command for the computer's answer): there the command goes alone, the rest once it is answered, and an
+exchange the stop got in the way of is skipped (the next one writes everything again). Escaped answers ("DLE g", after
+a 'Q') are accepted too.
 Frame pacing, the timing of a serial cable: each write of the program is a unit, given to the other program one unit
 per frame (counted at the vertical blanks). Programs like YarIO keep only the last packet received in a frame, so two
 packets arriving in the same frame would lose one and desynchronise the consoles (USB delivery isn't as regular as a
@@ -327,7 +380,7 @@ The TIM files are loaded in VRAM at their own position. Select changes the view:
   L2/R2 CLUT row, D-pad scroll). Square draws it with the CLUT of another loaded TIM of the same CLUT width
   (press again for the next one, back to its own CLUT at the end). Circle opens the palette editor.
 - VRAM 1:1: scroll in the raw VRAM (D-pad, R2 faster)
-L1/R1 select the TIM, Start resets scroll/zoom.
+L1/R1 select the TIM, Start hides/shows the info panel and the controls (a clear view of the image).
 Palette editor (TIM view, Circle): the image is redrawn live while the colors change.
 - D-pad: entry (up/down: 16 entries), L2/R2: red/green/blue, Triangle/Cross: +/- (held: repeats)
 - Square: restore the original colors of the row, Circle: exit
@@ -347,6 +400,7 @@ Play a VAG sample at different notes (C4 = original sample rate):
 ps1transfer -snd sample.vag
 Controls: Left/Right program, Up/Down note, L1/R1 octave, Cross play (while held), Circle SEQ start/stop,
 Triangle/Square volume, Start stop all sounds. The file types are detected from their header (VB files: ".vb" extension).
+With -sndlive (the GUI's Sound page) the same controls are on the computer, linked live with the controller's.
 The files are uploaded to 0x80100000 (max 896KB, the VB must also fit in the 512KB SPU RAM), "-snd" resets the PS1 first.
 
 
@@ -378,6 +432,13 @@ ps1transfer -m model.tmd -t texture1.tim -t texture2.tim
 Controls: D-pad rotate X/Y, L1/R1 rotate Z, Triangle/Cross zoom in/out, Start reset view, Select hide/show the text.
 The model and textures are uploaded to 0x80100000 (max 896KB). "-m" resets the PS1 first, so models can be displayed
 one after the other, "ps1transfer -r" goes back to the PS1 DEV CART menu.
+With TOD animations (as PsyQ's TOD sample JANKEN: te.tmd with appear.tod, jaanken.tod, n_c.tod...):
+ps1transfer -m te.tmd -tod appear.tod -tod jaanken.tod -tod n_c.tod
+The packets create the objects, link them to the TMD objects (rsdlink's IDs: TMD object n = ID n + 1), set their
+parents (a hierarchy of coordinates) and attributes, and move them (rotation, scale, translation, absolute or from the
+previous frame); light, camera and matrix packets are not used. A TOD that doesn't create its objects continues from
+the end of the first TOD that does (appear.tod for the JANKEN files). The camera frames each TOD's whole motion.
+Controls with TODs: Circle play/pause, L2/R2 previous/next frame (held: repeat), Square next TOD.
 
 Any "local dload" commands from your batch transfer file can be adapted like this:
 local dload bullet2.tim 800e4000 => ps1transfer -u -f bullet2.tim -a 0x800e4000

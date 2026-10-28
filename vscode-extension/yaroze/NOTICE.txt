@@ -1,0 +1,24 @@
+Net Yaroze build environment installed by the PS1 DEV CART extension
+=====================================================================
+
+yaroze-toolchain.tar.gz: GNU binutils 2.16.1 and GNU GCC 2.8.1 (C compiler and its
+libgcc) for the mipsel-unknown-ecoff target, statically linked i386 Linux programs.
+They are free software under the GNU General Public License version 2 or later
+(GPL-2.0.txt); there is NO WARRANTY.
+
+Corresponding source:
+- binutils 2.16.1: https://ftp.gnu.org/gnu/binutils/binutils-2.16.1.tar.bz2 (unmodified)
+- GCC 2.8.1:       https://ftp.gnu.org/gnu/gcc/gcc-2.8.1.tar.gz, with one change to its
+  build configuration (config/mips/t-ecoff: TARGET_LIBGCC2_CFLAGS gets
+  -Dinhibit_libc -mgas)
+- How they were configured and built: toolchain-build/Dockerfile and
+  toolchain-build/build.sh (also in https://github.com/logi-26/Net-Yaroze-WSL-Build-Environment,
+  toolchain/).
+
+specs: the GCC driver specs of PSX3 (GCC 2.8.1 for the Net Yaroze), the linker script
+path filled in at install.
+
+Not included: Sony's Net Yaroze SDK (headers, libps, linker script). The extension
+downloads the Net Yaroze Software Development Disc and copies them from it
+(install.sh). yarexe (https://github.com/gwald/Yarexe) is built in WSL from its
+unmodified source, under its own licence.
