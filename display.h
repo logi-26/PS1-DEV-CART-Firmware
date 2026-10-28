@@ -115,7 +115,7 @@ void	DrawTextColor(int x, int y, const char *text, int r, int g, int b)
 #define	LOGO_HEIGHT			40
 #define	ACCENT_Y			(LOGO_OFFSET_Y + LOGO_HEIGHT + 4)
 #define	INFO_PANEL_Y		(ACCENT_Y + 8)
-#define	INFO_PANEL_H		32
+#define	INFO_PANEL_H		20	// One line: label and value
 #define	STATUS_PANEL_Y		(INFO_PANEL_Y + INFO_PANEL_H + 6)
 #define	STATUS_PANEL_H		20
 #define	LOG_PANEL_Y			(STATUS_PANEL_Y + STATUS_PANEL_H + 6)
@@ -148,17 +148,17 @@ void	DrawMenuFrame(void)
 void	DrawMenuLabels(void)
 {
 	DrawTextColor(16, INFO_PANEL_Y + 6, "FIRMWARE", TEXT_DIM);
-	DrawTextColor(172, INFO_PANEL_Y + 6, "DEVICE ID", TEXT_DIM);
+	DrawTextColor(172, INFO_PANEL_Y + 6, "ID", TEXT_DIM);
 	DrawTextColor(16, LOG_PANEL_Y + 6, "ACTIVITY", TEXT_DIM);
 }
 
-// A value in an info panel (0: left, 1: right)
+// A value in an info panel (0: left, 1: right), after its label
 void	DrawInfo(int panel, const char *text)
 {
-	int	x = panel ? 172 : 16;
+	int	x = panel ? (172 + 3 * FONT_CHAR_W) : (16 + 9 * FONT_CHAR_W);	// After "ID " / "FIRMWARE "
 
-	FillRect(x, INFO_PANEL_Y + 18, 132, FONT_CHAR_H, UI_PANEL);
-	DrawText(x, INFO_PANEL_Y + 18, text);
+	FillRect(x, INFO_PANEL_Y + 6, (panel ? 312 : 156) - 8 - x, FONT_CHAR_H, UI_PANEL);
+	DrawText(x, INFO_PANEL_Y + 6, text);
 }
 
 // USB status: light (green/red) and text
