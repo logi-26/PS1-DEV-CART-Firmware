@@ -253,7 +253,7 @@ Transfers are **5 to 8 times faster** than the original firmware.
 | | Original firmware | PS1 DEV CART | |
 |---|---|---|---|
 | Download (PlayStation to computer) | 103 KB/s | 665 to 840 KB/s | about 6 to 8× faster |
-| Upload (computer to PlayStation) | 122 KB/s | 565 to 655 KB/s | about 5× faster |
+| Upload (computer to PlayStation) | 122 KB/s | 580 to 655 KB/s | about 5× faster |
 
 Uploads of some file sizes reached over 900 KB/s. The speed depends on the computer and its USB port.
 
@@ -261,11 +261,11 @@ Quick test from the cartridge menu, each download checked against its upload (3 
 
 | File size | Upload | Download |
 |---|---|---|
-| 64 KB | 405 KB/s | 473 KB/s |
-| 256 KB | 521 KB/s | 621 KB/s |
-| 1 MB | 549 KB/s | 665 KB/s |
-| 1.5 MB | 556 KB/s | 663 KB/s |
-| 1.9 MB | 560 KB/s | 670 KB/s |
+| 64 KB | 410 KB/s | 443 KB/s |
+| 256 KB | 541 KB/s | 621 KB/s |
+| 1 MB | 575 KB/s | 654 KB/s |
+| 1.5 MB | 581 KB/s | 667 KB/s |
+| 1.9 MB | 581 KB/s | 663 KB/s |
 
 These are timed on the whole `ps1transfer` command, so they include starting it: small files look slower than they are.
 
