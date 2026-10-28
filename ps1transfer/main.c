@@ -316,7 +316,7 @@ uint32_t	atohex(char *str)
 /****************************************/
 
 #define	USB_READ_SIZE	2048	// Reads are done by whole packet (USB_ReadData waits for all the bytes)
-#define	USB_WRITE_SIZE	2048	// Writes are done by whole packet, the USB driver handles the chip buffer flow control
+#define	USB_WRITE_SIZE	65536	// A whole packet in one write (16KB: 585 KB/s upload, 2KB writes: 555), the USB driver handles the chip buffer flow control
 #define	USB_LATENCY_MS	1		// FTDI default is 16ms, which delayed each packet CRC/ACK byte sent by the PS1
 #define	USB_READ_TIMEOUT	5		// Seconds without data before a read fails (e.g. PS1 running a program, not answering)
 #define	USB_READ_POLL_MS	100		// Windows: FT_Read returns after this time so the timeout can be checked
