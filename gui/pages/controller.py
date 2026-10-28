@@ -15,6 +15,11 @@ joystick sticks dragged with the mouse; NeGcon twist and I button on a steering 
 mouse as the PS1 mouse (click the area to capture it, Esc to let go); the GunCon aimed at the console's picture
 (read from VRAM, "screen"): left button the trigger, right A, middle B.
 
+USB controller: a game controller plugged into this computer (e.g. a PS1 controller on a USB adapter, see gamepad.py)
+drives the pad too, on any page: its buttons are added to the ones held with the mouse and the keyboard, its sticks
+move the DualShock's (NeGcon: the left stick twists, Cross/Square/L1 are I/II/L). "Map buttons..." asks for each PS1
+button in turn on the controller; the mapping is saved for that controller (by its USB vendor and product ID).
+
 Recording and playback: "Record" captures every change (buttons, axes, mouse motion) and the time it happened;
 "Play" sends them again with the same timing (to the device recorded). A recording can be saved and loaded again.
 
@@ -31,6 +36,7 @@ from tkinter import filedialog
 
 import ttkbootstrap as tb
 
+import gamepad
 from pages.base import Page
 from settings import config_dir
 
@@ -73,6 +79,15 @@ GUN_X, GUN_Y = (77, 461), (25, 248)     # GunCon X/Y over the picture (games cal
 GUN_OFF = (1, 10)           # GunCon pointed off the screen
 SCREEN_MS = 1000            # GunCon picture refreshed this often (auto)
 RECORDING_TYPES = [("PS1 DEV CART pad recording", "*.ps1pad"), ("All files", "*.*")]
+USB_MS = 16                 # USB controller read this often
+USB_RETRY_MS = 2000         # Unplugged: looked for again this often
+USB_DEAD = 10               # USB stick: this close to the centre is the centre (worn sticks)
+USB_NONE = "None"
+# Map buttons: the PS1 buttons asked for in turn, then the sticks (name, text)
+LEARN_BUTTONS = ("Up", "Right", "Down", "Left", "Triangle", "Circle", "Cross", "Square", "L1", "R1", "L2", "R2",
+                 "Select", "Start", "L3", "R3")
+LEARN_STICKS = (("LX", "the left stick to the right"), ("LY", "the left stick down"),
+                ("RX", "the right stick to the right"), ("RY", "the right stick down"))
 
 
 def describe(kind, bits, axes, dx=0, dy=0):
@@ -133,6 +148,19 @@ class ControllerPage(Page):
         self.play_state = None      # (bits, axes) played back (overrides the controls while playing)
         self.play_job = None
 
+        self.usb_pads = []          # USB controllers found (gamepad.Gamepad)
+        self.usb = None             # The one used
+        self.usb_key = ""           # Its key (USB vendor:product), kept when it is unplugged
+        self.usb_map = None         # {"buttons": {PS1 button: input}, "sticks": {LX/LY/RX/RY: axis}}
+        self.usb_held = set()       # PS1 buttons held on it
+        self.usb_axes = None        # Its sticks (RX RY LX LY) last applied
+        self.usb_job = None
+        self.usb_auto = True        # A digital pad becomes a DualShock when the USB controller shows it is analog
+        self.learn = None           # Map buttons: [(name, is a stick), ...] still to ask, None when not mapping
+        self.learn_map = None
+        self.learn_rest = None      # The controller at rest (inputs pressed are the ones that change from it)
+        self.learn_wait = False     # Waiting for the controller to be released
+
         tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))
         tb.Label(self, text="A controller driven from this computer, on port 1 or port 2: a digital pad, or another "
                             "controller the program sees instead (DualShock, analog joystick, NeGcon, mouse, GunCon), "
@@ -148,7 +176,7 @@ class ControllerPage(Page):
         self.device = tb.Combobox(bar, values=[d[0] for d in DEVICES], state="readonly", width=19)
         name = self.app.settings.field("controller.device", DEVICES[0][0])
         self.device.set(name if name in DEVICE else DEVICES[0][0])
-        self.device.bind("<<ComboboxSelected>>", lambda e: self.device_changed())
+        self.device.bind("<<ComboboxSelected>>", lambda e: self.device_chosen())
         self.device.pack(side="left")
         self.port = tk.IntVar(value=1 if self.app.settings.field("controller.port", 0) else 0)
         tb.Checkbutton(bar, text="Port 2", variable=self.port, onvalue=1, offvalue=0,
@@ -163,6 +191,31 @@ class ControllerPage(Page):
         self.status = tb.Label(self, text="Not connected. (Run the control tester: the console shows what it sees "
                                           "of both ports, to try the controllers here)", bootstyle="secondary")
         self.status.pack(anchor="w", pady=(0, 8))
+
+        box = tb.Frame(self)        # USB controller: one row (and the Map buttons prompt under it while mapping)
+        box.pack(fill="x", pady=(0, 8))
+        bar = tb.Frame(box)
+        bar.pack(fill="x")
+        tb.Label(bar, text="USB controller").pack(side="left")
+        self.usb_combo = tb.Combobox(bar, state="readonly", width=34)
+        self.usb_combo.bind("<<ComboboxSelected>>", lambda e: self.usb_select())
+        self.usb_combo.pack(side="left", padx=(6, 0))
+        tb.Button(bar, text="Refresh", bootstyle="secondary-outline", command=self.usb_refresh).pack(
+            side="left", padx=(6, 0))
+        self.map_button = tb.Button(bar, text="Map buttons...", bootstyle="info-outline", command=self.learn_start)
+        self.map_button.pack(side="left", padx=(6, 0))
+        self.default_button = tb.Button(bar, text="Default mapping", bootstyle="secondary-outline",
+                                        command=self.usb_default)
+        self.default_button.pack(side="left", padx=(6, 0))
+        self.usb_status = tb.Label(bar, text="", bootstyle="secondary")
+        self.usb_status.pack(side="left", padx=(12, 0))
+        self.learn_bar = tb.Frame(box)
+        self.learn_label = tb.Label(self.learn_bar, text="", bootstyle="warning", font=("", 10, "bold"))
+        self.learn_label.pack(side="left")
+        tb.Button(self.learn_bar, text="Skip", bootstyle="secondary-outline", width=8,
+                  command=self.learn_skip).pack(side="left", padx=(12, 0))
+        tb.Button(self.learn_bar, text="Cancel", bootstyle="danger-outline", width=8,
+                  command=self.learn_cancel).pack(side="left", padx=(6, 0))
 
         box = self.section("Recording")
         box.pack(fill="x", pady=(0, 8))
@@ -214,6 +267,8 @@ class ControllerPage(Page):
         self.app.bind_all("<KeyPress>", self.key_press, add="+")
         self.app.bind_all("<KeyRelease>", self.key_release, add="+")
         self.app.live_listen(self)
+        self.usb_key = self.app.settings.field("controller.usb", None)     # None: the first one found is used
+        self.usb_refresh()
 
     def _build_panels(self):
         """A panel per device kind (the pad drawing is shared by the digital pad, analog pads and NeGcon)."""
@@ -358,11 +413,17 @@ class ControllerPage(Page):
                       "(often a shot at a target): the X/Y ranges below set where the picture's edges are."}[self.kind()])
         self.draw()
 
+    def device_chosen(self):
+        self.usb_auto = False       # (chosen by hand: a USB analog controller doesn't change it any more)
+        self.device_changed()
+
     def device_changed(self):
         self.app.settings.set_field("controller.device", self.device.get())
         self.release_mouse()
         self.pressed.clear()
         self.latched.clear()
+        self.usb_held = set()
+        self.usb_axes = None        # (the USB controller's sticks applied again, to the new device)
         self.move = [0, 0]
         self.show_panel()
         if self.connected:
@@ -503,7 +564,7 @@ class ControllerPage(Page):
     def bits(self):
         if self.playing and self.play_state:
             return self.play_state[0]
-        held = self.pressed | self.latched
+        held = self.pressed | self.latched | self.usb_held
         kind = self.kind()
         if kind == "mouse":
             return 0x0003 | sum(b for n, b in MOUSE_BITS.items() if n in held)
@@ -756,6 +817,224 @@ class ControllerPage(Page):
         except (IndexError, ValueError, OSError):
             return
         self.draw()
+
+    # ---------------------------------------------------------------- USB controller
+
+    def usb_refresh(self):
+        """The USB controllers plugged in; the one used last is chosen again."""
+        self.usb_stop()
+        for pad in self.usb_pads:
+            pad.close()
+        try:
+            self.usb_pads = gamepad.find()
+        except Exception:  # noqa: BLE001 (no joystick API here: the page works without it)
+            self.usb_pads = []
+        self.usb_combo.configure(values=[USB_NONE] + [p.name for p in self.usb_pads])
+        pad = next((p for p in self.usb_pads if p.key == self.usb_key), None)
+        if self.usb_key is None and self.usb_pads:
+            pad = self.usb_pads[0]
+        self.usb_combo.set(pad.name if pad else USB_NONE)
+        self.usb_select(save=False)
+
+    def usb_select(self, save=True):
+        self.usb_stop()
+        self.learn_cancel()
+        name = self.usb_combo.get()
+        self.usb = next((p for p in self.usb_pads if p.name == name), None)
+        if save:
+            self.usb_key = self.usb.key if self.usb else USB_NONE     # (None chosen: not used, even if one is found)
+            self.app.settings.set_field("controller.usb", self.usb_key)
+        for b in (self.map_button, self.default_button):
+            b.configure(state="normal" if self.usb else "disabled")
+        if not self.usb:
+            self.usb_status.configure(text=(
+                "Not used: choose one to drive the pad with it (on any page)." if self.usb_pads else
+                "None found (e.g. a PS1 controller on a USB adapter): plug one in, then Refresh."))
+            return
+        self.usb_map = self.app.settings.field("controller.usb_maps", {}).get(self.usb.key) or \
+            gamepad.default_mapping(self.usb.key)
+        self.usb_axes = None
+        self.usb_status.configure(text="Nothing held. (Map buttons if they don't match.)")
+        self.usb_poll()
+
+    def usb_stop(self):
+        if self.usb_job:
+            self.after_cancel(self.usb_job)
+            self.usb_job = None
+        if self.usb_held:
+            self.usb_held = set()
+            self.send()
+
+    def usb_poll(self):
+        self.usb_job = None
+        if not self.usb:
+            return
+        state = self.usb.read()
+        if state is None:
+            self.usb_stop()
+            self.learn_cancel()
+            self.usb_status.configure(text="Unplugged: used again once plugged back in.")
+            self.usb_job = self.after(USB_RETRY_MS, self.usb_replug)
+            return
+        if self.learn is not None:
+            self.learn_step(state)
+        elif not self.playing:
+            self.usb_apply(state)
+        self.usb_job = self.after(USB_MS, self.usb_poll)
+
+    def usb_replug(self):
+        self.usb_job = None
+        try:
+            pads = gamepad.find()
+        except Exception:  # noqa: BLE001
+            pads = []
+        back = any(p.key == self.usb_key for p in pads)
+        for pad in pads:
+            pad.close()
+        if back:
+            self.usb_refresh()
+        else:
+            self.usb_job = self.after(USB_RETRY_MS, self.usb_replug)
+
+    def usb_stick(self, state, spec):
+        v = state.axis(spec) if spec else 128
+        return 128 if abs(v - 128) <= USB_DEAD else v
+
+    def usb_apply(self, state):
+        """The PS1 buttons held on the USB controller, and its sticks (DualShock / analog joystick, NeGcon)."""
+        kind = self.kind()
+        held, axes = set(), None
+        if kind not in ("mouse", "guncon"):
+            held = {n for n, spec in self.usb_map["buttons"].items() if state.active(spec)}
+            sticks = [self.usb_stick(state, self.usb_map.get("sticks", {}).get(n)) for n in ("RX", "RY", "LX", "LY")]
+            if kind == "pad" and self.usb_analog(held, sticks):
+                return
+
+            if kind == "analog":
+                axes = sticks
+            elif kind == "negcon":
+                axes = [sticks[2]] + [255 if n in held else 0 for n in ("Cross", "Square", "L1")]
+        changed = False
+        if held != self.usb_held:
+            self.usb_held = held
+            changed = True
+            self.usb_status.configure(text="Held: " + (", ".join(n for n in LEARN_BUTTONS if n in held) or "nothing"))
+        if axes is not None and axes != self.usb_axes:
+            self.usb_axes = axes
+            changed = True
+            if kind == "analog":
+                self.sticks = list(axes)
+            else:
+                self.negcon = list(axes)
+        if changed:
+            self.send()
+
+    def usb_analog(self, held, sticks):
+        """An analog controller in analog mode (L3/R3, or a stick moved) while the program sees a digital pad: it
+        sees a DualShock instead (as when the Analog button is pressed on a real one). Not when the device was chosen
+        by hand, while recording or playing, or for a stick axis that also works as buttons (a D-pad on the axes)."""
+        if not self.usb_auto or self.recording_on or self.playing:
+            return False
+        as_buttons = {spec.rstrip("+-") for spec in self.usb_map["buttons"].values() if spec.startswith("a")}
+        moved = [n for n, v in zip(("RX", "RY", "LX", "LY"), sticks)
+                 if v != 128 and self.usb_map.get("sticks", {}).get(n, "").rstrip("-") not in as_buttons]
+        if not (moved or held & {"L3", "R3"}):
+            return False
+        self.device.set(DEVICES[1][0])
+        self.device_changed()
+        self.usb_status.configure(text="Analog controller: the program sees a DualShock (Controller to change it).")
+        return True
+
+    def usb_default(self):
+        if not self.usb:
+            return
+        self.learn_cancel()
+        maps = self.app.settings.field("controller.usb_maps", {})
+        maps.pop(self.usb.key, None)
+        self.app.settings.set_field("controller.usb_maps", maps)
+        self.usb_map = gamepad.default_mapping(self.usb.key)
+        self.usb_status.configure(text="Default mapping.")
+
+    # Map buttons: each PS1 button asked for in turn, the input that changes from the controller at rest taken
+
+    def learn_start(self):
+        if not self.usb:
+            return None
+        state = self.usb.read()
+        if state is None:
+            return self.app.error("The USB controller doesn't answer (unplugged?): Refresh.")
+        self.learn = [(n, False) for n in LEARN_BUTTONS] + [(n, True) for n, _ in LEARN_STICKS]
+        self.learn_map = {"buttons": {}, "sticks": {}}
+        self.learn_rest = state         # (nothing held when Map buttons was clicked)
+        self.learn_wait = False
+        self.usb_held = set()
+        self.usb_axes = None
+        self.send()
+        self.learn_bar.pack(anchor="w", pady=(6, 0))
+        self.learn_prompt()
+        return None
+
+    def learn_prompt(self):
+        name, stick = self.learn[0]
+        total = len(LEARN_BUTTONS) + len(LEARN_STICKS)
+        step = total - len(self.learn) + 1
+        if stick:
+            text = "Push %s on the USB controller (%d of %d)" % (dict(LEARN_STICKS)[name], step, total)
+        else:
+            text = "Press %s on the USB controller (%d of %d)" % (name, step, total)
+        self.learn_label.configure(text=text)
+
+    def learn_step(self, state):
+        if self.learn_wait:             # The input just taken: released before the next one
+            if state.at_rest(self.learn_rest):
+                self.learn_wait = False
+                self.learn_prompt()
+            return
+        name, stick = self.learn[0]
+        found = state.changes(self.learn_rest)
+        if stick:
+            found = [f for f in found if f[0] == "a"]
+        if not found:
+            return
+        spec = found[0]
+        if stick:
+            self.learn_map["sticks"][name] = spec.rstrip("+")
+        else:
+            self.learn_map["buttons"][name] = spec
+        self.learn_label.configure(text="%s: %s. Release it." % (name, gamepad.describe(spec)))
+        self.learn_wait = True
+        self.learn_next()
+
+    def learn_skip(self):
+        """This one stays as it was (e.g. no L3 on a digital controller)."""
+        if self.learn:
+            self.learn_wait = False
+            self.learn_next()
+            if self.learn:
+                self.learn_prompt()
+
+    def learn_next(self):
+        self.learn.pop(0)
+        if self.learn:
+            return
+        mapping = {"buttons": dict(self.usb_map["buttons"]), "sticks": dict(self.usb_map.get("sticks", {}))}
+        mapping["buttons"].update(self.learn_map["buttons"])
+        mapping["sticks"].update(self.learn_map["sticks"])
+        maps = self.app.settings.field("controller.usb_maps", {})
+        maps[self.usb.key] = mapping
+        self.app.settings.set_field("controller.usb_maps", maps)
+        self.usb_map = mapping
+        self.learn = None
+        self.learn_bar.pack_forget()
+        self.usb_status.configure(text="Mapping saved (%d buttons, %d stick axes)." % (
+            len(self.learn_map["buttons"]), len(self.learn_map["sticks"])))
+
+    def learn_cancel(self):
+        self.learn_bar.pack_forget()
+        if self.learn is not None:
+            self.learn = None
+            if self.usb:
+                self.usb_status.configure(text="Mapping not changed.")
 
     # ---------------------------------------------------------------- drawing
 

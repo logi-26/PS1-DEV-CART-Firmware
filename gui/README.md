@@ -64,6 +64,12 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     the left button, A with the right one, B with the middle one, a shot off-screen to reload; the X/Y ranges set
     where the picture's edges are, games calibrate the gun). Konami's Justifier/Hyperblaster can't be emulated (they
     need the light gun interrupt of the controller port). The device replaces the real one's reply on that port.
+    **USB controller**: a game controller plugged into this computer (e.g. a PS1 controller on a USB adapter) drives
+    the pad too, together with the mouse and the keyboard, on any page of the window. It is found by itself (Refresh
+    after plugging one in); its sticks move the DualShock's, and on a NeGcon the left stick twists and Cross, Square
+    and L1 are I, II and L. An analog controller (L3/R3 pressed, or a stick moved) turns a Digital pad into a
+    DualShock by itself, unless Controller was chosen by hand. **Map buttons...** asks for each PS1 button in turn, then the sticks, on the controller
+    (Skip keeps one as it was), and remembers the mapping for that controller; **Default mapping** goes back to it.
     **Run the control tester** starts the PS1 DEV CART control tester on the console (`ps1transfer -padtest`) and
     connects: it shows both ports as a program sees them (device, buttons, sticks, NeGcon values, the mouse pointer and
     the GunCon sight, shots marked), to try each controller without a game of your own.
