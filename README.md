@@ -569,6 +569,10 @@ The **PS1 DEV CART** extension builds, runs and debugs PlayStation projects from
 PsyQ / PsyQo (the PSX.Dev templates) and PSn00bSDK projects, in the PCSX-Redux emulator or on a PlayStation with the
 cartridge.
 
+<p align="center">
+  <img src="screenshots/extension/panel.png" alt="The PS1 DEV CART panel in VS Code: Build and Clean, the cartridges, and deploy and debug to the emulator, a cartridge or two linked ones." width="453">
+</p>
+
 - **Build, Run and Debug** buttons in the status bar and in the PS1 DEV CART panel; compiler errors in the Problems
   panel.
 - **Run on PS1** and **Debug on PS1**: the program runs on the console with its printf in a terminal and the PCDRV
