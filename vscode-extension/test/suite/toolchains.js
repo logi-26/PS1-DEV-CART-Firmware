@@ -1,4 +1,4 @@
-// Tools test, run inside VS Code by runTest.js (NETYAROZE_TEST_ONLY=tools, the C/C++ extension installed): the tools
+// Tools test, run inside VS Code by runTest.js (PS1DEVCART_TEST_ONLY=tools, the C/C++ extension installed): the tools
 // are downloaded and installed by the extension in its storage (PCSX-Redux, the MIPS toolchain, PSn00bSDK, CMake,
 // Ninja), then a PsyQ and a PSn00bSDK project (in psyq/ and psn00b/) are built with them, without any path in the
 // settings, and the PSn00bSDK one debugged in the PCSX-Redux installed.
@@ -18,7 +18,7 @@ const ws = (...p) => path.join(folder().uri.fsPath, ...p);
 let storage;
 
 async function runTask(name) {
-    const tasks = await vscode.tasks.fetchTasks({ type: 'netyaroze' });
+    const tasks = await vscode.tasks.fetchTasks({ type: 'ps1devcart' });
     const task = tasks.find(t => t.name === name);
     assert.ok(task, `${name} task (tasks: ${tasks.map(t => t.name).join(', ')})`);
     const execution = await vscode.tasks.executeTask(task);
@@ -36,7 +36,7 @@ test('the tools are missing in a new profile (but ps1transfer comes with the ext
     const ext = vscode.extensions.getExtension('logi-26.ps1-dev-cart');
     await ext.activate();
     storage = path.join(ext.extensionPath, '..');   // (not used: the storage is the test profile's)
-    const status = await vscode.commands.executeCommand('netyaroze.toolStatus');
+    const status = await vscode.commands.executeCommand('ps1devcart.toolStatus');
     const byId = Object.fromEntries(status.map(t => [t.id, t]));
     console.log('        ' + status.map(t => `${t.id}: ${t.ok ? 'found' : 'missing'}`).join(', '));
     assert.ok(byId.ps1transfer.ok, 'ps1transfer: ' + byId.ps1transfer.where);
@@ -44,22 +44,22 @@ test('the tools are missing in a new profile (but ps1transfer comes with the ext
 });
 
 test('installs only the toolchains ticked (PSn00bSDK: not the emulator)', async () => {
-    const installed = await vscode.commands.executeCommand('netyaroze.installTools', ['psn00bsdk']);
+    const installed = await vscode.commands.executeCommand('ps1devcart.installTools', ['psn00bsdk']);
     console.log('        installed: ' + installed.join(', '));
     assert.ok(installed.includes('psn00bsdk'), 'PSn00bSDK installed');
     assert.ok(!installed.includes('redux'), 'not PCSX-Redux');
-    const status = await vscode.commands.executeCommand('netyaroze.toolStatus');
+    const status = await vscode.commands.executeCommand('ps1devcart.toolStatus');
     assert.ok(status.find(t => t.id === 'psn00bsdk').ok, 'PSn00bSDK found');
     assert.ok(!status.find(t => t.id === 'redux').ok, 'PCSX-Redux still missing');
-    assert.deepStrictEqual(await vscode.commands.executeCommand('netyaroze.installTools', ['psn00bsdk']), [],
+    assert.deepStrictEqual(await vscode.commands.executeCommand('ps1devcart.installTools', ['psn00bsdk']), [],
                            'nothing left to install in it');
 });
 
 for (const id of ['mips', 'cmake', 'ninja', 'redux']) {
     test(`installs ${id}`, async () => {
         const started = Date.now();
-        assert.strictEqual(await vscode.commands.executeCommand('netyaroze.installTool', id), true, 'installed and found');
-        const status = await vscode.commands.executeCommand('netyaroze.toolStatus');
+        assert.strictEqual(await vscode.commands.executeCommand('ps1devcart.installTool', id), true, 'installed and found');
+        const status = await vscode.commands.executeCommand('ps1devcart.toolStatus');
         const tool = status.find(t => t.id === id);
         console.log(`        ${tool.name}: ${tool.where} (${Math.round((Date.now() - started) / 1000)} s)`);
         assert.ok(tool.ok, 'found');
@@ -95,7 +95,7 @@ test('debugs the PSn00bSDK project in the installed PCSX-Redux', async () => {
         },
     });
     try {
-        assert.ok(await vscode.debug.startDebugging(folder(), { type: 'netyaroze', request: 'launch', name: 'test',
+        assert.ok(await vscode.debug.startDebugging(folder(), { type: 'ps1devcart', request: 'launch', name: 'test',
                                                                  project: 'psn00b' }), 'debugging started');
         const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('no stop within 120 s')), 120000));
         const { session, body } = await Promise.race([stopped, timeout]);

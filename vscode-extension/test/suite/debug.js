@@ -1,6 +1,6 @@
 // Debugging test, run inside VS Code by runTest.js (with the C/C++ extension
 // installed): debugs the template project in PCSX-Redux, or on a PlayStation
-// with a PS1 DEV CART (NETYAROZE_TEST_TARGET=devcart), stops at a breakpoint
+// with a PS1 DEV CART (PS1DEVCART_TEST_TARGET=devcart), stops at a breakpoint
 // and checks where it stopped.
 const assert = require('assert');
 const cp = require('child_process');
@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const vscode = require('vscode');
 
-const ON_CART = process.env.NETYAROZE_TEST_TARGET === 'devcart';
+const ON_CART = process.env.PS1DEVCART_TEST_TARGET === 'devcart';
 
 // The emulator still runs, or ps1transfer still holds the cartridge
 function emulatorsRunning() {
@@ -20,20 +20,20 @@ function emulatorsRunning() {
 async function run() {
     const folder = vscode.workspace.workspaceFolders[0];
     const main = vscode.Uri.file(path.join(folder.uri.fsPath, 'main.c'));
-    // The line to break on (NETYAROZE_TEST_BREAK: text on that line of main.c)
-    const breakText = process.env.NETYAROZE_TEST_BREAK || 'FntPrint(';
+    // The line to break on (PS1DEVCART_TEST_BREAK: text on that line of main.c)
+    const breakText = process.env.PS1DEVCART_TEST_BREAK || 'FntPrint(';
     const line = fs.readFileSync(main.fsPath, 'utf8').split('\n').findIndex(l => l.includes(breakText));
     assert.ok(line > 0, `"${breakText}" line in main.c`);
 
-    const config = vscode.workspace.getConfiguration('netyaroze');
+    const config = vscode.workspace.getConfiguration('ps1devcart');
     if (ON_CART) {
-        await config.update('ps1transferPath', process.env.NETYAROZE_TEST_PS1TRANSFER, vscode.ConfigurationTarget.Workspace);
+        await config.update('ps1transferPath', process.env.PS1DEVCART_TEST_PS1TRANSFER, vscode.ConfigurationTarget.Workspace);
     } else {
-        await config.update('emulatorPath', process.env.NETYAROZE_TEST_EMULATOR, vscode.ConfigurationTarget.Workspace);
+        await config.update('emulatorPath', process.env.PS1DEVCART_TEST_EMULATOR, vscode.ConfigurationTarget.Workspace);
     }
     await vscode.extensions.getExtension('logi-26.ps1-dev-cart').activate();
     if (ON_CART) {
-        await vscode.commands.executeCommand('netyaroze.selectCart', process.env.NETYAROZE_TEST_DEVCART);
+        await vscode.commands.executeCommand('ps1devcart.selectCart', process.env.PS1DEVCART_TEST_DEVCART);
     }
 
     vscode.debug.addBreakpoints([new vscode.SourceBreakpoint(new vscode.Location(main, new vscode.Position(line, 0)))]);
@@ -46,7 +46,7 @@ async function run() {
         createDebugAdapterTracker(s) {
             return {
                 onDidSendMessage(m) {
-                    if (m.type === 'event' && m.event === 'output' && process.env.NETYAROZE_TEST_LOG) {
+                    if (m.type === 'event' && m.event === 'output' && process.env.PS1DEVCART_TEST_LOG) {
                         process.stdout.write('  | ' + m.body.output);
                     }
                     if (m.type === 'event' && m.event === 'stopped') {
@@ -61,11 +61,11 @@ async function run() {
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('no stop within 120 s')), 120000));
 
     // (a launch configuration names the project; the command may ask for it)
-    const started = process.env.NETYAROZE_TEST_LOG || process.env.NETYAROZE_TEST_BREAK
-        ? await vscode.debug.startDebugging(folder, Object.assign({ type: 'netyaroze', request: 'launch', name: 'test', project: '',
-                                                                    debugLog: !!process.env.NETYAROZE_TEST_LOG },
+    const started = process.env.PS1DEVCART_TEST_LOG || process.env.PS1DEVCART_TEST_BREAK
+        ? await vscode.debug.startDebugging(folder, Object.assign({ type: 'ps1devcart', request: 'launch', name: 'test', project: '',
+                                                                    debugLog: !!process.env.PS1DEVCART_TEST_LOG },
                                                                   ON_CART ? { target: 'devcart' } : {}))
-        : await vscode.commands.executeCommand(ON_CART ? 'netyaroze.debugOnPs1' : 'netyaroze.debug');
+        : await vscode.commands.executeCommand(ON_CART ? 'ps1devcart.debugOnPs1' : 'ps1devcart.debug');
     assert.ok(started, 'debugging started');
     const stop = await Promise.race([stopped, timeout]);
     console.log('  stopped:', JSON.stringify(stop));
@@ -90,7 +90,7 @@ async function run() {
     const frame2 = trace2.stackFrames[0];
     console.log('  after step:', frame2.name, frame2.source && path.basename(frame2.source.path), frame2.line);
     assert.ok(frame2.source && /main\.c$/i.test(frame2.source.path), 'still in main.c');
-    if (!process.env.NETYAROZE_TEST_BREAK) {  // (in a loop, Step Over can go back up)
+    if (!process.env.PS1DEVCART_TEST_BREAK) {  // (in a loop, Step Over can go back up)
         assert.ok(frame2.line > top.line, `stepped to a later line (${frame2.line})`);
     }
 

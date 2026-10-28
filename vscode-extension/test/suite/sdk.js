@@ -1,5 +1,5 @@
 // PsyQ / PSn00bSDK project test, run inside VS Code by runTest.js (with the
-// C/C++ extension installed): a PSX.Dev PsyQ project (NETYAROZE_TEST_KIND=make)
+// C/C++ extension installed): a PSX.Dev PsyQ project (PS1DEVCART_TEST_KIND=make)
 // or the PSn00bSDK template (=cmake) is found, built on Windows, run on a PS1
 // DEV CART and debugged on it and in PCSX-Redux (each when its environment
 // variables are set).
@@ -9,10 +9,10 @@ const fs = require('fs');
 const path = require('path');
 const vscode = require('vscode');
 
-const KIND = process.env.NETYAROZE_TEST_KIND;
-const DEVCART = process.env.NETYAROZE_TEST_DEVCART;
-const PS1TRANSFER = process.env.NETYAROZE_TEST_PS1TRANSFER;
-const EMULATOR = process.env.NETYAROZE_TEST_EMULATOR;
+const KIND = process.env.PS1DEVCART_TEST_KIND;
+const DEVCART = process.env.PS1DEVCART_TEST_DEVCART;
+const PS1TRANSFER = process.env.PS1DEVCART_TEST_PS1TRANSFER;
+const EMULATOR = process.env.PS1DEVCART_TEST_EMULATOR;
 const BREAK = KIND === 'cmake' ? 'DrawSync(0);' : 'FntPrint("Code compiled';
 
 const tests = [];
@@ -24,7 +24,7 @@ const folder = () => vscode.workspace.workspaceFolders[0];
 const ws = (...p) => path.join(folder().uri.fsPath, ...p);
 
 async function runTask(name) {
-    const tasks = await vscode.tasks.fetchTasks({ type: 'netyaroze' });
+    const tasks = await vscode.tasks.fetchTasks({ type: 'ps1devcart' });
     const task = tasks.find(t => t.name === name);
     assert.ok(task, `${name} task (tasks: ${tasks.map(t => `${t.source}: ${t.name}`).join(', ')})`);
     const execution = await vscode.tasks.executeTask(task);
@@ -86,7 +86,7 @@ async function debugStop(command) {
 
 test('the project is found, with its kind', async () => {
     await vscode.extensions.getExtension('logi-26.ps1-dev-cart').activate();
-    const tasks = await vscode.tasks.fetchTasks({ type: 'netyaroze' });
+    const tasks = await vscode.tasks.fetchTasks({ type: 'ps1devcart' });
     const build = tasks.find(t => t.name === 'Build');
     assert.ok(build, 'Build task');
     assert.strictEqual(build.source, KIND === 'cmake' ? 'PSn00bSDK' : 'PsyQ / nugget');
@@ -130,13 +130,13 @@ test('compiler errors go to the Problems panel', async () => {
 
 test('Run on PS1 runs the program on the PS1 DEV CART', async () => {
     if (!DEVCART || !PS1TRANSFER) {
-        console.log('        (skipped: set NETYAROZE_TEST_DEVCART and NETYAROZE_TEST_PS1TRANSFER)');
+        console.log('        (skipped: set PS1DEVCART_TEST_DEVCART and PS1DEVCART_TEST_PS1TRANSFER)');
         return;
     }
-    const config = vscode.workspace.getConfiguration('netyaroze');
+    const config = vscode.workspace.getConfiguration('ps1devcart');
     await config.update('devcartTty', 'bios', vscode.ConfigurationTarget.Workspace);  // (no console: ps1transfer ends)
     try {
-        const execution = await vscode.commands.executeCommand('netyaroze.runOnPs1');
+        const execution = await vscode.commands.executeCommand('ps1devcart.runOnPs1');
         assert.ok(execution, 'task started');
         const code = await new Promise(resolve => {
             const listener = vscode.tasks.onDidEndTaskProcess(e => {
@@ -178,27 +178,27 @@ async function debugTest(command, image) {
 
 test('Debug on PS1 stops at a breakpoint (PS1 DEV CART)', async () => {
     if (!DEVCART || !PS1TRANSFER) {
-        console.log('        (skipped: set NETYAROZE_TEST_DEVCART and NETYAROZE_TEST_PS1TRANSFER)');
+        console.log('        (skipped: set PS1DEVCART_TEST_DEVCART and PS1DEVCART_TEST_PS1TRANSFER)');
         return;
     }
-    await debugTest('netyaroze.debugOnPs1', 'ps1transfer.exe');
+    await debugTest('ps1devcart.debugOnPs1', 'ps1transfer.exe');
 });
 
 test('Debug in the emulator stops at a breakpoint (PCSX-Redux)', async () => {
     if (!EMULATOR) {
-        console.log('        (skipped: set NETYAROZE_TEST_EMULATOR)');
+        console.log('        (skipped: set PS1DEVCART_TEST_EMULATOR)');
         return;
     }
-    await debugTest('netyaroze.debug', 'pcsx-redux.main');
+    await debugTest('ps1devcart.debug', 'pcsx-redux.main');
 });
 
 test('Debug Linked on Two PS1s: both stop at a breakpoint', async () => {
-    const second = process.env.NETYAROZE_TEST_DEVCART2;
+    const second = process.env.PS1DEVCART_TEST_DEVCART2;
     if (!DEVCART || !second || !PS1TRANSFER) {
-        console.log('        (skipped: set NETYAROZE_TEST_DEVCART, NETYAROZE_TEST_DEVCART2 and NETYAROZE_TEST_PS1TRANSFER)');
+        console.log('        (skipped: set PS1DEVCART_TEST_DEVCART, PS1DEVCART_TEST_DEVCART2 and PS1DEVCART_TEST_PS1TRANSFER)');
         return;
     }
-    const config = vscode.workspace.getConfiguration('netyaroze');
+    const config = vscode.workspace.getConfiguration('ps1devcart');
     await config.update('devcartSerial2', second, vscode.ConfigurationTarget.Workspace);
     await config.update('devcartLink', 'cable', vscode.ConfigurationTarget.Workspace);
     const main = vscode.Uri.file(ws('main.c'));
@@ -217,7 +217,7 @@ test('Debug Linked on Two PS1s: both stop at a breakpoint', async () => {
         },
     });
     try {
-        await vscode.commands.executeCommand('netyaroze.debugLinkedOnCarts');
+        await vscode.commands.executeCommand('ps1devcart.debugLinkedOnCarts');
         const end = Date.now() + 180000;
         while (stops.size < 2 && Date.now() < end) {
             await new Promise(r => setTimeout(r, 500));
@@ -243,10 +243,10 @@ test('Debug Linked on Two PS1s: both stop at a breakpoint', async () => {
 });
 
 async function run() {
-    const config = vscode.workspace.getConfiguration('netyaroze');
+    const config = vscode.workspace.getConfiguration('ps1devcart');
     await config.update('ps1transferPath', PS1TRANSFER || undefined, vscode.ConfigurationTarget.Workspace);
     await config.update('emulatorPath', EMULATOR || undefined, vscode.ConfigurationTarget.Workspace);
-    await config.update('psn00bsdkPath', process.env.NETYAROZE_TEST_PSN00BSDK || undefined, vscode.ConfigurationTarget.Workspace);
+    await config.update('psn00bsdkPath', process.env.PS1DEVCART_TEST_PSN00BSDK || undefined, vscode.ConfigurationTarget.Workspace);
     if (DEVCART) {
         await config.update('devcartSerial', DEVCART, vscode.ConfigurationTarget.Workspace);
     }

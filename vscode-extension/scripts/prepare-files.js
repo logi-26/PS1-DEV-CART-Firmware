@@ -35,6 +35,13 @@ copy(path.join(repo, 'example', '.gitignore'), path.join(template, 'gitignore'))
 for (const name of ['launch.json', 'settings.json']) {
     copy(path.join(repo, 'example', '.vscode', name), path.join(template, 'vscode', name));
 }
+// The example's VS Code files have the extension's earlier names ("netyaroze" debug type, "Net Yaroze extension",
+// before version 2.6)
+const launch = path.join(template, 'vscode', 'launch.json');
+fs.writeFileSync(launch, fs.readFileSync(launch, 'utf8').replace(/("type"\s*:\s*")netyaroze(")/g, '$1ps1devcart$2'));
+const vsSettings = path.join(template, 'vscode', 'settings.json');
+fs.writeFileSync(vsSettings, fs.readFileSync(vsSettings, 'utf8').replace(/the Net Yaroze extension's/g,
+                                                                         'the PS1 DEV CART extension\'s'));
 copy(path.join(repo, 'tools', 'png2tim.py'), path.join(ext, 'tools', 'png2tim.py'));
 copy(path.join(repo, 'tools', 'yaroze_debuginfo.py'), path.join(ext, 'tools', 'yaroze_debuginfo.py'));
 copy(path.join(repo, 'LICENSE'), path.join(ext, 'LICENSE'));

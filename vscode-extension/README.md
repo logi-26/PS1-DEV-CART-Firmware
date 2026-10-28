@@ -1,8 +1,11 @@
 # PS1 DEV CART for VS Code
 
-(Earlier name: *Net Yaroze*. The settings, commands, `launch.json` type and
-task type keep their `netyaroze` names, so existing settings, launch
-configurations, tasks and keybindings still work. Uninstall the earlier *Net
+(Earlier name: *Net Yaroze*. Since version 2.6 the settings, commands,
+`launch.json` type and task type are named `ps1devcart` (before:
+`netyaroze`). Settings made with an earlier version are still read, and a
+`launch.json` or `tasks.json` with the earlier names is offered an update when
+the folder is opened. Keybindings to the earlier command names need the new
+ones (`netyaroze.build` is now `ps1devcart.build`). Uninstall the earlier *Net
 Yaroze* extension before installing this one: both would add the same
 commands.)
 
@@ -89,6 +92,17 @@ in the project's folder. With several projects, the one containing the file
 being edited is used, otherwise you are asked (tasks of projects in
 subfolders show the folder, e.g. *Build (example)*).
 
+## Installing
+
+The extension is the `.vsix` file in the [release](https://github.com/logi-26/PS1-DEV-CART-Firmware/releases)
+zip (or build it: `npm run package` in this folder). In VS Code: **Extensions** view, **...** menu, **Install from VSIX...**, then choose
+the file; or from a terminal:
+
+    code --install-extension ps1-dev-cart-2.6.0.vsix
+
+It comes with `ps1transfer` and the PlayStation tools, so nothing else is needed to run and debug on a PS1 DEV
+CART. The PS1 DEV CART panel (activity bar) installs the toolchains a project needs.
+
 ## Requirements
 
 - Windows with WSL 2 and the Net Yaroze WSL build environment installed
@@ -112,16 +126,16 @@ PsyQ / PSn00bSDK projects need other tools, see below.
 | | Net Yaroze | PsyQ / PsyQo / nugget | PSn00bSDK (CMake) |
 |---|---|---|---|
 | Recognised by | `auto` script and a makefile | Makefile including nugget's `common.mk` (PSX.Dev templates), or with `TYPE = ps-exe`, or using PSn00bSDK | `CMakeLists.txt` with `psn00bsdk_add_executable` |
-| Built | in WSL: `make` | on Windows: `make BUILD=Debug` with the MIPS toolchain (`netyaroze.mipsToolchainPath`, PSX.Dev's by default) | on Windows: the `default` CMake preset (or PSn00bSDK's toolchain file), `cmake --build build`, with `netyaroze.psn00bsdkPath` |
+| Built | in WSL: `make` | on Windows: `make BUILD=Debug` with the MIPS toolchain (`ps1devcart.mipsToolchainPath`, PSX.Dev's by default) | on Windows: the `default` CMake preset (or PSn00bSDK's toolchain file), `cmake --build build`, with `ps1devcart.psn00bsdkPath` |
 | Program | `psx.exe` (yarexe, libps included) | `TARGET.ps-exe` of the Makefile | the PS-X EXE in `build/` |
 | Debug information | made from `main.exe` (`yaroze_debuginfo.py`) | `TARGET.elf` | the ELF next to it in `build/` |
 | GDB | `gdb-multiarch` in WSL | Windows `gdb-multiarch` of the MIPS toolchain (else WSL's) | the same |
 
 Every command works with every kind: Build, Clean, Rebuild, Run (in
-PCSX-Redux: `netyaroze.emulatorPath`, needed for PsyQ / PSn00bSDK projects),
+PCSX-Redux: `ps1devcart.emulatorPath`, needed for PsyQ / PSn00bSDK projects),
 Run on PS1, Debug (emulator and PS1 DEV CART), the link play commands and
 Reset. Build Models and the CD image commands are for Net Yaroze projects
-(their makefile targets). `netyaroze.buildConfiguration` chooses `Debug`
+(their makefile targets). `ps1devcart.buildConfiguration` chooses `Debug`
 (line-by-line debugging, the default) or `Release` for PsyQ / PSn00bSDK
 builds.
 
@@ -145,7 +159,7 @@ CMake and Ninja. *Install* next to a tool installs that tool alone, and *PS1
 DEV CART: Install Tools...* asks which toolchains to install. The ticked
 toolchains are remembered; until you change them, they are the ones of the
 workspace's projects. When a workspace opens, it offers to install the tools
-its projects need, and only those (`netyaroze.offerTools`).
+its projects need, and only those (`ps1devcart.offerTools`).
 
 | Toolchain | Its tools |
 |---|---|
@@ -191,7 +205,7 @@ PCSX-Redux, `PSN00BSDK_LIBS`, CMake in Program Files, the PATH.
 
 Set breakpoints in your C files, then start **PS1 DEV CART: Debug in
 Emulator**: the bug button at the top right of the editor, the **Debug**
-status bar button, or F5 with a `launch.json` of type `netyaroze` (below; new
+status bar button, or F5 with a `launch.json` of type `ps1devcart` (below; new
 projects have one). Without a `launch.json`, F5 asks for a debugger: choose
 *PS1 DEV CART (PCSX-Redux or a PlayStation)*; *PS1 DEV CART: Debug in PCSX-Redux* is also listed
 in the Run and Debug view. (Not the C/C++ extension's ▷ *Run/Debug C/C++
@@ -214,7 +228,7 @@ To keep the settings in `.vscode/launch.json` (e.g. to stop at `main`):
 {
     "version": "0.2.0",
     "configurations": [
-        { "type": "netyaroze", "request": "launch", "name": "PS1 DEV CART: Debug in PCSX-Redux", "stopAtEntry": true }
+        { "type": "ps1devcart", "request": "launch", "name": "PS1 DEV CART: Debug in PCSX-Redux", "stopAtEntry": true }
     ]
 }
 ```
@@ -237,7 +251,7 @@ What to expect (see the repo's `docs/debugging.md` for why):
   where there is no source to step through. The extension then lets the game
   run on to the next function of your program (or line of `main`) and stops
   there, usually a moment later. Turn this off with
-  `netyaroze.pauseInProgramCode`.
+  `ps1devcart.pauseInProgramCode`.
 - The emulator started for debugging is a separate one from **Run**; its
   window shows the game as usual.
 
@@ -250,18 +264,18 @@ each action, and the PS1 DEV CART cartridges connected to the computer:
 - **Build**.
 - **Emulator**: the emulator used for every kind of project (Net Yaroze,
   PsyQ, PsyQo, PSn00bSDK), with **Browse...** to choose it
-  (`netyaroze.emulatorPath`). Without one, PCSX-Redux installed from Tools.
+  (`ps1devcart.emulatorPath`). Without one, PCSX-Redux installed from Tools.
 - **Cart** and **Second cart**: the cartridges found (`ps1transfer -l`, looked
   for again every 15 seconds while the panel is shown, or with the refresh
   button). *Cart* is the one Run, Debug and Reset use
-  (`netyaroze.devcartSerial`), *Second cart* the other console of link play
-  (`netyaroze.devcartSerial2`): never the same cartridge (the Second cart
+  (`ps1devcart.devcartSerial`), *Second cart* the other console of link play
+  (`ps1devcart.devcartSerial2`): never the same cartridge (the Second cart
   list leaves out the Cart). *None* when not connected: no cart (Cart), fewer
   than two (Second cart, Link); the buttons using them are disabled then,
   the emulator ones stay. A cartridge another program has open (the
   PS1 Dev Cart Manager, a Run on PS1 terminal) is shown *(in use)*.
 - **Link**: how the two consoles of link play are linked
-  (`netyaroze.devcartLink`): *Cable* (a link cable: the game runs with the
+  (`ps1devcart.devcartLink`): *Cable* (a link cable: the game runs with the
   serial port TTY driver, like the Net Yaroze boot disc) or *USB link* (no
   cable: the same driver over the USB link, and ps1transfer's relay joins the
   two cartridges through the computer).
@@ -284,7 +298,7 @@ each action, and the PS1 DEV CART cartridges connected to the computer:
   folder (`.pcsx-link/` in the project), made from your usual PCSX-Redux
   settings; yours aren't changed.
 - **Debug Linked (Two Emulators)**: the same two emulators, each with its GDB
-  server (`netyaroze.gdbPort` and the next port), paused until two debug
+  server (`ps1devcart.gdbPort` and the next port), paused until two debug
   sessions (one per emulator, side by side in the Call Stack) run them.
 - **Run Linked on Two PS1s**: builds, then starts `psx.exe` on both carts at
   once (`ps1transfer -n CART -r -e -f psx.exe -c sio`, or `-c link`). With the
@@ -324,12 +338,12 @@ extension.
 With a PS1USB cartridge and the
 [PS1 DEV CART](https://github.com/logi-26/PS1-DEV-CART-Firmware) firmware,
 games run and debug on a real console. `ps1transfer`, the PS1 DEV CART tool,
-comes with the extension (`netyaroze.ps1transferPath` chooses another one);
+comes with the extension (`ps1devcart.ps1transferPath` chooses another one);
 three buttons are in the status bar.
 
 - **$(plug) cartridge** (*PS1 DEV CART: Select Cart...*): lists the
   cartridges connected to the computer by their USB serial number (e.g.
-  `A10PVL53`) and keeps the one you choose (`netyaroze.devcartSerial`), or
+  `A10PVL53`) and keeps the one you choose (`ps1devcart.devcartSerial`), or
   *First one found*. The button shows the cartridge in use.
 - **Run on PS1** (*PS1 DEV CART: Run on PS1*): builds, then runs
   `psx.exe` on that cartridge (`ps1transfer -r -e -f psx.exe -c`) in a
@@ -340,12 +354,12 @@ three buttons are in the status bar.
   configuration with `"target": "devcart"`):
 
 ```json
-{ "type": "netyaroze", "request": "launch", "name": "PS1 DEV CART: Debug on PS1", "target": "devcart" }
+{ "type": "ps1devcart", "request": "launch", "name": "PS1 DEV CART: Debug on PS1", "target": "devcart" }
 ```
 
   The extension builds the project and makes the debug symbols as above, then
   runs `ps1transfer -gdb`, which loads `psx.exe` on the console stopped at its
-  entry point and serves GDB on `netyaroze.gdbPort`. The console is reset
+  entry point and serves GDB on `ps1devcart.gdbPort`. The console is reset
   first if a game runs. GDB connects to it like to PCSX-Redux.
 
   - Any number of breakpoints, stepping, call stack, registers, memory.
@@ -357,48 +371,48 @@ three buttons are in the status bar.
   - `printf` appears in the Debug Console and in the PS1 DEV CART output.
   - Stopping the debugger resets the console to the PS1 DEV CART menu.
 
-`netyaroze.devcartTty` chooses where the game's TTY goes: `usb` (to the
+`ps1devcart.devcartTty` chooses where the game's TTY goes: `usb` (to the
 computer, the default), `sio` (the serial port driver of the Net Yaroze boot
 disc: link play over a link cable), `link` (the same driver over the USB link:
 link play without a cable, with `ps1transfer -relay` or the Link test page of
 the PS1 Dev Cart Manager) or `bios`. The earlier names (`"target": "ps1usb"`,
-`netyaroze.ps1usbSerial`, `netyaroze.ps1usbTty`) still work.
+`ps1devcart.ps1usbSerial`, `ps1devcart.ps1usbTty`) still work.
 
 ## Settings
 
 | Setting | Meaning |
 |---|---|
-| `netyaroze.emulatorPath` | The emulator of every kind of project (**Browse...** in the panel), e.g. `C:\pcsx-redux\pcsx-redux.exe`; Net Yaroze makefiles get it as `PCSX_REDUX`. Empty: PCSX-Redux installed from Tools (or PSX.Dev's). |
-| `netyaroze.wslDistribution` | WSL distribution with the build environment. Empty: the default one. |
-| `netyaroze.toolchainPath` | Where the toolchain is installed in WSL (default `/opt/yaroze`). |
-| `netyaroze.gdbPath` | GDB in WSL used for debugging (default `/usr/bin/gdb-multiarch`). |
-| `netyaroze.gdbPort` | Port of the GDB server (PCSX-Redux or ps1transfer) while debugging (default 3333). |
-| `netyaroze.ps1transferPath` | `ps1transfer.exe` of the PS1 DEV CART. Empty: the one that comes with the extension. |
-| `netyaroze.devcartSerial` | USB serial number of the PS1 DEV CART to use, set by the status bar's cartridge button (`ps1transfer -l` lists them). Empty: the first one found. |
-| `netyaroze.devcartTty` | TTY of the game on the PS1 DEV CART: `usb` (printf on this computer, default), `sio` (serial port driver, link cable), `link` (USB link, no cable) or `bios`. |
-| `netyaroze.devcartSerial2` | The second PS1 DEV CART of link play (**Run Linked on Two PS1s**, **Debug Linked on Two PS1s**), chosen in the panel. |
-| `netyaroze.devcartLink` | How the two consoles of link play are linked: `cable` (default) or `usb` (USB link relay, no cable; when debugging, the relay runs in the debug session). |
-| `netyaroze.mipsToolchainPath` | MIPS toolchain of PsyQ / nugget projects (`make`, GCC, `gdb-multiarch`). Empty: PSX.Dev's (`%APPDATA%\mips\mips\bin`). |
-| `netyaroze.psn00bsdkPath` | PSn00bSDK folder (release package) for PSn00bSDK projects. Empty: from `PSN00BSDK_LIBS`. |
-| `netyaroze.cmakePath` | `cmake` for PSn00bSDK projects. Empty: the one installed from Tools, `C:\Program Files\CMake\bin\cmake.exe`, else the PATH. |
-| `netyaroze.ninjaPath` | `ninja` for PSn00bSDK projects. Empty: the one installed from Tools, else the PATH. |
-| `netyaroze.offerTools` | Offer to install the tools a workspace's projects need when it opens (default on). |
-| `netyaroze.windowsGdbPath` | GDB on Windows for PsyQ / PSn00bSDK programs. Empty: the toolchain's `gdb-multiarch`, else WSL's. |
-| `netyaroze.buildConfiguration` | `Debug` (default) or `Release` build of PsyQ / PSn00bSDK projects. |
-| `netyaroze.pauseInProgramCode` | After **Pause** stops outside your code, run on to your program's next function and stop there (default on). |
-| `netyaroze.showStatusBar` | Show the Build, Run, Debug and Clean buttons (and the PS1 DEV CART ones). |
-| `netyaroze.offerIntelliSense` | Offer to configure IntelliSense for new projects. |
+| `ps1devcart.emulatorPath` | The emulator of every kind of project (**Browse...** in the panel), e.g. `C:\pcsx-redux\pcsx-redux.exe`; Net Yaroze makefiles get it as `PCSX_REDUX`. Empty: PCSX-Redux installed from Tools (or PSX.Dev's). |
+| `ps1devcart.wslDistribution` | WSL distribution with the build environment. Empty: the default one. |
+| `ps1devcart.toolchainPath` | Where the toolchain is installed in WSL (default `/opt/yaroze`). |
+| `ps1devcart.gdbPath` | GDB in WSL used for debugging (default `/usr/bin/gdb-multiarch`). |
+| `ps1devcart.gdbPort` | Port of the GDB server (PCSX-Redux or ps1transfer) while debugging (default 3333). |
+| `ps1devcart.ps1transferPath` | `ps1transfer.exe` of the PS1 DEV CART. Empty: the one that comes with the extension. |
+| `ps1devcart.devcartSerial` | USB serial number of the PS1 DEV CART to use, set by the status bar's cartridge button (`ps1transfer -l` lists them). Empty: the first one found. |
+| `ps1devcart.devcartTty` | TTY of the game on the PS1 DEV CART: `usb` (printf on this computer, default), `sio` (serial port driver, link cable), `link` (USB link, no cable) or `bios`. |
+| `ps1devcart.devcartSerial2` | The second PS1 DEV CART of link play (**Run Linked on Two PS1s**, **Debug Linked on Two PS1s**), chosen in the panel. |
+| `ps1devcart.devcartLink` | How the two consoles of link play are linked: `cable` (default) or `usb` (USB link relay, no cable; when debugging, the relay runs in the debug session). |
+| `ps1devcart.mipsToolchainPath` | MIPS toolchain of PsyQ / nugget projects (`make`, GCC, `gdb-multiarch`). Empty: PSX.Dev's (`%APPDATA%\mips\mips\bin`). |
+| `ps1devcart.psn00bsdkPath` | PSn00bSDK folder (release package) for PSn00bSDK projects. Empty: from `PSN00BSDK_LIBS`. |
+| `ps1devcart.cmakePath` | `cmake` for PSn00bSDK projects. Empty: the one installed from Tools, `C:\Program Files\CMake\bin\cmake.exe`, else the PATH. |
+| `ps1devcart.ninjaPath` | `ninja` for PSn00bSDK projects. Empty: the one installed from Tools, else the PATH. |
+| `ps1devcart.offerTools` | Offer to install the tools a workspace's projects need when it opens (default on). |
+| `ps1devcart.windowsGdbPath` | GDB on Windows for PsyQ / PSn00bSDK programs. Empty: the toolchain's `gdb-multiarch`, else WSL's. |
+| `ps1devcart.buildConfiguration` | `Debug` (default) or `Release` build of PsyQ / PSn00bSDK projects. |
+| `ps1devcart.pauseInProgramCode` | After **Pause** stops outside your code, run on to your program's next function and stop there (default on). |
+| `ps1devcart.showStatusBar` | Show the Build, Run, Debug and Clean buttons (and the PS1 DEV CART ones). |
+| `ps1devcart.offerIntelliSense` | Offer to configure IntelliSense for new projects. |
 
 ## Using the tasks in tasks.json
 
-The tasks have the type `netyaroze`, e.g. to make **Run** a task you can bind
+The tasks have the type `ps1devcart`, e.g. to make **Run** a task you can bind
 to a key:
 
 ```json
 {
     "version": "2.0.0",
     "tasks": [
-        { "type": "netyaroze", "target": "run", "label": "Run game" }
+        { "type": "ps1devcart", "target": "run", "label": "Run game" }
     ]
 }
 ```
@@ -407,14 +421,14 @@ to a key:
 `iso`, `runIso` (`make run-iso`). For a
 project in a subfolder add `"project": "example"` (the folder, relative to
 the workspace folder). For your own tasks, the problem matcher is
-`$netyaroze-gcc`.
+`$ps1devcart-gcc`.
 
 ## Notes
 
 - GCC 2.8.1 reports no column numbers, so errors point at the start of the
   line.
 - **Run** keeps running until the emulator is closed. Before starting, it
-  checks that the emulator exists (the `netyaroze.emulatorPath` setting, or
+  checks that the emulator exists (the `ps1devcart.emulatorPath` setting, or
   the one the makefile's `run` target starts); if not, it offers to choose it
   and saves it in the setting. *PS1 DEV CART: Choose Emulator...* does the same
   at any time.
@@ -434,18 +448,18 @@ Packaging copies the New Project template and the tools from the
 [Net Yaroze WSL build environment](https://github.com/logi-26/Net-Yaroze-WSL-Build-Environment)
 repo: the folder above the extension when it is in that repo, otherwise
 `Net-Yaroze-WSL-Build-Environment` next to the repo holding it (e.g. next to
-the PS1 DEV CART firmware repo), or the folder given with `NETYAROZE_REPO`.
+the PS1 DEV CART firmware repo), or the folder given with `PS1DEVCART_REPO`.
 
 To include the debugging test (it starts PCSX-Redux), set
-`NETYAROZE_TEST_EMULATOR` to the path of `pcsx-redux.exe` first. On a PS1 DEV
-CART: `NETYAROZE_TEST_DEVCART` (its USB serial number) and
-`NETYAROZE_TEST_PS1TRANSFER`; with a second cartridge
-(`NETYAROZE_TEST_DEVCART2`), link play on two consoles is tested too (Run
-Linked on Two PS1s, Reset, Debug Linked on Two PS1s). `NETYAROZE_TEST_DEBUG`
+`PS1DEVCART_TEST_EMULATOR` to the path of `pcsx-redux.exe` first. On a PS1 DEV
+CART: `PS1DEVCART_TEST_DEVCART` (its USB serial number) and
+`PS1DEVCART_TEST_PS1TRANSFER`; with a second cartridge
+(`PS1DEVCART_TEST_DEVCART2`), link play on two consoles is tested too (Run
+Linked on Two PS1s, Reset, Debug Linked on Two PS1s). `PS1DEVCART_TEST_DEBUG`
 (`emulator`, `devcart`, `linked`, `linkedcarts`) runs only that debugging
-test. PsyQ / PSn00bSDK projects: `NETYAROZE_TEST_PSYQ` (a PSX.Dev PsyQ
-project, e.g. the cube template) and `NETYAROZE_TEST_PSN00BSDK` (the PSn00bSDK
-folder: its template is used); `NETYAROZE_TEST_ONLY=sdk` runs only them.
+test. PsyQ / PSn00bSDK projects: `PS1DEVCART_TEST_PSYQ` (a PSX.Dev PsyQ
+project, e.g. the cube template) and `PS1DEVCART_TEST_PSN00BSDK` (the PSn00bSDK
+folder: its template is used); `PS1DEVCART_TEST_ONLY=sdk` runs only them.
 
 Install the `.vsix` with *Extensions > ... > Install from VSIX...*, or
 `code --install-extension ps1-dev-cart-2.1.0.vsix`.

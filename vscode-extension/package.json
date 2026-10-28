@@ -2,7 +2,7 @@
     "name": "ps1-dev-cart",
     "displayName": "PS1 DEV CART",
     "description": "Build, run and debug PlayStation games from VS Code: Net Yaroze (WSL build environment), PsyQ / PsyQo (PSX.Dev templates) and PSn00bSDK projects, in PCSX-Redux or on a PlayStation with a PS1 DEV CART (link play on two emulators or two consoles included).",
-    "version": "2.5.2",
+    "version": "2.6.0",
     "publisher": "logi-26",
     "license": "GPL-3.0-only",
     "repository": { "type": "git", "url": "https://github.com/logi-26/PS1-DEV-CART-Firmware", "directory": "vscode-extension" },
@@ -17,58 +17,58 @@
         "workspaceContains:**/CMakeLists.txt",
         "workspaceContains:**/makefile",
         "workspaceContains:**/Makefile",
-        "onDebugResolve:netyaroze",
+        "onDebugResolve:ps1devcart",
         "onDebugInitialConfigurations",
-        "onDebugDynamicConfigurations:netyaroze",
-        "onView:netyaroze.panel"
+        "onDebugDynamicConfigurations:ps1devcart",
+        "onView:ps1devcart.panel"
     ],
     "contributes": {
         "commands": [
-            { "command": "netyaroze.build", "title": "Build", "category": "PS1 DEV CART", "icon": "$(tools)" },
-            { "command": "netyaroze.clean", "title": "Clean", "category": "PS1 DEV CART", "icon": "$(trash)" },
-            { "command": "netyaroze.rebuild", "title": "Rebuild", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.run", "title": "Run in Emulator", "category": "PS1 DEV CART", "icon": "$(play)" },
-            { "command": "netyaroze.runLinked", "title": "Run Linked (Two Emulators)", "category": "PS1 DEV CART", "icon": "$(link)" },
-            { "command": "netyaroze.debug", "title": "Debug in Emulator", "category": "PS1 DEV CART", "icon": "$(debug-alt)" },
-            { "command": "netyaroze.runOnPs1", "title": "Run on PS1", "category": "PS1 DEV CART", "icon": "$(play-circle)" },
-            { "command": "netyaroze.debugOnPs1", "title": "Debug on PS1", "category": "PS1 DEV CART", "icon": "$(debug)" },
-            { "command": "netyaroze.selectCart", "title": "Select Cart...", "category": "PS1 DEV CART", "icon": "$(plug)" },
-            { "command": "netyaroze.buildModels", "title": "Build Models (RSD to TMD)", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.buildIso", "title": "Build CD Image", "category": "PS1 DEV CART", "icon": "$(save-as)" },
-            { "command": "netyaroze.runIso", "title": "Run CD Image in Emulator", "category": "PS1 DEV CART", "icon": "$(play-circle)" },
-            { "command": "netyaroze.chooseEmulator", "title": "Choose Emulator...", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.configureIntelliSense", "title": "Configure IntelliSense for libps", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.newProject", "title": "New Project...", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.newFromTemplate", "title": "New Project from Template...", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.convertPngToTim", "title": "Convert PNG to TIM...", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.debugLinked", "title": "Debug Linked (Two Emulators)", "category": "PS1 DEV CART", "icon": "$(debug-alt)" },
-            { "command": "netyaroze.runLinkedOnCarts", "title": "Run Linked on Two PS1s", "category": "PS1 DEV CART", "icon": "$(link)" },
-            { "command": "netyaroze.debugLinkedOnCarts", "title": "Debug Linked on Two PS1s", "category": "PS1 DEV CART", "icon": "$(debug)" },
-            { "command": "netyaroze.stopRelay", "title": "Stop the USB Link Relay", "category": "PS1 DEV CART" },
-            { "command": "netyaroze.resetCart", "title": "Reset PS1", "category": "PS1 DEV CART", "icon": "$(debug-restart)" },
-            { "command": "netyaroze.selectSecondCart", "title": "Select Second Cart... (link play)", "category": "PS1 DEV CART", "icon": "$(plug)" },
-            { "command": "netyaroze.refreshCarts", "title": "Look for Cartridges", "category": "PS1 DEV CART", "icon": "$(refresh)" },
-            { "command": "netyaroze.installTools", "title": "Install Tools...", "category": "PS1 DEV CART", "icon": "$(cloud-download)" }
+            { "command": "ps1devcart.build", "title": "Build", "category": "PS1 DEV CART", "icon": "$(tools)" },
+            { "command": "ps1devcart.clean", "title": "Clean", "category": "PS1 DEV CART", "icon": "$(trash)" },
+            { "command": "ps1devcart.rebuild", "title": "Rebuild", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.run", "title": "Run in Emulator", "category": "PS1 DEV CART", "icon": "$(play)" },
+            { "command": "ps1devcart.runLinked", "title": "Run Linked (Two Emulators)", "category": "PS1 DEV CART", "icon": "$(link)" },
+            { "command": "ps1devcart.debug", "title": "Debug in Emulator", "category": "PS1 DEV CART", "icon": "$(debug-alt)" },
+            { "command": "ps1devcart.runOnPs1", "title": "Run on PS1", "category": "PS1 DEV CART", "icon": "$(play-circle)" },
+            { "command": "ps1devcart.debugOnPs1", "title": "Debug on PS1", "category": "PS1 DEV CART", "icon": "$(debug)" },
+            { "command": "ps1devcart.selectCart", "title": "Select Cart...", "category": "PS1 DEV CART", "icon": "$(plug)" },
+            { "command": "ps1devcart.buildModels", "title": "Build Models (RSD to TMD)", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.buildIso", "title": "Build CD Image", "category": "PS1 DEV CART", "icon": "$(save-as)" },
+            { "command": "ps1devcart.runIso", "title": "Run CD Image in Emulator", "category": "PS1 DEV CART", "icon": "$(play-circle)" },
+            { "command": "ps1devcart.chooseEmulator", "title": "Choose Emulator...", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.configureIntelliSense", "title": "Configure IntelliSense for libps", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.newProject", "title": "New Project...", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.newFromTemplate", "title": "New Project from Template...", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.convertPngToTim", "title": "Convert PNG to TIM...", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.debugLinked", "title": "Debug Linked (Two Emulators)", "category": "PS1 DEV CART", "icon": "$(debug-alt)" },
+            { "command": "ps1devcart.runLinkedOnCarts", "title": "Run Linked on Two PS1s", "category": "PS1 DEV CART", "icon": "$(link)" },
+            { "command": "ps1devcart.debugLinkedOnCarts", "title": "Debug Linked on Two PS1s", "category": "PS1 DEV CART", "icon": "$(debug)" },
+            { "command": "ps1devcart.stopRelay", "title": "Stop the USB Link Relay", "category": "PS1 DEV CART" },
+            { "command": "ps1devcart.resetCart", "title": "Reset PS1", "category": "PS1 DEV CART", "icon": "$(debug-restart)" },
+            { "command": "ps1devcart.selectSecondCart", "title": "Select Second Cart... (link play)", "category": "PS1 DEV CART", "icon": "$(plug)" },
+            { "command": "ps1devcart.refreshCarts", "title": "Look for Cartridges", "category": "PS1 DEV CART", "icon": "$(refresh)" },
+            { "command": "ps1devcart.installTools", "title": "Install Tools...", "category": "PS1 DEV CART", "icon": "$(cloud-download)" }
         ],
-        "keybindings": [{ "command": "netyaroze.build", "key": "ctrl+shift+b", "mac": "cmd+shift+b", "when": "netyaroze.hasProject" }],
+        "keybindings": [{ "command": "ps1devcart.build", "key": "ctrl+shift+b", "mac": "cmd+shift+b", "when": "ps1devcart.hasProject" }],
         "menus": {
             "editor/title": [
-                { "command": "netyaroze.build", "when": "netyaroze.hasProject && resourceScheme == file", "group": "navigation@90" },
-                { "command": "netyaroze.run", "when": "netyaroze.hasProject && resourceScheme == file", "group": "navigation@91" },
-                { "command": "netyaroze.runLinked", "when": "netyaroze.hasProject && resourceScheme == file", "group": "navigation@92" },
-                { "command": "netyaroze.debug", "when": "netyaroze.hasProject && resourceScheme == file && !inDebugMode", "group": "navigation@93" }
+                { "command": "ps1devcart.build", "when": "ps1devcart.hasProject && resourceScheme == file", "group": "navigation@90" },
+                { "command": "ps1devcart.run", "when": "ps1devcart.hasProject && resourceScheme == file", "group": "navigation@91" },
+                { "command": "ps1devcart.runLinked", "when": "ps1devcart.hasProject && resourceScheme == file", "group": "navigation@92" },
+                { "command": "ps1devcart.debug", "when": "ps1devcart.hasProject && resourceScheme == file && !inDebugMode", "group": "navigation@93" }
             ],
-            "explorer/context": [{ "command": "netyaroze.convertPngToTim", "when": "resourceExtname =~ /^\\.png$/i", "group": "netyaroze@1" }],
+            "explorer/context": [{ "command": "ps1devcart.convertPngToTim", "when": "resourceExtname =~ /^\\.png$/i", "group": "ps1devcart@1" }],
             "commandPalette": [
-                { "command": "netyaroze.buildIso", "when": "netyaroze.hasIsoProject" },
-                { "command": "netyaroze.runIso", "when": "netyaroze.hasIsoProject" },
-                { "command": "netyaroze.convertPngToTim", "when": "resourceExtname =~ /^\\.png$/i" }
+                { "command": "ps1devcart.buildIso", "when": "ps1devcart.hasIsoProject" },
+                { "command": "ps1devcart.runIso", "when": "ps1devcart.hasIsoProject" },
+                { "command": "ps1devcart.convertPngToTim", "when": "resourceExtname =~ /^\\.png$/i" }
             ],
-            "view/title": [{ "command": "netyaroze.refreshCarts", "when": "view == netyaroze.panel", "group": "navigation" }]
+            "view/title": [{ "command": "ps1devcart.refreshCarts", "when": "view == ps1devcart.panel", "group": "navigation" }]
         },
         "taskDefinitions": [
             {
-                "type": "netyaroze",
+                "type": "ps1devcart",
                 "required": ["target"],
                 "properties": {
                     "target": {
@@ -86,7 +86,7 @@
         "breakpoints": [{ "language": "c" }],
         "debuggers": [
             {
-                "type": "netyaroze",
+                "type": "ps1devcart",
                 "label": "PS1 DEV CART (PCSX-Redux or a PlayStation)",
                 "languages": ["c"],
                 "configurationAttributes": {
@@ -114,26 +114,26 @@
                         }
                     }
                 },
-                "initialConfigurations": [{ "type": "netyaroze", "request": "launch", "name": "PS1 DEV CART: Debug in PCSX-Redux" }],
+                "initialConfigurations": [{ "type": "ps1devcart", "request": "launch", "name": "PS1 DEV CART: Debug in PCSX-Redux" }],
                 "configurationSnippets": [
                     {
                         "label": "PS1 DEV CART: Debug on PS1",
                         "description": "Build, load the program on a PlayStation with a PS1 DEV CART cartridge and debug with gdb-multiarch in WSL",
-                        "body": { "type": "netyaroze", "request": "launch", "name": "PS1 DEV CART: Debug on PS1", "target": "devcart" }
+                        "body": { "type": "ps1devcart", "request": "launch", "name": "PS1 DEV CART: Debug on PS1", "target": "devcart" }
                     },
                     {
                         "label": "PS1 DEV CART: Debug in PCSX-Redux",
                         "description": "Build, start PCSX-Redux and debug with gdb-multiarch in WSL",
-                        "body": { "type": "netyaroze", "request": "launch", "name": "PS1 DEV CART: Debug in PCSX-Redux" }
+                        "body": { "type": "ps1devcart", "request": "launch", "name": "PS1 DEV CART: Debug in PCSX-Redux" }
                     }
                 ]
             }
         ],
         "problemMatchers": [
             {
-                "name": "netyaroze-gcc",
+                "name": "ps1devcart-gcc",
                 "label": "Net Yaroze GCC",
-                "owner": "netyaroze",
+                "owner": "ps1devcart",
                 "source": "gcc",
                 "fileLocation": ["search", { "include": ["${workspaceFolder}"], "exclude": ["**/node_modules/**", "**/.git/**", "**/.vscode-test/**"] }],
                 "severity": "error",
@@ -148,7 +148,7 @@
             {
                 "name": "ps1-gcc",
                 "label": "PlayStation GCC (PsyQ / PSn00bSDK)",
-                "owner": "netyaroze",
+                "owner": "ps1devcart",
                 "source": "gcc",
                 "fileLocation": ["autoDetect", "${workspaceFolder}"],
                 "pattern": {
@@ -164,74 +164,74 @@
         "configuration": {
             "title": "PS1 DEV CART",
             "properties": {
-                "netyaroze.emulatorPath": {
+                "ps1devcart.emulatorPath": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "The emulator (PCSX-Redux) for every kind of project (Net Yaroze, PsyQ, PsyQo, PSn00bSDK): **Run**, **Run Linked**, **Run CD Image** and the debugger (e.g. `C:\\pcsx-redux\\pcsx-redux.exe`; the **Browse...** button of the panel sets it). Net Yaroze makefiles get it as `PCSX_REDUX`. Empty: PCSX-Redux installed by the extension (Tools in the panel) or by PSX.Dev."
                 },
-                "netyaroze.wslDistribution": {
+                "ps1devcart.wslDistribution": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "WSL distribution with the build environment installed. Empty: the default distribution."
                 },
-                "netyaroze.toolchainPath": {
+                "ps1devcart.toolchainPath": {
                     "type": "string",
                     "default": "/opt/yaroze",
                     "markdownDescription": "Where the toolchain is installed in WSL (used to find the SDK headers for IntelliSense)."
                 },
-                "netyaroze.gdbPath": {
+                "ps1devcart.gdbPath": {
                     "type": "string",
                     "default": "/usr/bin/gdb-multiarch",
                     "markdownDescription": "GDB in WSL used for debugging (`sudo apt install gdb-multiarch`)."
                 },
-                "netyaroze.gdbPort": { "type": "number", "default": 3333, "markdownDescription": "Port of PCSX-Redux's GDB server while debugging." },
-                "netyaroze.mipsToolchainPath": {
+                "ps1devcart.gdbPort": { "type": "number", "default": 3333, "markdownDescription": "Port of PCSX-Redux's GDB server while debugging." },
+                "ps1devcart.mipsToolchainPath": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "Folder of the MIPS toolchain for PsyQ / PsyQo / nugget projects (`make`, `mipsel-none-elf-gcc`, `gdb-multiarch`), e.g. the one PSX.Dev installs. Empty: `%APPDATA%\\mips\\mips\\bin` (PSX.Dev), else the PATH."
                 },
-                "netyaroze.psn00bsdkPath": {
+                "ps1devcart.psn00bsdkPath": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "PSn00bSDK folder (the release package, with `bin` and `lib\\libpsn00b`) for PSn00bSDK projects (`PSN00BSDK_LIBS` is set from it). Empty: from the `PSN00BSDK_LIBS` environment variable."
                 },
-                "netyaroze.cmakePath": {
+                "ps1devcart.cmakePath": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "`cmake` for PSn00bSDK projects (CMake, with Ninja). Empty: `C:\\Program Files\\CMake\\bin\\cmake.exe` when installed, else `cmake` from the PATH."
                 },
-                "netyaroze.ninjaPath": {
+                "ps1devcart.ninjaPath": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "`ninja` (or its folder) for PSn00bSDK projects. Empty: the one installed by the extension (Tools in the panel), else the PATH."
                 },
-                "netyaroze.offerTools": {
+                "ps1devcart.offerTools": {
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Offer to install the tools a workspace's projects need (MIPS toolchain, PSn00bSDK, CMake, Ninja...) when it is opened."
                 },
-                "netyaroze.windowsGdbPath": {
+                "ps1devcart.windowsGdbPath": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "GDB on Windows for debugging PsyQ / PSn00bSDK programs (e.g. PSX.Dev's `gdb-multiarch.exe`). Empty: the one of the MIPS toolchain when there is one, else `gdb-multiarch` in WSL (`netyaroze.gdbPath`)."
+                    "markdownDescription": "GDB on Windows for debugging PsyQ / PSn00bSDK programs (e.g. PSX.Dev's `gdb-multiarch.exe`). Empty: the one of the MIPS toolchain when there is one, else `gdb-multiarch` in WSL (`ps1devcart.gdbPath`)."
                 },
-                "netyaroze.buildConfiguration": {
+                "ps1devcart.buildConfiguration": {
                     "type": "string",
                     "enum": ["Debug", "Release"],
                     "default": "Debug",
                     "markdownDescription": "Build of PsyQ / PSn00bSDK projects: `Debug` (`make BUILD=Debug`, `CMAKE_BUILD_TYPE=Debug`: line-by-line debugging) or `Release` (optimised)."
                 },
-                "netyaroze.ps1transferPath": {
+                "ps1devcart.ps1transferPath": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "Path of `ps1transfer`, the PS1 DEV CART tool. Empty: the one that comes with the extension."
                 },
-                "netyaroze.devcartSerial": {
+                "ps1devcart.devcartSerial": {
                     "type": "string",
                     "default": "",
                     "markdownDescription": "USB serial number of the PS1 DEV CART to run and debug on, chosen with **PS1 DEV CART: Select Cart...** (the cartridge button in the status bar; `ps1transfer -l` lists them). Empty: the first one found."
                 },
-                "netyaroze.devcartTty": {
+                "ps1devcart.devcartTty": {
                     "type": "string",
                     "enum": ["usb", "sio", "link", "bios"],
                     "enumDescriptions": [
@@ -243,12 +243,12 @@
                     "default": "usb",
                     "markdownDescription": "TTY (printf, `tty:`) of the game on a PS1 DEV CART."
                 },
-                "netyaroze.devcartSerial2": {
+                "ps1devcart.devcartSerial2": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "USB serial number of the **second** PS1 DEV CART, for link play on two consoles (**Run Linked on Two PS1s**, **Debug Linked on Two PS1s**): chosen in the PS1 DEV CART panel or with **Net Yaroze: Select Second Cart...**."
+                    "markdownDescription": "USB serial number of the **second** PS1 DEV CART, for link play on two consoles (**Run Linked on Two PS1s**, **Debug Linked on Two PS1s**): chosen in the PS1 DEV CART panel or with **PS1 DEV CART: Select Second Cart...**."
                 },
-                "netyaroze.devcartLink": {
+                "ps1devcart.devcartLink": {
                     "type": "string",
                     "enum": ["cable", "usb"],
                     "enumDescriptions": [
@@ -258,35 +258,25 @@
                     "default": "cable",
                     "markdownDescription": "How the two consoles of link play are linked (**Run Linked on Two PS1s**, **Debug Linked on Two PS1s**)."
                 },
-                "netyaroze.ps1usbSerial": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDeprecationMessage": "Replaced by `netyaroze.devcartSerial` (still used when that one isn't set)."
-                },
-                "netyaroze.ps1usbTty": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDeprecationMessage": "Replaced by `netyaroze.devcartTty` (still used when that one isn't set)."
-                },
-                "netyaroze.pauseInProgramCode": {
+                "ps1devcart.pauseInProgramCode": {
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "When **Pause** stops the game outside your code (in the interrupt handler or libps/BIOS code, where there is no source and stepping fails), run on to the next function of your program and stop there."
                 },
-                "netyaroze.showStatusBar": {
+                "ps1devcart.showStatusBar": {
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Show Build, Run, Run Linked (projects with a `link` target), Debug and Clean buttons in the status bar."
                 },
-                "netyaroze.offerIntelliSense": {
+                "ps1devcart.offerIntelliSense": {
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Offer to configure IntelliSense when a Net Yaroze project without a C/C++ configuration is opened."
                 }
             }
         },
-        "viewsContainers": { "activitybar": [{ "id": "netyaroze", "title": "PS1 DEV CART", "icon": "media/devcart.svg" }] },
-        "views": { "netyaroze": [{ "type": "webview", "id": "netyaroze.panel", "name": "Controls" }] }
+        "viewsContainers": { "activitybar": [{ "id": "ps1devcart", "title": "PS1 DEV CART", "icon": "media/devcart.svg" }] },
+        "views": { "ps1devcart": [{ "type": "webview", "id": "ps1devcart.panel", "name": "Controls" }] }
     },
     "scripts": {
         "prepare-files": "node scripts/prepare-files.js",

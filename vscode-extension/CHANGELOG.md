@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.6.0
+
+- **Named PS1 DEV CART everywhere**: the settings, commands, views, `launch.json` debug type, task type and problem
+  matcher are named `ps1devcart` instead of `netyaroze` (the extension's name when it was only for Net Yaroze), e.g.
+  `ps1devcart.emulatorPath`, `ps1devcart.build`, `"type": "ps1devcart"`, `$ps1devcart-gcc`.
+  - Settings made with earlier versions (`netyaroze.*`) are still read when the new one isn't set; changes are saved
+    with the new names.
+  - A workspace whose `launch.json` or `tasks.json` has the earlier names is offered an update when it is opened.
+  - Keybindings to the earlier command names need the new ones.
+  - The settings `netyaroze.ps1usbSerial` and `netyaroze.ps1usbTty` (replaced by the devcart ones in 2.0) are no
+    longer listed, but still read.
+- The bundled `ps1transfer` sends each upload packet in one USB write (uploads about 4% faster).
+
 ## 2.5.2
 
 - **Link play of unmodified Net Yaroze games in the emulator**: Run Linked and Debug Linked run a copy of `psx.exe`

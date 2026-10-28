@@ -6,8 +6,9 @@
 // Projects: Net Yaroze (an 'auto' script (siocons batch file) and a makefile,
 // built in WSL), PsyQ / PsyQo (nugget makefiles, e.g. the PSX.Dev templates)
 // and PSn00bSDK (CMake or makefiles), built on Windows. The settings, commands
-// and debug/task types keep their earlier "netyaroze" names (the extension was
-// "Net Yaroze" before).
+// and debug/task types are named "ps1devcart" (before version 2.6: "netyaroze",
+// from when the extension was "Net Yaroze"): settings of the earlier name are
+// still read, and launch.json/tasks.json of the earlier name are offered an update.
 
 const vscode = require('vscode');
 const cp = require('child_process');
@@ -16,8 +17,8 @@ const path = require('path');
 const tools = require('./toolchains');
 const projectTemplates = require('./projecttemplates');
 
-const TASK_TYPE = 'netyaroze';
-const MATCHER = '$netyaroze-gcc';
+const TASK_TYPE = 'ps1devcart';
+const MATCHER = '$ps1devcart-gcc';
 const MATCHER_SDK = '$ps1-gcc';   // PsyQ/PSn00bSDK builds on Windows (paths can be absolute: C:/...)
 
 // Make targets of each task; 'rebuild' relies on the usual 'all' target.
@@ -52,8 +53,70 @@ let output;
 // WSL helpers
 // ---------------------------------------------------------------------------
 
+// Settings "ps1devcart.*"; one not set is read from its earlier name "netyaroze.*" (before version 2.6), so the
+// settings made with earlier versions keep working. Changes are saved with the new name.
+const SETTINGS = 'ps1devcart';
+const OLD_SETTINGS = 'netyaroze';
+
+const isSet = info => !!info && [info.workspaceFolderValue, info.workspaceValue, info.globalValue].some(v => v !== undefined);
+
 function settings() {
-    return vscode.workspace.getConfiguration('netyaroze');
+    const current = vscode.workspace.getConfiguration(SETTINGS);
+    const old = vscode.workspace.getConfiguration(OLD_SETTINGS);
+    const oldValue = key => {
+        if (isSet(current.inspect(key))) {
+            return undefined;
+        }
+        const info = old.inspect(key);     // (no longer declared: may come back empty, the value is still there)
+        return isSet(info) ? info : (old.get(key) !== undefined ? { key, globalValue: old.get(key) } : undefined);
+    };
+    return {
+        get: (key, fallback) => {
+            const earlier = oldValue(key);
+            return earlier ? old.get(key, fallback) : current.get(key, fallback);
+        },
+        inspect: key => oldValue(key) || current.inspect(key),
+        update: (key, value, target) => current.update(key, value, target),
+    };
+}
+
+const affectsSettings = e => e.affectsConfiguration(SETTINGS) || e.affectsConfiguration(OLD_SETTINGS);
+
+// launch.json / tasks.json written by versions before 2.6 ("type": "netyaroze", "$netyaroze-gcc"): an update to the
+// new names is offered (VS Code doesn't know the earlier types any more)
+const OLD_TYPE = /("type"\s*:\s*")netyaroze(")/g;
+const OLD_MATCHER = /\$netyaroze-gcc/g;
+
+async function offerNewNames() {
+    const files = [];
+    for (const folder of vscode.workspace.workspaceFolders || []) {
+        for (const name of ['launch.json', 'tasks.json']) {
+            const file = path.join(folder.uri.fsPath, '.vscode', name);
+            let text;
+            try {
+                text = fs.readFileSync(file, 'utf8');
+            } catch {
+                continue;
+            }
+            if (text.search(OLD_TYPE) >= 0 || text.search(OLD_MATCHER) >= 0) {
+                files.push({ file, text });
+            }
+        }
+    }
+    if (!files.length) {
+        return;
+    }
+    const names = files.map(f => path.relative(path.dirname(path.dirname(f.file)), f.file)).join(', ');
+    const choice = await vscode.window.showInformationMessage(
+        `${names}: written by an earlier version of the PS1 DEV CART extension ("netyaroze" names). Update them to the ` +
+        'new names ("ps1devcart"), so that Run and Debug and the tasks work?', 'Update', 'Not now');
+    if (choice !== 'Update') {
+        return;
+    }
+    for (const { file, text } of files) {
+        fs.writeFileSync(file, text.replace(OLD_TYPE, '$1ps1devcart$2').replace(OLD_MATCHER, '$ps1devcart-gcc'));
+        output.appendLine(`Updated to the new names: ${file}`);
+    }
 }
 
 // On Windows everything runs through 'wsl -e' (no shell, so arguments with
@@ -192,9 +255,9 @@ async function findProjects() {
         found.push(...dirs.map(dir => makeProject(folder, dir)));
     }
     projects = found;
-    await vscode.commands.executeCommand('setContext', 'netyaroze.hasProject', projects.length > 0);
-    await vscode.commands.executeCommand('setContext', 'netyaroze.hasLinkProject', projects.some(hasLinkTarget));
-    await vscode.commands.executeCommand('setContext', 'netyaroze.hasIsoProject', projects.some(hasIsoTargets));
+    await vscode.commands.executeCommand('setContext', 'ps1devcart.hasProject', projects.length > 0);
+    await vscode.commands.executeCommand('setContext', 'ps1devcart.hasLinkProject', projects.some(hasLinkTarget));
+    await vscode.commands.executeCommand('setContext', 'ps1devcart.hasIsoProject', projects.some(hasIsoTargets));
     return projects;
 }
 
@@ -393,7 +456,7 @@ const taskProvider = {
         }
         return tasks;
     },
-    // Tasks from tasks.json: { "type": "netyaroze", "target": "run", "project": "example" }
+    // Tasks from tasks.json: { "type": "ps1devcart", "target": "run", "project": "example" }
     async resolveTask(task) {
         const target = task.definition.target;
         if (!TARGETS[target] || !task.scope || typeof task.scope === 'number') {
@@ -679,8 +742,8 @@ function startPs1transfer(exe, project, port, serial, tty) {
     output.appendLine(`> ${exe} ${args.join(' ')}`);
     output.show(true);
     const proc = cp.spawn(exe, args, { cwd: project.dir, windowsHide: true });
-    proc.netyarozePs1transfer = true;
-    proc.netyarozeSerial = serial === undefined ? cartSerial() : serial;
+    proc.ps1devcartPs1transfer = true;
+    proc.ps1devcartSerial = serial === undefined ? cartSerial() : serial;
     const ready = new Promise(resolve => {
         let recent = '';
         const timer = setTimeout(() => resolve(false), 60000);
@@ -781,7 +844,7 @@ async function runTaskFor(project, target) {
 
 // ----- Up to date: no build before Deploy / Debug when nothing changed since the last build made here -----
 
-const BUILT_KEY = 'netyaroze.built:';
+const BUILT_KEY = 'ps1devcart.built:';
 // Files a build uses (sources, makefiles, data embedded by a makefile); folders of build outputs and tools skipped
 const SOURCE_EXTS = new Set(['.c', '.h', '.cc', '.cpp', '.cxx', '.hpp', '.hh', '.s', '.asm', '.inc', '.ld', '.lnk', '.mk',
                              '.cmake', '.tim', '.tmd', '.tod', '.vh', '.vb', '.vab', '.seq', '.sep', '.vag', '.xa', '.str']);
@@ -849,15 +912,15 @@ async function buildIfNeeded(project, debug) {
 
 function createStatusBar(context) {
     const items = [
-        ['$(tools) Build', 'netyaroze.build', 'PS1 DEV CART: Build (make)'],
-        ['$(play) Run', 'netyaroze.run', 'PS1 DEV CART: Build and run in the emulator (make run)'],
-        ['$(link) Run Linked', 'netyaroze.runLinked', 'PS1 DEV CART: Build and run in two linked emulators (make link)'],
-        ['$(debug-alt) Debug', 'netyaroze.debug', 'PS1 DEV CART: Build and debug in PCSX-Redux'],
-        ['$(trash) Clean', 'netyaroze.clean', 'PS1 DEV CART: Clean (make clean)'],
+        ['$(tools) Build', 'ps1devcart.build', 'PS1 DEV CART: Build (make)'],
+        ['$(play) Run', 'ps1devcart.run', 'PS1 DEV CART: Build and run in the emulator (make run)'],
+        ['$(link) Run Linked', 'ps1devcart.runLinked', 'PS1 DEV CART: Build and run in two linked emulators (make link)'],
+        ['$(debug-alt) Debug', 'ps1devcart.debug', 'PS1 DEV CART: Build and debug in PCSX-Redux'],
+        ['$(trash) Clean', 'ps1devcart.clean', 'PS1 DEV CART: Clean (make clean)'],
         // PS1 DEV CART (shown once ps1transfer is set up)
-        ['$(play-circle) Run on PS1', 'netyaroze.runOnPs1', 'PS1 DEV CART: Build and run on a PlayStation (PS1 DEV CART)'],
-        ['$(debug) Debug on PS1', 'netyaroze.debugOnPs1', 'PS1 DEV CART: Build and debug on a PlayStation (PS1 DEV CART)'],
-        ['$(plug) PS1 DEV CART', 'netyaroze.selectCart', 'PS1 DEV CART: PS1 DEV CART used by Run and Debug on PS1'],
+        ['$(play-circle) Run on PS1', 'ps1devcart.runOnPs1', 'PS1 DEV CART: Build and run on a PlayStation (PS1 DEV CART)'],
+        ['$(debug) Debug on PS1', 'ps1devcart.debugOnPs1', 'PS1 DEV CART: Build and debug on a PlayStation (PS1 DEV CART)'],
+        ['$(plug) PS1 DEV CART', 'ps1devcart.selectCart', 'PS1 DEV CART: PS1 DEV CART used by Run and Debug on PS1'],
     ].map(([text, command, tooltip], i) => {
         // Each item needs its own id (and a name for the status bar's menu)
         const item = vscode.window.createStatusBarItem(command, vscode.StatusBarAlignment.Left, 50 - i);
@@ -865,8 +928,8 @@ function createStatusBar(context) {
         context.subscriptions.push(item);
         return item;
     });
-    cartItem = items.find(item => item.command === 'netyaroze.selectCart');
-    const cartCommands = ['netyaroze.runOnPs1', 'netyaroze.debugOnPs1', 'netyaroze.selectCart'];
+    cartItem = items.find(item => item.command === 'ps1devcart.selectCart');
+    const cartCommands = ['ps1devcart.runOnPs1', 'ps1devcart.debugOnPs1', 'ps1devcart.selectCart'];
     const update = async () => {
         await findProjects();
         updatePanel();
@@ -876,7 +939,7 @@ function createStatusBar(context) {
         const showCart = show && !!(settings().get('ps1transferPath') || tools.ps1transferBundled());
         updateCartItem();
         items.forEach(item => {
-            const visible = item.command === 'netyaroze.runLinked' ? showLink
+            const visible = item.command === 'ps1devcart.runLinked' ? showLink
                 : (cartCommands.includes(item.command) ? showCart : show);
             if (visible) {
                 item.show();
@@ -892,7 +955,7 @@ function createStatusBar(context) {
     context.subscriptions.push(
         watcher,
         vscode.workspace.onDidChangeWorkspaceFolders(update),
-        vscode.workspace.onDidChangeConfiguration(e => e.affectsConfiguration('netyaroze') && update()));
+        vscode.workspace.onDidChangeConfiguration(e => affectsSettings(e) && update()));
     update();
 }
 
@@ -1159,7 +1222,7 @@ function showError(message) {
 
 const emulators = new Map();  // debug id -> emulator process
 const startedDebugIds = new Set();
-const debugSessions = new Map();    // netyarozeDebugId -> its debug session
+const debugSessions = new Map();    // ps1devcartDebugId -> its debug session
 let debugId = 0;
 
 function killEmulator(proc, now) {
@@ -1168,7 +1231,7 @@ function killEmulator(proc, now) {
     }
     // ps1transfer -gdb ends by itself once GDB has gone (breakpoints removed, the game goes on): stopping it while
     // it talks to the cartridge could leave the console waiting, so it is only forced if it hasn't ended
-    if (proc.netyarozePs1transfer && !now) {
+    if (proc.ps1devcartPs1transfer && !now) {
         setTimeout(() => killEmulator(proc, true), 8000);
         return;
     }
@@ -1328,8 +1391,8 @@ async function cppdbgConfig(context, info, { name, port, onPs1, stopAtEntry, deb
         setupCommands: [{ text: 'set pagination off', ignoreFailures: true }],
         customLaunchSetupCommands: commands,
         launchCompleteCommand: 'exec-continue',
-        netyarozeDebugId: id,
-        netyarozeLocations: info.elf + '.json',
+        ps1devcartDebugId: id,
+        ps1devcartLocations: info.elf + '.json',
     };
     if (debugLog) {
         cppdbg.logging = { engineLogging: true, trace: true, traceResponse: true };
@@ -1383,8 +1446,8 @@ function nativeCppdbgConfig(info, { name, port, onPs1, stopAtEntry, debugLog, id
         setupCommands: [{ text: 'set pagination off', ignoreFailures: true }],
         customLaunchSetupCommands: commands,
         launchCompleteCommand: 'exec-continue',
-        netyarozeDebugId: id,
-        netyarozeLocations: info.elf + '.json',
+        ps1devcartDebugId: id,
+        ps1devcartLocations: info.elf + '.json',
     };
     if (debugLog) {
         cppdbg.logging = { engineLogging: true, trace: true, traceResponse: true };
@@ -1407,7 +1470,7 @@ async function emulatorProgram(project) {
     return emulatorPath;
 }
 
-// Turns a 'netyaroze' launch configuration into a 'cppdbg' one: builds,
+// Turns a 'ps1devcart' launch configuration into a 'cppdbg' one: builds,
 // makes the debug symbols, starts the emulator (or ps1transfer for a PS1
 // with a PS1 DEV CART cartridge, "target": "devcart"), and sets up GDB.
 async function prepareDebug(context, folder, config) {
@@ -1424,7 +1487,7 @@ async function prepareDebug(context, folder, config) {
         return undefined;
     }
     const port = settings().get('gdbPort');
-    const id = `netyaroze-${++debugId}`;
+    const id = `ps1devcart-${++debugId}`;
     let targetName;
     if (onPs1) {
         // PS1 with a PS1 DEV CART cartridge: ps1transfer loads psx.exe stopped at its entry point
@@ -1463,12 +1526,12 @@ async function prepareDebug(context, folder, config) {
 function debugConfigurationProvider(context) {
     return {
         provideDebugConfigurations() {
-            return [{ type: 'netyaroze', request: 'launch', name: 'PS1 DEV CART: Debug in PCSX-Redux' },
-                    { type: 'netyaroze', request: 'launch', name: 'PS1 DEV CART: Debug on PS1', target: 'devcart' }];
+            return [{ type: 'ps1devcart', request: 'launch', name: 'PS1 DEV CART: Debug in PCSX-Redux' },
+                    { type: 'ps1devcart', request: 'launch', name: 'PS1 DEV CART: Debug on PS1', target: 'devcart' }];
         },
         resolveDebugConfiguration(folder, config) {
             if (!config.type && !config.request) {  // F5 without a launch.json
-                Object.assign(config, { type: 'netyaroze', request: 'launch', name: 'PS1 DEV CART: Debug in PCSX-Redux' });
+                Object.assign(config, { type: 'ps1devcart', request: 'launch', name: 'PS1 DEV CART: Debug in PCSX-Redux' });
             }
             return config;
         },
@@ -1493,7 +1556,7 @@ function userFunctionBreakpoints() {
 }
 
 async function resumeToProgramCode(session, threadId) {
-    const locations = JSON.parse(fs.readFileSync(session.configuration.netyarozeLocations, 'utf8'));
+    const locations = JSON.parse(fs.readFileSync(session.configuration.ps1devcartLocations, 'utf8'));
     const user = userFunctionBreakpoints();
     const names = new Set(user.map(b => b.name));
     await session.customRequest('setFunctionBreakpoints', {
@@ -1515,7 +1578,7 @@ async function restoreBreakpoints(session) {
 function pauseTracker() {
     return {
         createDebugAdapterTracker(session) {
-            if (!session.configuration.netyarozeDebugId) {
+            if (!session.configuration.ps1devcartDebugId) {
                 return undefined;
             }
             let resuming = false;
@@ -1530,7 +1593,7 @@ function pauseTracker() {
                         return;
                     }
                     if (m.body.reason !== 'pause' || !settings().get('pauseInProgramCode')
-                        || !fs.existsSync(session.configuration.netyarozeLocations || '')) {
+                        || !fs.existsSync(session.configuration.ps1devcartLocations || '')) {
                         return;
                     }
                     const threadId = m.body.threadId || 1;
@@ -1559,7 +1622,7 @@ async function startDebugging(target) {
         return false;
     }
     return vscode.debug.startDebugging(project.folder, Object.assign({
-        type: 'netyaroze', request: 'launch', name: target ? 'PS1 DEV CART: Debug on PS1' : 'PS1 DEV CART: Debug', project: project.rel,
+        type: 'ps1devcart', request: 'launch', name: target ? 'PS1 DEV CART: Debug on PS1' : 'PS1 DEV CART: Debug', project: project.rel,
     }, target ? { target } : {}));
 }
 
@@ -1766,7 +1829,7 @@ async function debugLinkedEmulators() {
     });
     const pids = [...text.matchAll(/\(pid (\d+)\)/g)].map(m => Number(m[1]));
     const ids = pids.map(pid => {
-        const id = `netyaroze-${++debugId}`;
+        const id = `ps1devcart-${++debugId}`;
         emulators.set(id, processById(pid));
         return id;
     });
@@ -1842,7 +1905,7 @@ function startRelay(exe, carts, cwd) {
     const args = ['-n', carts[0], '-relay', carts[1]];
     output.appendLine(`> ${exe} ${args.join(' ')}`);
     const proc = cp.spawn(exe, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    proc.netyarozeSerials = carts;
+    proc.ps1devcartSerials = carts;
     // (its throughput line each second left out)
     const show = data => output.append(data.toString().replace(/\r/g, '').split('\n')
         .filter(l => !/ B\/s /.test(l)).join('\n'));
@@ -1912,10 +1975,10 @@ async function debugLinkedOnCarts() {
     }
     // The main cart: debugged (the relay in its session over the USB link)
     const port = settings().get('gdbPort');
-    const id = `netyaroze-${++debugId}`;
+    const id = `ps1devcart-${++debugId}`;
     const relay = cartLink() === 'usb' ? ['-relay', carts[1]] : [];
     const { proc, ready } = startPs1transfer(info.ps1transfer, project, port, carts[0], [...linkTtyArgs(), ...relay]);
-    proc.netyarozeSerials = relay.length ? carts : [carts[0]];
+    proc.ps1devcartSerials = relay.length ? carts : [carts[0]];
     emulators.set(id, proc);
     if (!(await ready)) {
         killEmulator(proc, true);
@@ -1951,13 +2014,13 @@ async function releaseCart(serial) {
             cartTasks.delete(execution);
         }
     }
-    if (relayProc && relayProc.netyarozeSerials.some(uses)) {
+    if (relayProc && relayProc.ps1devcartSerials.some(uses)) {
         stopped.push('the USB link relay');
         ending.push(stopRelay());
     }
     for (const [id, proc] of emulators) {
-        if (proc && proc.netyarozePs1transfer && proc.exitCode === null &&
-            (proc.netyarozeSerials || [proc.netyarozeSerial]).some(uses)) {
+        if (proc && proc.ps1devcartPs1transfer && proc.exitCode === null &&
+            (proc.ps1devcartSerials || [proc.ps1devcartSerial]).some(uses)) {
             stopped.push('the debug session');
             const session = debugSessions.get(id);
             if (session) {
@@ -2197,17 +2260,17 @@ async function offerTools(context) {
 
 // Actions of the panel's buttons (commands)
 const PANEL_ACTIONS = {
-    templates: 'netyaroze.newFromTemplate',
-    build: 'netyaroze.build',
-    clean: 'netyaroze.clean',
-    runEmulator: 'netyaroze.run',
-    runLinkedEmulators: 'netyaroze.runLinked',
-    debugEmulator: 'netyaroze.debug',
-    debugLinkedEmulators: 'netyaroze.debugLinked',
-    runCart: 'netyaroze.runOnPs1',
-    debugCart: 'netyaroze.debugOnPs1',
-    runLinkedCarts: 'netyaroze.runLinkedOnCarts',
-    debugLinkedCarts: 'netyaroze.debugLinkedOnCarts',
+    templates: 'ps1devcart.newFromTemplate',
+    build: 'ps1devcart.build',
+    clean: 'ps1devcart.clean',
+    runEmulator: 'ps1devcart.run',
+    runLinkedEmulators: 'ps1devcart.runLinked',
+    debugEmulator: 'ps1devcart.debug',
+    debugLinkedEmulators: 'ps1devcart.debugLinked',
+    runCart: 'ps1devcart.runOnPs1',
+    debugCart: 'ps1devcart.debugOnPs1',
+    runLinkedCarts: 'ps1devcart.runLinkedOnCarts',
+    debugLinkedCarts: 'ps1devcart.debugLinkedOnCarts',
 };
 
 // The panel's buttons with an icon (media/buttons/NAME.png, made by scripts/make-icons.py: white on transparent, used
@@ -2604,71 +2667,72 @@ function activate(context) {
     extensionContext = context;
     extensionPath = context.extensionPath;
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('netyaroze.panel', panelProvider),
-        vscode.commands.registerCommand('netyaroze.debugLinked', () => debugLinkedEmulators()),
-        vscode.commands.registerCommand('netyaroze.runLinkedOnCarts', () => runLinkedOnCarts()),
-        vscode.commands.registerCommand('netyaroze.debugLinkedOnCarts', () => debugLinkedOnCarts()),
-        vscode.commands.registerCommand('netyaroze.stopRelay', () => stopRelay()),
-        vscode.commands.registerCommand('netyaroze.resetCart', serial => resetCart(serial)),
-        vscode.commands.registerCommand('netyaroze.selectSecondCart', serial => selectSecondCart(serial)),
-        vscode.commands.registerCommand('netyaroze.refreshCarts', () => refreshCarts()),
-        vscode.commands.registerCommand('netyaroze.installTools', groups => installMissingTools(groups)),
-        vscode.commands.registerCommand('netyaroze.installTool', id => installTool(id)),
-        vscode.commands.registerCommand('netyaroze.toolStatus', () => refreshTools()),
-        vscode.workspace.onDidChangeConfiguration(e => e.affectsConfiguration('netyaroze') && updatePanel()));
+        vscode.window.registerWebviewViewProvider('ps1devcart.panel', panelProvider),
+        vscode.commands.registerCommand('ps1devcart.debugLinked', () => debugLinkedEmulators()),
+        vscode.commands.registerCommand('ps1devcart.runLinkedOnCarts', () => runLinkedOnCarts()),
+        vscode.commands.registerCommand('ps1devcart.debugLinkedOnCarts', () => debugLinkedOnCarts()),
+        vscode.commands.registerCommand('ps1devcart.stopRelay', () => stopRelay()),
+        vscode.commands.registerCommand('ps1devcart.resetCart', serial => resetCart(serial)),
+        vscode.commands.registerCommand('ps1devcart.selectSecondCart', serial => selectSecondCart(serial)),
+        vscode.commands.registerCommand('ps1devcart.refreshCarts', () => refreshCarts()),
+        vscode.commands.registerCommand('ps1devcart.installTools', groups => installMissingTools(groups)),
+        vscode.commands.registerCommand('ps1devcart.installTool', id => installTool(id)),
+        vscode.commands.registerCommand('ps1devcart.toolStatus', () => refreshTools()),
+        vscode.workspace.onDidChangeConfiguration(e => affectsSettings(e) && updatePanel()));
+    offerNewNames();
     context.subscriptions.push(
-        vscode.debug.registerDebugConfigurationProvider('netyaroze', debugConfigurationProvider(context)),
+        vscode.debug.registerDebugConfigurationProvider('ps1devcart', debugConfigurationProvider(context)),
         vscode.debug.registerDebugAdapterTrackerFactory('cppdbg', pauseTracker()),
         // Listed in Run and Debug's configuration list even without a launch.json
-        vscode.debug.registerDebugConfigurationProvider('netyaroze', {
+        vscode.debug.registerDebugConfigurationProvider('ps1devcart', {
             async provideDebugConfigurations(folder) {
                 const found = (await findProjects()).filter(p => !folder || p.folder.uri.toString() === folder.uri.toString());
                 return found.flatMap(p => [
-                    Object.assign({ type: 'netyaroze', request: 'launch', name: 'PS1 DEV CART: Debug in PCSX-Redux' + (p.rel ? ` (${p.rel})` : '') },
+                    Object.assign({ type: 'ps1devcart', request: 'launch', name: 'PS1 DEV CART: Debug in PCSX-Redux' + (p.rel ? ` (${p.rel})` : '') },
                                   p.rel ? { project: p.rel } : {}),
-                    Object.assign({ type: 'netyaroze', request: 'launch', name: 'PS1 DEV CART: Debug on PS1' + (p.rel ? ` (${p.rel})` : ''),
+                    Object.assign({ type: 'ps1devcart', request: 'launch', name: 'PS1 DEV CART: Debug on PS1' + (p.rel ? ` (${p.rel})` : ''),
                                     target: 'devcart' },
                                   p.rel ? { project: p.rel } : {}),
                 ]);
             },
         }, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
         vscode.debug.onDidStartDebugSession(session => {
-            if (session.configuration.netyarozeDebugId) {
-                startedDebugIds.add(session.configuration.netyarozeDebugId);
-                debugSessions.set(session.configuration.netyarozeDebugId, session);
+            if (session.configuration.ps1devcartDebugId) {
+                startedDebugIds.add(session.configuration.ps1devcartDebugId);
+                debugSessions.set(session.configuration.ps1devcartDebugId, session);
             }
         }),
         vscode.debug.onDidTerminateDebugSession(session => {
-            const id = session.configuration.netyarozeDebugId;
+            const id = session.configuration.ps1devcartDebugId;
             debugSessions.delete(id);
             if (id && emulators.has(id)) {
                 killEmulator(emulators.get(id));
                 emulators.delete(id);
             }
         }),
-        vscode.commands.registerCommand('netyaroze.debug', () => startDebugging()),
-        vscode.commands.registerCommand('netyaroze.debugOnPs1', () => startDebugging('devcart')),
-        vscode.commands.registerCommand('netyaroze.runOnPs1', () => runOnPs1()),
+        vscode.commands.registerCommand('ps1devcart.debug', () => startDebugging()),
+        vscode.commands.registerCommand('ps1devcart.debugOnPs1', () => startDebugging('devcart')),
+        vscode.commands.registerCommand('ps1devcart.runOnPs1', () => runOnPs1()),
         vscode.tasks.onDidEndTask(e => cartTasks.delete(e.execution)),
-        vscode.commands.registerCommand('netyaroze.selectCart', serial => selectCart(serial)));
+        vscode.commands.registerCommand('ps1devcart.selectCart', serial => selectCart(serial)));
     context.subscriptions.push(
         output,
         vscode.tasks.registerTaskProvider(TASK_TYPE, taskProvider),
-        vscode.commands.registerCommand('netyaroze.build', () => runTarget('build')),
-        vscode.commands.registerCommand('netyaroze.clean', () => runTarget('clean')),
-        vscode.commands.registerCommand('netyaroze.rebuild', () => runTarget('rebuild')),
-        vscode.commands.registerCommand('netyaroze.run', () => runTarget('run')),
-        vscode.commands.registerCommand('netyaroze.runLinked', () => runLinkedEmulators()),
-        vscode.commands.registerCommand('netyaroze.buildModels', () => runTarget('models')),
-        vscode.commands.registerCommand('netyaroze.buildIso', () => runTarget('iso')),
-        vscode.commands.registerCommand('netyaroze.runIso', () => runTarget('runIso')),
-        vscode.commands.registerCommand('netyaroze.chooseEmulator', file => chooseEmulator(file)),
-        vscode.commands.registerCommand('netyaroze.configureIntelliSense', folder => configureIntelliSense(folder)),
-        vscode.commands.registerCommand('netyaroze.newProject', uri => newProject(context, uri)),
-        vscode.commands.registerCommand('netyaroze.newFromTemplate', () => projectTemplates.newFromTemplate()),
-        vscode.commands.registerCommand('netyaroze.convertPngToTim', (uri, options) => convertPngToTim(context, uri, options)));
+        vscode.commands.registerCommand('ps1devcart.build', () => runTarget('build')),
+        vscode.commands.registerCommand('ps1devcart.clean', () => runTarget('clean')),
+        vscode.commands.registerCommand('ps1devcart.rebuild', () => runTarget('rebuild')),
+        vscode.commands.registerCommand('ps1devcart.run', () => runTarget('run')),
+        vscode.commands.registerCommand('ps1devcart.runLinked', () => runLinkedEmulators()),
+        vscode.commands.registerCommand('ps1devcart.buildModels', () => runTarget('models')),
+        vscode.commands.registerCommand('ps1devcart.buildIso', () => runTarget('iso')),
+        vscode.commands.registerCommand('ps1devcart.runIso', () => runTarget('runIso')),
+        vscode.commands.registerCommand('ps1devcart.chooseEmulator', file => chooseEmulator(file)),
+        vscode.commands.registerCommand('ps1devcart.configureIntelliSense', folder => configureIntelliSense(folder)),
+        vscode.commands.registerCommand('ps1devcart.newProject', uri => newProject(context, uri)),
+        vscode.commands.registerCommand('ps1devcart.newFromTemplate', () => projectTemplates.newFromTemplate()),
+        vscode.commands.registerCommand('ps1devcart.convertPngToTim', (uri, options) => convertPngToTim(context, uri, options)));
     relayItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
-    relayItem.command = 'netyaroze.stopRelay';
+    relayItem.command = 'ps1devcart.stopRelay';
     context.subscriptions.push(relayItem);
     createStatusBar(context);
     offerTools(context).then(() => offerIntelliSense(context));
