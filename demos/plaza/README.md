@@ -42,9 +42,13 @@ PCSX-Redux to leave.
 
 ### On a PlayStation
 
-With the cartridge connected to your computer by USB, run:
+With the cartridge connected to your Windows computer by USB and the PlayStation switched on, run this **on the
+computer**:
 
     run.bat
+
+It sends the game to the PlayStation and starts it, then stays open as the bridge between the cartridge and the
+server. The game appears on the TV.
 
 With more than one cartridge connected, give the serial number (`ps1transfer -list` shows them):
 

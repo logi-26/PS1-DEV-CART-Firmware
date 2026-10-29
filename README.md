@@ -494,9 +494,10 @@ stations or audio files instead. Left/Right changes station, Up/Down sets the vo
 
 **[PS1 PLAZA](demos/plaza/README.md)**: an online game for up to 24 PlayStations at once, showing what an online or
 MMO-style game could do with the cartridge.
-- **How to play:** run `demos\plaza\run.bat` on a PlayStation, or `demos\plaza\redux.bat` to play in the
-  PCSX-Redux emulator without a cartridge. Type your name and pick a free shape and colour. You're then in a shared
-  world with everyone else connected, over the internet.
+- **How to play:** with a PS1 DEV CART, run `demos\plaza\run.bat` on the Windows computer the cartridge is connected
+  to. It starts the game on the PlayStation and connects it to the server. Without a cartridge, run
+  `demos\plaza\redux.bat` to play in the PCSX-Redux emulator. Type your name and pick a free shape and colour. You're
+  then in a shared world with everyone else connected, over the internet.
 - **The game:** the tiles you move over take your colour, and whoever holds the most when the 3-minute round ends wins.
 - **On screen:** the player list on the left, a world bigger than the screen with a minimap, and quick chat on the
   face buttons.
