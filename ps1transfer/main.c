@@ -29,6 +29,7 @@
 #include "gdbserver.h"
 #include "synthbridge.h"
 #include "usblink.h"
+#include "rename.h"
 #include "profiler.h"
 #include "timlive.h"
 #include "../ps1-tools/cardtool/cardserver.h"
@@ -3616,6 +3617,8 @@ int main(int argc, char *argv[])
 	int			card_live_arg = 0;				// Memory card command on a card slot (argv index)
 	bool		card_start = true;				// The card tool must be started (server mode)
 	char		*relay_serial = NULL;			// -relay: the other cartridge of the USB link
+	char		*rename_arg = NULL;			// -rename NAME, -renamerestore FILE (rename.c)
+	int			rename_mode = 0;			// 1: -renameinfo, 2: -rename, 3: -renamerestore
 	int			exit_code = 0;					// EXIT_FAILURE after an error (used by the GUI and scripts)
 
 	printf("PS1 DEV CART Transfer tool v%s\n\n", PS1TRANSFER_VERSION);
@@ -3645,6 +3648,22 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'r':	// Reset the PS1
+					if (!strcmp(argv[i], "-renameinfo") || !strcmp(argv[i], "-rename") ||
+						!strcmp(argv[i], "-renamerestore"))	// The cartridge's name (rename.c)
+					{
+						rename_mode = !strcmp(argv[i], "-renameinfo") ? 1 : !strcmp(argv[i], "-rename") ? 2 : 3;
+						if (rename_mode > 1)
+						{
+							if (i + 1 >= argc)
+							{
+								printf("%s needed following %s\n", (rename_mode == 2) ? "The new name" : "A backup file",
+									argv[i]);
+								goto usage;
+							}
+							rename_arg = argv[++i];
+						}
+						break;
+					}
 					if (!strcmp(argv[i], "-relay"))	// USB link relay with another cartridge (usblink.c)
 					{
 						if (i + 1 >= argc)
@@ -4123,6 +4142,11 @@ int main(int argc, char *argv[])
 			goto usage;
 	}
 	
+	// The cartridge's name: only its USB chip, by its serial number (rename.c)
+	if (rename_mode)
+		return ((rename_mode == 3) ? CartRenameRestore(serial, rename_arg) :
+			CartRename(serial, (rename_mode == 2) ? rename_arg : NULL));
+
 #ifdef  _WIN32
 	if (list)
 	{
@@ -4817,6 +4841,10 @@ usage:
 	printf("\t-bootcd Boot the disc in the drive (the CD drive unlocked first: burned and import discs, no modchip)\n");
 	printf("\t   Same as START + SELECT on the menu. Not on Japanese consoles (licensed discs still boot).\n");
 	printf("\t-info Cartridge state as key=value lines (device, state: menu/running/stopped/crashed, firmware...)\n");
+	printf("\t-rename NAME With -n SERIAL: renames the cartridge (its USB serial number, 1-15 letters/digits),\n");
+	printf("\t   nothing else changed: its USB chip's EEPROM saved first, read back after (written back if wrong)\n");
+	printf("\t-renameinfo With -n SERIAL: the name and the EEPROM as key=value lines (read only)\n");
+	printf("\t-renamerestore FILE With -n SERIAL: the EEPROM written back from a backup made by -rename\n");
 	printf("\t-synth SPU synth (synth.ps-exe next to ps1transfer): 16 sample slots, slot n plays on MIDI channel n.\n");
 	printf("\t   Commands on its input: midi HEX..., load SLOT file.vag, clear SLOT, set SLOT PARAM VALUE, state, reset, quit\n");
 	printf("\t-progress Transfer progress as progress=done/total lines (for programs using ps1transfer)\n");

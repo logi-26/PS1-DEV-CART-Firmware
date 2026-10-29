@@ -127,6 +127,15 @@ Parameters:
    A program running is reset first. The messages are on the TV.
 -info Cartridge state as key=value lines: device, state (menu, running, stopped, crashed), firmware, features, monitor,
    monitor_version, escaped_answers (1: answers after a DLE, text a program prints can't be taken for them)
+-rename NAME With -n SERIAL: renames the cartridge, i.e. its USB serial number (1 to 15 letters and digits), the
+   name -n, -l and the PS1 menu use. Only the cartridge's USB chip (FT245R) is written, with FTDI's own EEPROM
+   programming function: its settings are saved first (%LOCALAPPDATA%\PS1-DEV-CART\eeprom-backups\SERIAL-date.txt,
+   read back and compared), only the serial number is changed, and everything is read back afterwards (programmed
+   back as it was if anything differs). The chip then reconnects with its new name. The first rename of a cartridge
+   also sets two descriptor fields FT_Prog doesn't show to FTDI's standard values (device release, USB version).
+   Windows only for now (FTDI's FT_Prog or libftdi's ftdi_eeprom elsewhere).
+-renameinfo With -n SERIAL: the name and the USB chip's settings as key=value lines (read only)
+-renamerestore FILE With -n SERIAL: the USB chip programmed again from a backup made by -rename (name included)
 -progress Transfer progress as progress=done/total lines instead of the "bytes remaining" text
 -synth SPU synth (synth.ps-exe next to ps1transfer): 16 sample slots played over MIDI, commands read on the input
    (see "SPU synth" below). Combined with -r, the synth is started again even if it already runs.

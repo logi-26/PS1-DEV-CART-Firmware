@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.6.3
+
+- The bundled `ps1transfer` can rename a cartridge (its USB serial number): `-n SERIAL -rename NAME`, with the
+  USB chip's settings saved to a backup first and checked afterwards (`-renamerestore` puts a backup back).
+
 ## 2.6.2
 
 - The bundled `ps1transfer`'s USB link relay and `-net` bridge read and write the consoles' link rings with the
