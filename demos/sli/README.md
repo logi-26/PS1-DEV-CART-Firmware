@@ -8,8 +8,9 @@ into the sky, with a ship that either controller steers.
   <img src="../../screenshots/ps1/sli.png" alt="The two consoles' screens side by side: one landscape across both, the coastline continuing over the join, the ship in the middle." width="100%">
 </p>
 
-These are the two consoles' screens, captured at the same moment and put side by side: the left half from one
-PlayStation, the right half from the other. Each runs at 50 fps.
+These are the two consoles' screens put side by side: the left half from one PlayStation, the right half from the
+other. Each runs at 50 fps. For the picture, both were stopped on the same frame (`freeze_frame` in sli.c, a test hook
+set with `ps1transfer -poke`), because reading a screen takes longer than a frame.
 
 ## How it works
 

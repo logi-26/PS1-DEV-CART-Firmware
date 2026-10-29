@@ -507,6 +507,9 @@ static int		delay = 3;
 typedef struct { uint16_t buttons; uint8_t check, valid; } Input;
 
 static Input	mine[RING], theirs[RING];
+// For screenshots, set from the computer (ps1transfer -poke) on both consoles: the world stops at this frame (both on
+// the same frame: the two halves of one picture), until it is set further again
+uint32_t		freeze_frame = 0xFFFFFFFF;
 static uint8_t	checks[RING];				// World check after each frame
 static uint32_t	sim_frame, made_frame, peer_need;	// Next frame to simulate, next input to make, the peer's wait
 static int		linked, my_id, out_of_step, usb, errors, restart_send, restarts;
@@ -775,7 +778,7 @@ static void	Lockstep(uint16_t buttons)
 		in->valid = 1;
 		made_frame++;
 	}
-	for (steps = 0; steps < 2; steps++)
+	for (steps = 0; (steps < 2) && (sim_frame < freeze_frame); steps++)
 	{
 		Input	*a = &mine[sim_frame % RING], *b = &theirs[sim_frame % RING];
 
