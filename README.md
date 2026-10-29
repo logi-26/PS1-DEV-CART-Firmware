@@ -233,6 +233,7 @@ Much of this project’s code was written by an AI assistant under human guidanc
 - [Link cable library (psxcomb)](#link-cable-library-psxcomb)
 - [Using the cartridge with PsyQo](#using-the-cartridge-with-psyqo)
 - [Internet through the computer (-net)](#internet-through-the-computer--net)
+- [Demos](#demos)
 - [Profiler](#profiler)
 - [ps1transfer](#ps1transfer)
 - [PS1 Dev Cart Manager (GUI)](#ps1-dev-cart-manager-gui)
@@ -412,11 +413,14 @@ calls, no cable needed (`ps1transfer -n SERIAL1 -relay SERIAL2`).
 
 **Speed**, measured with two consoles sending to each other at the same time:
 
-| | Each way | |
-|---|---|---|
-| libcomb, link cable, 115200 bps | about 1.6 KB/s | |
-| psxcomb, link cable, 115200 bps | about 4 KB/s | about 2.5× faster |
-| psxcomb, USB link | about 46 KB/s | about 29× faster |
+| | Each way, top speed | | Each way, at full frame rate |
+|---|---|---|---|
+| libcomb, link cable, 115200 bps | about 1.6 KB/s | | |
+| psxcomb, link cable, 115200 bps | about 4 KB/s | about 2.5× faster | about 1.6 KB/s |
+| psxcomb, USB link | about 50 KB/s | about 30× faster | about 24 KB/s |
+
+The top speeds cost frame rate: at 4 KB/s over the cable the link tester runs at about 7 fps, and at 50 KB/s over USB
+at about 30 fps. The last column is the most each console sent while both still ran at 50 fps.
 
 The original library checks the other console's acknowledge only in its transmit interrupt, so it often waits for
 the next chance to send a byte; psxcomb checks it on a timer about twice per byte time. Both send the same signals on
@@ -473,6 +477,20 @@ PlayStation only sees bytes on its link. With `-e -f program.ps-exe` it executes
 stopped (Ctrl+C, or a line on its input), and prints the throughput every second.
 
     ps1transfer -r -e -f game.ps-exe -net 127.0.0.1:7777     run the game, connect its link to a local server
+
+## Demos
+
+The `demos` folder holds programs that show what the cartridge can do.
+
+**[Radio](demos/radio/README.md)**: internet radio on the PlayStation. The computer fetches the station and encodes it
+to SPU ADPCM, the PlayStation's own sound format. `ps1transfer -net` passes it to the cartridge, and the PlayStation
+plays it through its SPU, with the song title on screen. It needs `pip install -r demos/radio/requirements.txt`, then
+`demos\radio\run.bat` starts the server and the program. Six UK stations are filled in, and you can give other
+stations or audio files instead. Left/Right changes station, Up/Down sets the volume.
+
+<p align="center">
+  <img src="screenshots/ps1/radio.png" alt="The radio demo playing Smooth Radio, with the song title, the buffer and the SPU RAM used." width="640">
+</p>
 
 ## Profiler
 

@@ -1,0 +1,4 @@
+miniaudio
+numpy
+# Only for audio files and non-MP3 links (FLAC, WAV, OGG, M4A, ...): the radio stations play without it
+av

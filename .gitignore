@@ -37,3 +37,6 @@ buildtools/
 .vscode/
 .pcsx-link/
 .sentry-native/
+
+# Demos: the linker scripts made by psn00b_tool.mk
+demos/*/*.ld
