@@ -14,6 +14,42 @@ import ttkbootstrap as tb
 
 MONO_FONT = ("Consolas", 10) if sys.platform == "win32" else ("DejaVu Sans Mono", 10)
 
+
+def _fast_scrollbar_thumbs(center=32):
+    """ttkbootstrap 2.2's scrollbar thumb is a 17 px image whose middle (1 px) Tk repeats along the thumb: about one
+    blend per pixel of length, 1.4 s to draw a horizontal scrollbar across the window, and some computers are much
+    slower. The same thumb with a middle of `center` px (the shortest thumb is then 16 + center px). Nothing changed
+    if this ttkbootstrap draws its thumbs another way."""
+    try:
+        from ttkbootstrap.style.builders import scrollbar as sb
+        inset, thick, min_thumb = sb._SCROLLBAR_THUMB_INSET, sb._SCROLLBAR_THICKNESS, sb._SCROLLBAR_MIN_THUMB
+        sb._scrollbar_thumb      # noqa: B018 (the function replaced)
+    except (ImportError, AttributeError):
+        return
+
+    def thumb(builder, color, orient, rounded):
+        cross = 0 if orient == "vertical" else 1   # x for vertical, y for horizontal
+
+        def draw(d, w, h):
+            margin = round((w, h)[cross] * inset / thick)
+            box = [0, 0, w - 1, h - 1]
+            box[cross] += margin
+            box[cross + 2] -= margin
+            if rounded:
+                d.rounded_rectangle(box, radius=round(((w, h)[cross] - 2 * margin) / 2), fill=color)
+            else:
+                d.rectangle(box, fill=color)
+
+        cap = builder.scale_size(min_thumb // 2)
+        length = min_thumb + center
+        size, border = ((thick, length), (0, cap)) if orient == "vertical" else ((length, thick), (cap, 0))
+        return builder.assets.image(size, draw, "scrollbar-thumb-%d" % center, color, orient, rounded), border
+
+    sb._scrollbar_thumb = thumb
+
+
+_fast_scrollbar_thumbs()    # (before any window: the styles are made with the first widgets)
+
 PS1_EXE_TYPES = [("PS1 executables", "*.exe *.ps-exe *.psx *.cpe"), ("All files", "*.*")]
 
 

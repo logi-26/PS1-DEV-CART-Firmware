@@ -17,12 +17,12 @@ GUI_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def default_ps1transfer():
-    """ps1transfer next to the GUI program (single file build), in the repository's ps1transfer folder, else from the PATH."""
+    """ps1transfer next to the GUI program (PyInstaller build), in the repository's ps1transfer folder, else from the PATH."""
     name = "ps1transfer.exe" if sys.platform == "win32" else "ps1transfer"
     places = [os.path.join(GUI_DIR, "..", "ps1transfer", name)]
-    if getattr(sys, "frozen", False):      # PyInstaller build: next to the .exe, or gui/dist -> ../../ps1transfer
+    if getattr(sys, "frozen", False):      # PyInstaller build: next to the .exe, or gui/dist/ps1devcart_gui -> ../../../ps1transfer
         exe_dir = os.path.dirname(sys.executable)
-        places = [os.path.join(exe_dir, name), os.path.join(exe_dir, "..", "..", "ps1transfer", name)]
+        places = [os.path.join(exe_dir, name), os.path.join(exe_dir, "..", "..", "..", "ps1transfer", name)]
     for path in places:
         if os.path.isfile(path):
             return os.path.normpath(path)
@@ -39,13 +39,14 @@ def run_quick(exe, args, timeout=20):
         return -1, str(e)
 
 
-# "-z 0  -n A10PUCVT     FT245R USB FIFO (in use)"
-DEVICE_LINE = re.compile(r"^-z\s+(\d+)\s+-n\s+(\S+)\s*(.*?)(\s+\(in use\))?\s*$")
+# "-z 0  -n A10PUCVT     FT245R USB FIFO (in use)". A cartridge another program has open can come without its name
+# ("-z 0  -n               (in use)"): left out, it can't be used.
+DEVICE_LINE = re.compile(r"^-z\s+(\d+)\s+-n\s+(?!\()(\S+)\s*(.*?)(\s+\(in use\))?\s*$")
 
 
 def list_devices(exe):
     """Connected cartridges: list of dicts (index, serial, desc, in_use)."""
-    code, out = run_quick(exe, ["-l"])
+    code, out = run_quick(exe, ["-l"], timeout=5)  # (it answers at once: longer means a driver problem)
     devices = []
     for line in out.splitlines():
         m = DEVICE_LINE.match(line.strip())

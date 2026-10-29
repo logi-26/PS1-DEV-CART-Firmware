@@ -33,7 +33,7 @@ def default_rom():
     places = [os.path.join(GUI_DIR, "..", "cartrom", "ps1devcart.rom")]
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(sys.executable)
-        places = sorted(glob.glob(os.path.join(exe_dir, "ps1devcart*.rom")), reverse=True) +             [os.path.join(exe_dir, "..", "..", "cartrom", "ps1devcart.rom")]
+        places = sorted(glob.glob(os.path.join(exe_dir, "ps1devcart*.rom")), reverse=True) +             [os.path.join(exe_dir, "..", "..", "..", "cartrom", "ps1devcart.rom")]
     return next((os.path.normpath(p) for p in places if os.path.isfile(p)), "")
 
 

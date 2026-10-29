@@ -11,8 +11,10 @@ You can obtain one at https://mozilla.org/MPL/2.0/.
 """
 import ctypes
 import os
+import queue
 import subprocess
 import sys
+import threading
 
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
@@ -89,6 +91,8 @@ class App(tb.Window):
 
         self.runner = Runner(self, self._on_text, self._on_progress, self._on_task, self._on_pcdrv)
         self.devices = []
+        self.listing = False        # ps1transfer -l runs (refresh_devices)
+        self.list_again = False     # Asked again meanwhile: listed once more after it
         self.pages = {}
         self.current = None
         self.task_stopped = False   # The running task was stopped by the user
@@ -137,8 +141,7 @@ class App(tb.Window):
         self.content = tb.Frame(body)
         self.content.pack(side="left", fill="both", expand=True)
         for cls in PAGES:
-            page = cls(self.content, self)
-            page.place(relx=0, rely=0, relwidth=1, relheight=1)
+            page = cls(self.content, self)  # (placed when shown: Tk lays out and draws only the page shown)
             self.pages[cls.title] = page
             text = cls.title if cls.phase == 1 else cls.title + " (soon)"
             b = tb.Button(side, text=text, width=24, bootstyle="secondary-link",
@@ -166,8 +169,10 @@ class App(tb.Window):
         title = OLD_PAGE_NAMES.get(title, title)    # (the last page, saved by an earlier version)
         if title not in self.pages:     # (e.g. "Run" of earlier versions)
             title = PAGES[0].title
+        if self.current and self.current is not self.pages[title]:
+            self.current.place_forget()
         self.current = self.pages[title]
-        self.current.tkraise()
+        self.current.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.current.on_show()
         for t, b in self.side_buttons.items():
             b.configure(bootstyle="primary" if t == title else "secondary-link")
@@ -356,9 +361,29 @@ class App(tb.Window):
     # ---------------------------------------------------------------- cartridges
 
     def refresh_devices(self):
+        """Lists the cartridges with ps1transfer -l in a thread (the window keeps answering while it waits)."""
         if self.runner.busy:
             return
-        self.devices = list_devices(self.exe())
+        if self.listing:
+            self.list_again = True
+            return
+        self.listing, self.list_again = True, False
+        found = queue.Queue()
+        exe = self.exe()
+        threading.Thread(target=lambda: found.put(list_devices(exe)), daemon=True).start()
+        self.after(50, self._devices_listed, found)
+
+    def _devices_listed(self, found):
+        # (the thread's result is taken here, in the GUI thread, like the runner's output)
+        try:
+            devices = found.get_nowait()
+        except queue.Empty:
+            self.after(50, self._devices_listed, found)
+            return
+        self.listing = False
+        if self.list_again:
+            return self.refresh_devices()
+        self.devices = devices
         values = [d["serial"] + ("  (in use)" if d["in_use"] else "") for d in self.devices]
         self.device.configure(values=values)
         wanted = self.settings.get("device")

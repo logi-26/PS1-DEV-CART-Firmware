@@ -207,13 +207,15 @@ something else asks you to stop it first.
 Settings and recent files are saved in `%APPDATA%\ps1devcart-gui\settings.json` (Windows) or
 `~/.config/ps1devcart-gui/settings.json` (Linux).
 
-## A single program (no Python needed)
+## A program without Python
 
     pip install pyinstaller
     build_exe.bat          (Linux: ./build_exe.sh)
 
-makes `dist/ps1devcart_gui.exe`. It finds `ps1transfer` next to itself, or in `../../ps1transfer` (when it stays in
-`gui/dist`), or set it in **Settings**.
+makes the folder `dist/ps1devcart_gui/`: `ps1devcart_gui.exe` and the files it needs in `manager_files/` (a folder
+starts much faster than a single file, which unpacks itself to `%TEMP%` at every start). Keep `manager_files/` next to
+the exe. It finds `ps1transfer` next to itself, or in `../../../ps1transfer` (when it stays in `gui/dist/ps1devcart_gui`),
+or set it in **Settings**.
 
 The app icon (the cartridge of the VS Code extension's panel, light blue) is in `icons/`: `ps1devcart.ico` for the
 program, `ps1devcart-SIZE.png` for the windows; `python make_icon.py` makes them again.
