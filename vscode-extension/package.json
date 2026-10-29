@@ -2,7 +2,7 @@
     "name": "ps1-dev-cart",
     "displayName": "PS1 DEV CART",
     "description": "Build, run and debug PlayStation games from VS Code: Net Yaroze (WSL build environment), PsyQ / PsyQo (PSX.Dev templates) and PSn00bSDK projects, in PCSX-Redux or on a PlayStation with a PS1 DEV CART (link play on two emulators or two consoles included).",
-    "version": "2.6.0",
+    "version": "2.6.1",
     "publisher": "logi-26",
     "license": "GPL-3.0-only",
     "repository": { "type": "git", "url": "https://github.com/logi-26/PS1-DEV-CART-Firmware", "directory": "vscode-extension" },

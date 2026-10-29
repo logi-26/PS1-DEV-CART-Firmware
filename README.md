@@ -618,7 +618,7 @@ cartridge.
 **Installing**
 1. Download the release zip and unzip it: the extension is the `ps1-dev-cart-x.y.z.vsix` file.
 2. In VS Code, open the **Extensions** view (Ctrl+Shift+X), click the **...** menu at its top and choose **Install
-   from VSIX...**, then pick the file. Or from a terminal: `code --install-extension ps1-dev-cart-2.6.0.vsix`.
+   from VSIX...**, then pick the file. Or from a terminal: `code --install-extension ps1-dev-cart-2.6.1.vsix`.
 3. Open your project's folder: the PS1 DEV CART icon appears in the activity bar, with the panel and its buttons.
 
 The extension's own documentation is in [vscode-extension/README.md](vscode-extension/README.md). To build the `.vsix`

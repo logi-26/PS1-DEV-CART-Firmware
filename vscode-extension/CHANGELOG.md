@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.1
+
+- The link cable tester that comes with the extension is the latest one: baud rates up to 2073600 (L1/R1), and a
+  read cancelled by a receive error (e.g. bytes at the old baud rate while the other console changes it) is started
+  again instead of leaving that direction of the link stopped.
+
 ## 2.6.0
 
 - **Named PS1 DEV CART everywhere**: the settings, commands, views, `launch.json` debug type, task type and problem
