@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.2
+
+- The bundled `ps1transfer`'s USB link relay and `-net` bridge read and write the consoles' link rings with the
+  kernel hook's exchange command instead of separate downloads and uploads, so the PlayStation no longer waits for
+  the computer at each turn. A program using the psxcomb USB link keeps its frame rate (a demo drawing most of its
+  frame went from about 30 to 50 fps through `-net`).
+
 ## 2.6.1
 
 - The link cable tester that comes with the extension is the latest one: baud rates up to 2073600 (L1/R1), and a

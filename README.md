@@ -555,6 +555,21 @@ each drawing its half at 50 fps. It's a flight over an endless landscape, with a
   <img src="screenshots/ps1/sli_3.png" alt="Two consoles' screens side by side: a bay with beaches crossing the middle." width="100%">
 </p>
 
+**[PS1 SLI 3 SCREENS](demos/sli3/README.md)**: the same flight on **three screens**, 960 × 240 in all: two
+PlayStations and PCSX-Redux, each drawing its third, all at 50 fps.
+- **The hub:** with more than two screens, the link cable isn't enough. Every screen goes through the computer
+  instead (the consoles over their cartridges' USB link, PCSX-Redux over its serial port), and a hub keeps them in
+  lockstep. Each frame, it sends every screen everyone's buttons together.
+- **More screens:** the picture widens with the screens, each drawing its own 320 columns. Two consoles with no link
+  cable work this way too.
+- **Running it:** `demos\sli3\run.bat A10PVL53 A10PUCVT redux`, the screens from left to right.
+
+<p align="center">
+  <img src="screenshots/ps1/sli3_1.png" alt="Three screens side by side: open sea, a green coast on the left and an island on the right." width="100%">
+  <img src="screenshots/ps1/sli3_2.png" alt="Three screens side by side: an inlet winding through green land, the sea on the right." width="100%">
+  <img src="screenshots/ps1/sli3_3.png" alt="Three screens side by side: a bay between two green coasts across all three." width="100%">
+</p>
+
 ## Profiler
 
 `ps1transfer -prof` samples the running program 1000 times a second, through the cartridge, and shows every second:
@@ -667,7 +682,7 @@ cartridge.
 **Installing**
 1. Download the release zip and unzip it: the extension is the `ps1-dev-cart-x.y.z.vsix` file.
 2. In VS Code, open the **Extensions** view (Ctrl+Shift+X), click the **...** menu at its top and choose **Install
-   from VSIX...**, then pick the file. Or from a terminal: `code --install-extension ps1-dev-cart-2.6.1.vsix`.
+   from VSIX...**, then pick the file. Or from a terminal: `code --install-extension ps1-dev-cart-2.6.2.vsix`.
 3. Open your project's folder: the PS1 DEV CART icon appears in the activity bar, with the panel and its buttons.
 
 The extension's own documentation is in [vscode-extension/README.md](vscode-extension/README.md). To build the `.vsix`

@@ -8,10 +8,12 @@
 * edge of the left screen and on the left edge of the right one (the GTE's screen offset), and the polygons of the
 * other half left out. Twice the polygons of one PlayStation, on twice the screen.
 *
-* Started on both consoles by run.bat ("ps1transfer -n CART -link -f sli.ps-exe": the BIOS tty kept, the link cable),
-* or with "-link usb" and "ps1transfer -relay" (the USB link through the computer: run_usb.bat). Until the other
-* console answers, it flies alone (its own half). Sides: chosen when the two meet, or set by run.bat (SIDE_ADRS);
-* Select swaps them.
+* Two consoles: run.bat ("ps1transfer -n CART -link -f sli.ps-exe": the BIOS tty kept, the link cable): the two talk
+* to each other. Two, three or more screens (PS1 SLI 3 SCREENS): ../sli3/run.bat, each console through its cartridge
+* and the computer ("-link usb" and "ps1transfer -net" to sli_hub.py), PCSX-Redux as a screen too (its serial port
+* bridged to the hub):
+* the hub gives each screen its place and sends every console each frame's buttons of all of them. Until then, it
+* flies alone (its own part). Places: set by the scripts (SIDE_ADRS), else chosen when they meet; Select moves them.
 *
 * Controls (either console): D-pad turn and climb, Select swap the sides.
 *
@@ -33,11 +35,14 @@
 
 #define	SCREEN_W		320
 #define	SCREEN_H		240
-#define	FULL_W			640			// The picture of both consoles
-#define	PROJECTION		240			// Projection distance (a wide view across the two screens)
+// The picture: "screens" screens of 320 pixels side by side, the projection distance growing with them (the same
+// view, about 106 degrees, spread over more screens)
+static int		screens = 2;
+#define	FULL_W			(SCREEN_W * screens)
+#define	PROJECTION		(120 * screens)
 #define	HORIZON_Y		90			// Screen line of the projection's centre
 
-#define	SIDE_ADRS		0x801BF000	// run.bat writes here 0x534C4900 | side (0 left, 1 right)
+#define	SIDE_ADRS		0x801BF000	// The scripts write here 0x534C4900 | place (0: the leftmost screen)
 #define	SIDE_MAGIC		0x534C4900
 #define	HOOK_TTY_MODE	(*((volatile uint8_t *)0x8000DF71) & 0x7F)	// The execute's tty mode: 0 USB link
 
@@ -105,7 +110,8 @@ static void	Shade(int x, int y, int w, int h)	// A dark band behind text
 
 #define	MAP				64
 #define	CELL			320			// World units
-#define	VIEW_CELLS		22			// How far the landscape goes (cells)
+#define	VIEW_CELLS		22			// How far the landscape goes (cells, at most)
+static int		view_cells = VIEW_CELLS;	// (20 with the hub: serving the USB link takes a little of a frame)
 #define	SEA				0
 
 static int16_t	height[MAP][MAP];
@@ -277,7 +283,7 @@ static uint8_t	WorldCheck(void)		// (sent with the buttons: a different world sh
 /****************************************/
 // Drawing the world: the sky, the landscape around the camera, the ship
 
-static int			side;					// 0 left, 1 right (this console, before Select's swap)
+static int			side;					// This console's place, 0: the leftmost screen (before Select)
 static int			polys;
 typedef struct { int16_t x, y; uint16_t z; uint8_t c[3], ok; } Point;
 #define	GRID		(VIEW_CELLS * 2 + 2)
@@ -286,13 +292,13 @@ static uint32_t		pts_stamp[GRID][GRID], stamp;
 static MATRIX		cam;
 
 #define	FOG_NEAR	1500
-#define	FOG_FAR		(VIEW_CELLS * CELL)
+#define	FOG_FAR		(view_cells * CELL)
 static const uint8_t	fog[3] = {178, 200, 228};
 static int8_t			ripple[64];			// The water's shine (a sine table)
 
 static int	Side(void)
 {
-	return (side ^ world.swapped);
+	return ((side + world.swapped) % screens);
 }
 
 static Point	*Project(int gi, int gj, int wi, int wj, int cx, int cy, int cz)
@@ -339,24 +345,32 @@ static void	DrawLandscape(void)
 {
 	int	cx = world.x >> 4, cy = world.y >> 4, cz = world.z >> 4, gi, gj;
 	int	ci = Floor(cz), cj = Floor(cx), fx = isin(world.yaw), fz = icos(world.yaw);
+	int	wedge_lo = SCREEN_W * Side() - FULL_W / 2, wedge_hi = wedge_lo + SCREEN_W;
+
+	wedge_lo -= (wedge_lo < 0) ? -wedge_lo / 8 + 40 : 40;		// (a little wider)
+	wedge_hi += (wedge_hi > 0) ? wedge_hi / 8 + 40 : 40;
 
 	stamp++;
 	for (gi = 0; gi < GRID - 1; gi++)
 		for (gj = 0; gj < GRID - 1; gj++)
 		{
 			int			wi = ci + gi - VIEW_CELLS, wj = cj + gj - VIEW_CELLS;
+
+			if ((gi < VIEW_CELLS - view_cells) || (gi > VIEW_CELLS + view_cells) ||
+				(gj < VIEW_CELLS - view_cells) || (gj > VIEW_CELLS + view_cells))
+				continue;
 			int			dx = wj * CELL + CELL / 2 - cx, dz = wi * CELL + CELL / 2 - cz;
 			int			ahead = (dx * fx + dz * fz) >> 12, across = (dx * fz - dz * fx) >> 12, otz;
 			Point		*p0, *p1, *p2, *p3;
 			POLY_G4		*q;
 
-			// Only the cells in this console's wedge of the view, within the view distance: the whole picture spans
-			// about 53 degrees each side (320 / PROJECTION), this console's half of it (a little wider: the cells
-			// are tested by their centre)
+			// Only the cells in this console's wedge of the view, within the view distance: its screen's columns of
+			// the whole picture, from lo to hi pixels off the centre (a little wider: the cells are tested by their
+			// centre)
 			if ((ahead < -CELL) || (dx * dx + dz * dz > FOG_FAR * FOG_FAR))
 				continue;
-			if ((Side() == 0) ? ((across > CELL) || (across < -(ahead * 3 / 2) - CELL)) :
-				((across < -CELL) || (across > ahead * 3 / 2 + CELL)))
+			if ((across * PROJECTION < wedge_lo * ahead - CELL * PROJECTION) ||
+				(across * PROJECTION > wedge_hi * ahead + CELL * PROJECTION))
 				continue;
 			p0 = Project(gi, gj, wi, wj, cx, cy, cz);
 			p1 = Project(gi, gj + 1, wi, wj + 1, cx, cy, cz);
@@ -481,7 +495,7 @@ static void	DrawWorld(void)
 	TransMatrix(&cam, &t);
 	gte_SetRotMatrix(&cam);
 	gte_SetTransMatrix(&cam);
-	gte_SetGeomOffset((Side() == 0) ? FULL_W / 2 : 0, HORIZON_Y);
+	gte_SetGeomOffset(FULL_W / 2 - SCREEN_W * Side(), HORIZON_Y);
 	gte_SetGeomScreen(PROJECTION);
 	polys = 0;
 	DrawSky();
@@ -494,14 +508,15 @@ static void	DrawWorld(void)
 // the interrupt into a ring, sent when the transmitter is ready, as Net Yaroze link games do) or the USB link (psxcomb
 // through the computer, read and written without waiting)
 
-// Frames between a button press and the frame it is for (the link's time): 3 on the link cable, 8 through the USB
-// link (the computer's relay takes longer)
+// Frames between a button press and the frame it is for (the link's time): 3 on the link cable, 4 with the hub
 #define	DELAY			delay
 static int		delay = 3;
 #define	RING			64
 #define	SYNC			0xA5
 #define	HELLO			0xFFFF
 #define	RESTART			0xFFFE		// The worlds differ (a corrupted packet got through): both start again
+#define	START			0xFFFD		// From the hub: buttons = screens << 8 | place, the world from frame 0
+#define	PCSX_MAGIC		(*(volatile uint32_t *)0x1F802080)	// PCSX-Redux: reads "PCSX"
 #define	PKT				10			// Packet bytes
 
 typedef struct { uint16_t buttons; uint8_t check, valid; } Input;
@@ -513,6 +528,9 @@ uint32_t		freeze_frame = 0xFFFFFFFF;
 static uint8_t	checks[RING];				// World check after each frame
 static uint32_t	sim_frame, made_frame, peer_need;	// Next frame to simulate, next input to make, the peer's wait
 static int		linked, my_id, out_of_step, usb, errors, restart_send, restarts;
+static int		hub;						// The hub (sli_hub.py) gives the frames, else the other console
+static uint32_t	hub_sent;					// Next input to send to the hub
+static int		hub_paused;					// The hub's "freeze" (a hello from it): no waiting message
 static uint32_t	last_rx_vsync, stalls;
 static long		link_fd = -1;
 
@@ -552,10 +570,17 @@ static long	NoWait(long rw, long count)
 
 static void	LinkOpen(void)
 {
-	usb = (HOOK_TTY_MODE == 0);		// ("-link usb": the USB link through the computer, else the link cable)
+	// "-link usb": the USB link through the computer, else the link cable; PCSX-Redux: its serial port (bridged to
+	// the hub), whatever the cartridge's tty mode reads there (no cartridge)
+	usb = (HOOK_TTY_MODE == 0) && (PCSX_MAGIC != 0x58534350);
+	hub = usb || (PCSX_MAGIC == 0x58534350);
+	if (hub)
+	{
+		delay = 4;			// (a round trip through the bridges and the hub: a few frames)
+		view_cells = 20;	// (the same on every screen, PCSX-Redux too)
+	}
 	if (usb)
 	{
-		delay = 8;
 		CombSetLink(COMB_LINK_USB);
 		AddCOMB();
 		link_fd = open("sio:", O_RDWR);
@@ -645,8 +670,23 @@ static void	Send(void)
 
 	if (!(VSync(-1) % 25))
 	{
-		Packet(buf, HELLO, my_id, 0);
+		uint32_t	forced = *(volatile uint32_t *)SIDE_ADRS;
+
+		// (to the hub: the place the script asked for, 0xFF: any)
+		Packet(buf, HELLO, my_id, ((forced >> 8) == (SIDE_MAGIC >> 8)) ? (forced & 0xFF) : 0xFF);
 		n = PKT;
+	}
+	if (hub)					// The new inputs, once each (the link to the hub doesn't lose any)
+	{
+		while (linked && (hub_sent < made_frame) && (n < (int)sizeof(buf)))
+		{
+			Packet(buf + n, hub_sent, mine[hub_sent % RING].buttons, mine[hub_sent % RING].check);
+			n += PKT;
+			hub_sent++;
+		}
+		if (n)
+			LinkWrite(buf, n);
+		return;
 	}
 	if (restart_send)			// (a few times: the other console starts again too)
 	{
@@ -680,6 +720,7 @@ static void	LinkStart(void)		// Both consoles: the same world from frame 0
 		mine[sim_frame].valid = theirs[sim_frame].valid = 1;
 	sim_frame = 0;
 	made_frame = DELAY;
+	hub_sent = DELAY;
 	peer_need = 0;
 	WorldInit();
 	checks[0] = WorldCheck();
@@ -691,6 +732,29 @@ static void	Packet8(const uint8_t *p)
 	uint16_t	f = p[1] | (p[2] << 8);
 
 	last_rx_vsync = VSync(-1);
+	if (hub)
+	{
+		if (f == START)					// Our place and the number of screens: the world from frame 0
+		{
+			screens = p[4] ? p[4] : 1;
+			side = p[3];
+			LinkStart();
+		}
+		else if (f == HELLO)
+			hub_paused = 1;
+		else if (linked && (f < HELLO - 2))	// A frame: everyone's buttons together
+		{
+			uint32_t	full = sim_frame + (int16_t)(f - (uint16_t)sim_frame);
+
+			hub_paused = 0;
+			if (full - sim_frame < RING)
+			{
+				theirs[full % RING].buttons = p[3] | (p[4] << 8);
+				theirs[full % RING].valid = 1;
+			}
+		}
+		return;
+	}
 	if (f == RESTART)
 	{
 		if (linked && (sim_frame > 50))		// (not again for the copies of the same restart)
@@ -782,6 +846,21 @@ static void	Lockstep(uint16_t buttons)
 	{
 		Input	*a = &mine[sim_frame % RING], *b = &theirs[sim_frame % RING];
 
+		if (hub)						// (the hub's frame: everyone's buttons; the hub compares the checks)
+		{
+			if (!b->valid)
+			{
+				if (!steps)
+					stalls++;
+				break;
+			}
+			WorldStep(b->buttons);
+			b->valid = a->valid = 0;
+			theirs[(sim_frame + RING / 2) % RING].valid = 0;
+			sim_frame++;
+			checks[sim_frame % RING] = WorldCheck();
+			continue;
+		}
 		if (!a->valid || !b->valid)
 		{
 			if (!steps)
@@ -842,29 +921,46 @@ int	main(void)
 	{
 		uint32_t	forced = *(volatile uint32_t *)SIDE_ADRS;
 
-		if ((forced >> 8) == (SIDE_MAGIC >> 8))
+		if (((forced >> 8) == (SIDE_MAGIC >> 8)) && !hub)
 			side = forced & 1;
 		Receive();
 		pad = PadRead(1) & 0xFFFF;
 		Lockstep(pad);
 		Send();
-		if (linked && (VSync(-1) - last_rx_vsync > 50 * 3))		// (the other console stopped: alone again)
+		// The other console stopped: alone again (with the hub: waiting for it, the world kept, the screens all on
+		// the same frame)
+		if (linked && !hub && (VSync(-1) - last_rx_vsync > 50 * 3))
 			linked = 0;
 
 		prim_ptr = prims[db];
 		ClearOTagR(ot[db], OT_LEN);
 		DrawWorld();
-		Shade(Side() ? SCREEN_W - 156 : 0, 0, 156, 24);
-		Text(Side() ? SCREEN_W - 150 : 6, 4, Side() ? "PS1 SLI  RIGHT" : "PS1 SLI  LEFT", 128, 110, 30);
+		// The label: in the picture's top corners (the middle screens: in their middle)
+		{
+			int		x = (Side() == 0) ? 6 : ((Side() == screens - 1) ? SCREEN_W - 150 : 88);
+			char	label[24];
+
+			if (screens == 2)
+				strcpy(label, Side() ? "PS1 SLI  RIGHT" : "PS1 SLI  LEFT");
+			else
+				sprintf(label, "PS1 SLI  %d OF %d", Side() + 1, screens);
+			Shade(x - 6, 0, 156, 24);
+			Text(x, 4, label, 128, 110, 30);
+		}
 		if (!linked)
 			sprintf(s, "ALONE %d POLYS %dFPS", polys, (int)fps);
 		else
 			sprintf(s, "%d POLYS %dFPS%s", polys, (int)fps, restarts ? " RESYNCED" : "");
-		Text(Side() ? SCREEN_W - 150 : 6, 13, s, 100, 110, 120);
+		Text((Side() == 0) ? 6 : ((Side() == screens - 1) ? SCREEN_W - 150 : 88), 13, s, 100, 110, 120);
+		if (linked && hub && !hub_paused && (VSync(-1) - last_rx_vsync > 50))
+		{
+			Shade(64, 200, 192, 14);
+			Text(76, 203, "WAITING FOR THE HUB...", 128, 128, 128);
+		}
 		if (!linked)
 		{
 			Shade(40, 200, 240, 14);
-			Text(52, 203, "WAITING FOR THE OTHER PS1...", 128, 128, 128);
+			Text(52, 203, hub ? "WAITING FOR THE OTHER SCREENS" : "WAITING FOR THE OTHER PS1...", 128, 128, 128);
 		}
 
 		frames++;

@@ -93,7 +93,7 @@ typedef struct
 	uint32_t	base, ring;			// Address of the rings header, ring size
 	uint32_t	tx_tail;			// Next byte to read from its send ring
 	uint32_t	rx_head;			// Next byte to write in its receive ring
-	bool		tx_tail_changed;
+	bool		tx_tail_changed, rx_head_changed;
 	// END_TTY: the computer's half kept here and written at once, the PS1's half read at once
 	uint32_t	tty_adrs;
 	uint8_t		pc[TTY_PC_PART];
@@ -165,14 +165,42 @@ static void	Use(LinkEnd *e)
 	USB_SetHandle(e->handle);
 }
 
-// Ring piece(s) from/to the computer buffer (the ring may wrap)
-static bool	RingAccess(char cmd, uint32_t ring_adrs, uint32_t ring, uint32_t index, uint8_t *buf, uint32_t n)
-{
-	uint32_t	pos = index & (ring - 1), first = (n < ring - pos) ? n : ring - pos;
+// Rings read/written with the kernel hook's exchange ('X'), not D/U: one USB write that the PS1 never waits in for the
+// computer (D/U wait for its acknowledgements, the program stopped meanwhile: a few milliseconds each, the program's
+// frames slowed by each turn). A packet received wrong: transferred again.
+#define	XFER_PACKET		2048		// (MAX_PACKET_SIZE: the exchange's packets)
 
-	if (!USB_Process(cmd, buf, ring_adrs + pos, first))
+static bool	Xfer(LinkEnd *e, bool write, uint32_t adrs, uint8_t *buf, uint32_t n)
+{
+	uint32_t	part, errors;
+	int			tries;
+
+	for (; n; adrs += part, buf += part, n -= part)
+	{
+		part = (n > XFER_PACKET) ? XFER_PACKET : n;
+		for (tries = 0; ; tries++)
+		{
+			errors = link_crc_errors;
+			if (!USB_Exchange(e->handle, adrs, write ? buf : NULL, write ? part : 0, write ? NULL : buf,
+				write ? 0 : part))
+				return (false);
+			if (link_crc_errors == errors)
+				break;
+			if (tries == 2)
+				return (false);
+		}
+	}
+	return (true);
+}
+
+// Ring piece(s) from/to the computer buffer (the ring may wrap)
+static bool	RingAccess(LinkEnd *e, bool write, uint32_t ring_adrs, uint32_t index, uint8_t *buf, uint32_t n)
+{
+	uint32_t	pos = index & (e->ring - 1), first = (n < e->ring - pos) ? n : e->ring - pos;
+
+	if (!Xfer(e, write, ring_adrs + pos, buf, first))
 		return (false);
-	return ((n == first) || USB_Process(cmd, buf + first, ring_adrs, n - first));
+	return ((n == first) || Xfer(e, write, ring_adrs, buf + first, n - first));
 }
 
 // State of the console (indexes, and the bytes to send for a tty driver)
@@ -181,7 +209,7 @@ static bool	Fetch(LinkEnd *e)
 	Use(e);
 	if (e->kind == END_TTY)
 		return (USB_Process('D', e->ps1, e->tty_adrs + TTY_PC_PART, TTY_PS1_PART));
-	return (USB_Process('D', (uint8_t *)&e->h, e->base, offsetof(UsbLink, tx)));
+	return (Xfer(e, false, e->base, (uint8_t *)&e->h, offsetof(UsbLink, tx)));
 }
 
 // Bytes the console sent (tty driver: the units closed by a vertical blank)
@@ -250,7 +278,7 @@ static bool	Take(LinkEnd *e, uint8_t *buf, uint32_t n)
 		return (true);
 	}
 	Use(e);
-	if (!RingAccess('D', LINK_TX(e), e->ring, e->tx_tail, buf, n))
+	if (!RingAccess(e, false, LINK_TX(e), e->tx_tail, buf, n))
 		return (false);
 	e->tx_tail += n;
 	e->tx_tail_changed = true;
@@ -273,11 +301,12 @@ static bool	Put(LinkEnd *e, uint8_t *buf, uint32_t n)
 		return (true);
 	}
 	Use(e);
-	if (!RingAccess('U', LINK_RX(e), e->ring, e->rx_head, buf, n))
+	if (!RingAccess(e, true, LINK_RX(e), e->rx_head, buf, n))
 		return (false);
-	e->rx_head += n;		// After the bytes
+	e->rx_head += n;		// After the bytes (written by Commit)
 	e->bytes += n;
-	return (USB_Process('U', (uint8_t *)&e->rx_head, LINK_FIELD(e, rx_head), 4));
+	e->rx_head_changed = true;
+	return (true);
 }
 
 // Indexes (and received bytes for a tty driver) written to the console
@@ -290,10 +319,12 @@ static bool	Commit(LinkEnd *e)
 		e->pc_changed = false;
 		return (USB_Process('U', e->pc, e->tty_adrs, TTY_PC_PART));
 	}
-	if ((e->kind == END_RINGS) && e->tx_tail_changed)
+	if ((e->kind == END_RINGS) && (e->tx_tail_changed || e->rx_head_changed))
 	{
-		e->tx_tail_changed = false;
-		return (USB_Process('U', (uint8_t *)&e->tx_tail, LINK_FIELD(e, tx_tail), 4));
+		uint32_t	both[2] = {e->tx_tail, e->rx_head};	// (tx_tail and rx_head follow each other: one transfer)
+
+		e->tx_tail_changed = e->rx_head_changed = false;
+		return (Xfer(e, true, LINK_FIELD(e, tx_tail), (uint8_t *)both, sizeof(both)));
 	}
 	return (true);
 }

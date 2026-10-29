@@ -66,8 +66,9 @@ the serial numbers (`ps1transfer -list` shows them), left one first:
 
 When nobody steers, the ship follows a slow wandering course.
 
-**No link cable?** `run_usb.bat` joins the two consoles through their cartridges and the computer instead (the USB
-link relay, which stays open). It works, but at about 25 fps, because the relay adds latency.
+**No link cable, or more screens?** [PS1 SLI 3 SCREENS](../sli3/README.md) joins the consoles through their
+cartridges and the computer instead, with a hub keeping them in step: two, three or more screens, PCSX-Redux among
+them, at 50 fps.
 
 **On one console,** the demo flies on its own, drawing its half and showing "WAITING FOR THE OTHER PS1".
 

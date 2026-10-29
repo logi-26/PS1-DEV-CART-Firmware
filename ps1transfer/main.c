@@ -614,7 +614,7 @@ static bool	ExchangeCmd(void *handle, char letter, bool served, uint32_t adrs, u
 {
 	uint8_t			out[1+4+4+1 + MAX_PACKET_SIZE + 2], in[MAX_PACKET_SIZE];	// (one relay thread per cartridge)
 	uint8_t			*cmd = out, ack, crc;
-	uint32_t		size = (wsize << 16) | rsize;
+	uint32_t		size = (wsize << 16) | rsize, tail = 0;
 	int				n;
 	bool			stopped;
 
@@ -630,10 +630,15 @@ static bool	ExchangeCmd(void *handle, char letter, bool served, uint32_t adrs, u
 	cmd[7] = size >> 8;
 	cmd[8] = size;
 	cmd[9] = CRC8_Compute(cmd, 1+4+4);
-	memcpy(out + 10, wdata, wsize);
-	out[10 + wsize] = 'N';		// Written packet taken (its CRC is checked below)
-	out[11 + wsize] = 'N';		// Read packet taken
-	if (!USB_WriteTo(handle, out, served ? 10 : 12 + wsize))
+	// (a size 0: no packet, so no CRC and no acknowledgement for it; e.g. a read alone, the rings of -net)
+	if (wsize)
+	{
+		memcpy(out + 10, wdata, wsize);
+		out[10 + wsize + tail++] = 'N';		// Written packet taken (its CRC is checked below)
+	}
+	if (rsize)
+		out[10 + wsize + tail++] = 'N';		// Read packet taken
+	if (!USB_WriteTo(handle, out, served ? 10 : 10 + wsize + tail))
 		return (false);
 	// The answer: 'G', or escaped "DLE g" (the firmware answers the command after a 'Q' that way, also after the 'Q' alone
 	// asking whether it has escaped answers: USB_EscapedAnswers); "DLE q": that 'Q''s own answer, late
@@ -659,16 +664,23 @@ static bool	ExchangeCmd(void *handle, char letter, bool served, uint32_t adrs, u
 				return (true);			// The program stopped: the exchange isn't answered (skipped)
 			continue;
 		}
-		if (!served)
-			return (false);
-		putchar(ack);
+		if (served)
+			putchar(ack);
+		// (else the program's text on its USB tty, skipped as USB_Process does)
 	}
-	if (served && !USB_WriteTo(handle, out + 10, 2 + wsize))	// (answered: the rest at once)
+	if (served && !USB_WriteTo(handle, out + 10, wsize + tail))	// (answered: the rest at once)
 		return (false);
-	if (!USB_ReadFrom(handle, &crc, 1) || !USB_ReadFrom(handle, in, rsize) || !USB_ReadFrom(handle, &ack, 1))
+	if (wsize)
+	{
+		if (!USB_ReadFrom(handle, &crc, 1))
+			return (false);
+		if (crc != CRC8_Compute(wdata, wsize))
+			link_crc_errors++;
+	}
+	if (!rsize)
+		return (true);
+	if (!USB_ReadFrom(handle, in, rsize) || !USB_ReadFrom(handle, &ack, 1))
 		return (false);
-	if (crc != CRC8_Compute(wdata, wsize))
-		link_crc_errors++;
 	if (ack != CRC8_Compute(in, rsize))
 		link_crc_errors++;
 	else
