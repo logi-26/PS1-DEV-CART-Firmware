@@ -507,6 +507,23 @@ MMO-style game could do with the cartridge.
   <img src="screenshots/ps1/plaza.png" alt="PS1 PLAZA with 24 players: the player list on the left, the painted world, name tags and the minimap." width="640">
 </p>
 
+**[PS1 CO-PROCESSOR](demos/coproc/README.md)**: the computer as the PlayStation's co-processor. The PlayStation
+hands work it couldn't do fast enough to the computer and shows the results live, and Select switches each scene
+between the PlayStation alone and with the computer, so you can see the difference.
+- **Swarm:** 1,000 units finding their way around walls you draw. It runs at 10 fps on the PlayStation alone, and
+  at 49 fps when the computer runs the simulation.
+- **Ray tracer:** shiny spheres with reflections and shadows, which the PlayStation's GPU can't draw.
+  - On the PlayStation alone, a 160 × 112 frame takes 4.1 seconds.
+  - With the computer, 9 frames a second arrive while you move the camera, compressed in the PlayStation's own
+    video format and decoded by its MDEC chip.
+- **Running it:** `demos\coproc\run.bat` on the computer the cartridge is connected to, or `demos\coproc\redux.bat`
+  in the PCSX-Redux emulator.
+
+<p align="center">
+  <img src="screenshots/ps1/coproc_swarm.png" alt="The swarm with the computer: 1000 units flowing through a gap to the target at 49 fps." width="320">
+  <img src="screenshots/ps1/coproc_ray.png" alt="The ray tracer with the computer: reflections and shadows, decoded by the MDEC." width="320">
+</p>
+
 ## Profiler
 
 `ps1transfer -prof` samples the running program 1000 times a second, through the cartridge, and shows every second:
