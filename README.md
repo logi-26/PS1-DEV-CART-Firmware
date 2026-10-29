@@ -541,6 +541,18 @@ PlayStation**. Every change is on the TV at once, with no rebuilding and no rest
   <img src="screenshots/ps1/live_hotreload.png" alt="The tile set changed while running: purple grass." width="260">
 </p>
 
+**[PS1 SLI](demos/sli/README.md)**: two PlayStations draw **one 3D scene across two screens**, 640 × 240 in all,
+each drawing its half at 50 fps. It's a flight over an endless landscape, with a ship either controller steers.
+- **The split:** both consoles use the same camera, with the projection centred across the two screens (the GTE's
+  screen offset), and each skips the other half's polygons.
+- **Lockstep:** the two run the same world in lockstep over the link cable. They exchange only their controllers'
+  buttons each frame, so the computer isn't needed once it's started.
+- **Running it:** `demos\sli\run.bat`, with both cartridges connected.
+
+<p align="center">
+  <img src="screenshots/ps1/sli.png" alt="Two consoles' screens side by side: one landscape across both, the coastline continuing over the join, the ship in the middle." width="100%">
+</p>
+
 ## Profiler
 
 `ps1transfer -prof` samples the running program 1000 times a second, through the cartridge, and shows every second:
