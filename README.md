@@ -524,6 +524,23 @@ between the PlayStation alone and with the computer, so you can see the differen
   <img src="screenshots/ps1/coproc_ray.png" alt="The ray tracer with the computer: reflections and shadows, decoded by the MDEC." width="320">
 </p>
 
+**[PS1 LIVE](demos/live/README.md)**: a small platform game that you edit on the computer **while it runs on the
+PlayStation**. Every change is on the TV at once, with no rebuilding and no restart.
+- **What you can change:** paint tiles, move enemies, change colours and physics, or redraw the graphics in any
+  paint program. Each save is sent to the game (hot reload).
+- **How:** the editor writes the running game's memory over USB (`ps1transfer -memlive`), which a normal cartridge
+  can't do. Its map shows the player and enemies where they are in the game.
+- **Running it:** `demos\live\editor.bat`, then start the game on the PS1 DEV CART or in PCSX-Redux.
+
+<p align="center">
+  <img src="screenshots/demos/live_editor.png" alt="The PS1 LIVE editor: the level map with the player and enemies where they are in the game, tiles, enemies, colours, physics and the tile graphics." width="100%">
+</p>
+<p align="center">
+  <img src="screenshots/ps1/live_before.png" alt="The game as it starts." width="260">
+  <img src="screenshots/ps1/live_after.png" alt="Edited while running: a new sky, blocks and coins, an enemy moved." width="260">
+  <img src="screenshots/ps1/live_hotreload.png" alt="The tile set changed while running: purple grass." width="260">
+</p>
+
 ## Profiler
 
 `ps1transfer -prof` samples the running program 1000 times a second, through the cartridge, and shows every second:
