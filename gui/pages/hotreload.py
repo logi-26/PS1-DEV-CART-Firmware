@@ -33,6 +33,7 @@ def describe(path, target):
 
 class HotReloadPage(Page):
     title = "Hot Reload"
+    needs_devcart = "all"
 
     def build(self):
         tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))

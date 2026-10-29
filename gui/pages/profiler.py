@@ -40,6 +40,7 @@ VERDICT_TITLE = {"ok": "Full frame rate", "capped": "Capped by VSync", "vsync": 
 
 class ProfilerPage(Page):
     title = "Profiler"
+    needs_devcart = "all"
 
     def build(self):
         s = self.app.settings

@@ -116,6 +116,7 @@ def describe(kind, bits, axes, dx=0, dy=0):
 
 class ControllerPage(Page):
     title = "Remote Controller"
+    needs_devcart = "all"
 
     def build(self):
         self.pressed = set()        # Buttons held (names)

@@ -11,12 +11,27 @@ import ttkbootstrap as tb
 class Page(tb.Frame):
     title = ""          # Sidebar text
     phase = 1           # Pages of later phases are shown as "coming soon"
+    # With the original PS1USB firmware: "all" = the page can't be used (covered by a note), "running" = not while a
+    # program runs (devcart_note at the top of the page), None = the page works
+    needs_devcart = None
+    devcart_note = ""
 
     def __init__(self, master, app):
         super().__init__(master, padding=12)
         self.app = app
         self.action = None      # Name of the action shown in the command preview (pages with several actions)
+        self.devcart_label = None
         self.build()
+
+    def show_devcart_note(self, shown):
+        """devcart_note under the page's title (its first widget), or hidden."""
+        if shown and not self.devcart_label:
+            self.devcart_label = tb.Label(self, text=self.devcart_note, bootstyle="warning", wraplength=760, justify="left")
+        if self.devcart_label:
+            if shown and not self.devcart_label.winfo_manager():
+                self.devcart_label.pack(anchor="w", pady=(0, 6), after=self.winfo_children()[0])
+            elif not shown:
+                self.devcart_label.pack_forget()
 
     def build(self):
         pass

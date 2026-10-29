@@ -92,6 +92,7 @@ OUTLINE, SELECTED = "#00d0ff", "#ffe000"
 
 class FramePage(Page):
     title = "Frame Inspector"
+    needs_devcart = "all"
 
     def build(self):
         self.running = False        # The frame capture session answers

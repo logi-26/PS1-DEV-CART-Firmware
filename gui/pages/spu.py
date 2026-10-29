@@ -35,6 +35,7 @@ PRIORITY = {"free": 0, "capture": 1, "reverb": 2, "data": 3, "sample": 4}
 
 class SpuPage(Page):
     title = "SPU RAM Viewer"
+    needs_devcart = "all"
 
     def build(self):
         self.spu = None

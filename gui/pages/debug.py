@@ -20,6 +20,7 @@ from widgets import FileField, ImageView, MonoText, PS1_EXE_TYPES, labeled
 
 class DebugPage(Page):
     title = "Debug Server"
+    needs_devcart = "all"
 
     def build(self):
         s = self.app.settings

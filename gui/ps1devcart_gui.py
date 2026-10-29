@@ -91,6 +91,7 @@ class App(tb.Window):
 
         self.runner = Runner(self, self._on_text, self._on_progress, self._on_task, self._on_pcdrv)
         self.devices = []
+        self.firmware = None        # The cartridge's firmware (-info): "devcart", "original", None (not known)
         self.listing = False        # ps1transfer -l runs (refresh_devices)
         self.list_again = False     # Asked again meanwhile: listed once more after it
         self.pages = {}
@@ -148,6 +149,7 @@ class App(tb.Window):
                           command=lambda t=cls.title: self.show_page(t))
             b.pack(fill="x", pady=1)
             self.side_buttons[cls.title] = b
+        self._build_cover()
 
     def _build_bottom(self):
         bottom = tb.Frame(self, padding=(10, 6))
@@ -173,6 +175,7 @@ class App(tb.Window):
             self.current.place_forget()
         self.current = self.pages[title]
         self.current.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._show_firmware_note()
         self.current.on_show()
         for t, b in self.side_buttons.items():
             b.configure(bootstyle="primary" if t == title else "secondary-link")
@@ -405,6 +408,8 @@ class App(tb.Window):
         self.refresh_status()
 
     def _notify_device(self):
+        self.firmware = None        # (the other cartridge's, known from its status)
+        self._show_firmware_note()
         for page in self.pages.values():
             page.on_device_changed()
 
@@ -420,17 +425,50 @@ class App(tb.Window):
 
     def _show_state(self, info, text=None, keep_firmware=False):
         state = info.get("state", "unknown")
+        fw = info.get("firmware")
+        # The original firmware doesn't answer while a program runs (only a reset): known from its last answer
+        if state == "unknown" and not fw and not text and not keep_firmware and self.firmware == "original":
+            state, text, fw = "running", "Running (original firmware)", "original"
         self.state.configure(text="  %s  " % (text or state.capitalize()),
                              bootstyle="inverse-" + STATE_STYLES.get(state, "secondary"))
         if keep_firmware:
             return
-        fw = info.get("firmware")
         if fw == "devcart":
             self.fw.configure(text="Firmware %s" % info.get("firmware_version", "PS1 DEV CART"))
         elif fw:
             self.fw.configure(text="Original firmware")
         else:
             self.fw.configure(text="")
+        self.firmware = fw
+        self._show_firmware_note()
+
+    def _show_firmware_note(self):
+        """Pages that need the PS1 DEV CART firmware, with the original one: the page covered by a note (all), or a
+        note at its top (running: what it does while a program runs)."""
+        original = self.firmware == "original"
+        page = self.current
+        if original and page and page.needs_devcart == "all":
+            self.cover_title.configure(text=page.title)
+            self.cover.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.cover.lift()
+        else:
+            self.cover.place_forget()
+        for p in self.pages.values():
+            if p.needs_devcart == "running":
+                p.show_devcart_note(original)
+
+    def _build_cover(self):
+        self.cover = tb.Frame(self.content, padding=12)
+        self.cover_title = tb.Label(self.cover, text="", font=("", 16, "bold"))
+        self.cover_title.pack(anchor="w")
+        tb.Label(self.cover, text="This page needs the PS1 DEV CART firmware.", bootstyle="warning",
+                 font=("", 11, "bold")).pack(anchor="w", pady=(8, 4))
+        tb.Label(self.cover, text="This cartridge has the original PS1USB firmware, which can't read or control a "
+                                  "program while it runs (only reset it). Flash the PS1 DEV CART firmware from the "
+                                  "Firmware page: it can be flashed from the original firmware, and the flash is read "
+                                  "back and checked.", wraplength=700, justify="left").pack(anchor="w")
+        tb.Button(self.cover, text="Open the Firmware page", bootstyle="primary",
+                  command=lambda: self.show_page("Firmware")).pack(anchor="w", pady=(12, 0))
 
     # ---------------------------------------------------------------- misc
 

@@ -31,6 +31,7 @@ PRESETS = [
 
 class ScreenPage(Page):
     title = "Screen Capture"
+    needs_devcart = "all"
 
     def build(self):
         s = self.app.settings

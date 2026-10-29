@@ -41,6 +41,9 @@ def default_type(size):
 
 class MemoryPage(Page):
     title = "Memory Peek/Poke"
+    needs_devcart = "running"
+    devcart_note = ("With the original PS1USB firmware, peek and poke only work at the menu, not while a program "
+                    "runs. Flash the PS1 DEV CART firmware (Firmware page) to use them while it runs.")
 
     def build(self):
         s = self.app.settings
