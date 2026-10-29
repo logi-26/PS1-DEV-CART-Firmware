@@ -492,6 +492,20 @@ stations or audio files instead. Left/Right changes station, Up/Down sets the vo
   <img src="screenshots/ps1/radio.png" alt="The radio demo playing Smooth Radio, with the song title, the buffer and the SPU RAM used." width="640">
 </p>
 
+**[PS1 PLAZA](demos/plaza/README.md)**: an online game for up to 24 PlayStations at once, showing what an online or
+MMO-style game could do with the cartridge.
+- **How to play:** run `demos\plaza\run.bat` on a PlayStation, or `demos\plaza\redux.bat` to play in the
+  PCSX-Redux emulator without a cartridge. Type your name and pick a free shape and colour. You're then in a shared
+  world with everyone else connected, over the internet.
+- **The game:** the tiles you move over take your colour, and whoever holds the most when the 3-minute round ends wins.
+- **On screen:** the player list on the left, a world bigger than the screen with a minimap, and quick chat on the
+  face buttons.
+- **Company and watching:** a few bots are always playing, and you can watch live at https://ps1-plaza.logi26.co.uk.
+
+<p align="center">
+  <img src="screenshots/ps1/plaza.png" alt="PS1 PLAZA with 24 players: the player list on the left, the painted world, name tags and the minimap." width="640">
+</p>
+
 ## Profiler
 
 `ps1transfer -prof` samples the running program 1000 times a second, through the cartridge, and shows every second:

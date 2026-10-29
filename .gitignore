@@ -40,3 +40,5 @@ buildtools/
 
 # Demos: the linker scripts made by psn00b_tool.mk
 demos/*/*.ld
+# Demos: the PCSX-Redux settings made by demos/plaza/redux.ps1
+demos/*/.redux/
