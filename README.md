@@ -550,7 +550,9 @@ each drawing its half at 50 fps. It's a flight over an endless landscape, with a
 - **Running it:** `demos\sli\run.bat`, with both cartridges connected.
 
 <p align="center">
-  <img src="screenshots/ps1/sli.png" alt="Two consoles' screens side by side: one landscape across both, the coastline continuing over the join, the ship in the middle." width="100%">
+  <img src="screenshots/ps1/sli_1.png" alt="Two consoles' screens side by side: open sea between two islands, across both screens." width="100%">
+  <img src="screenshots/ps1/sli_2.png" alt="Two consoles' screens side by side: a coast on the left and the sea across the middle." width="100%">
+  <img src="screenshots/ps1/sli_3.png" alt="Two consoles' screens side by side: a bay with beaches crossing the middle." width="100%">
 </p>
 
 ## Profiler

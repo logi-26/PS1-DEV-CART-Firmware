@@ -5,7 +5,9 @@ flight over an endless landscape of sea, beaches, grassland, rock and snowy moun
 into the sky, with a ship that either controller steers.
 
 <p align="center">
-  <img src="../../screenshots/ps1/sli.png" alt="The two consoles' screens side by side: one landscape across both, the coastline continuing over the join, the ship in the middle." width="100%">
+  <img src="../../screenshots/ps1/sli_1.png" alt="The two consoles' screens side by side: open sea between two islands, across both screens." width="100%">
+  <img src="../../screenshots/ps1/sli_2.png" alt="The two consoles' screens side by side: a coast on the left and the sea across the middle." width="100%">
+  <img src="../../screenshots/ps1/sli_3.png" alt="The two consoles' screens side by side: a bay with beaches crossing the middle." width="100%">
 </p>
 
 These are the two consoles' screens put side by side: the left half from one PlayStation, the right half from the
