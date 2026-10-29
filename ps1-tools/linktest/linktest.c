@@ -85,22 +85,24 @@ static DISPENV		disp[2];
 static DRAWENV		draw[2];
 static int			side;
 
-static const long	bauds[] = {9600, 19200, 38400, 57600, 115200, 230400};
+// Above 115200: the rates where the baud reload (2073600 / rate, as libcomb) is a whole number, up to the fastest (1)
+static const long	bauds[] = {9600, 19200, 38400, 57600, 115200, 230400, 345600, 518400, 1036800, 2073600};
+#define	BAUDS			10
 static const int	sizes[] = {8, 16, 32, 64, 128, 255};
 #define	SIZES			6
 
-// Packets per frame and size index (pad), global so that they can also be set from the computer for tests
-int				per_frame = 1, size_idx = 0;
+// Packets per frame, size and baud rate indexes (pad), global so that they can also be set from the computer for tests
+int				per_frame = 1, size_idx = 0, baud_idx = 4;
 static int			psyq;				// 1: libcomb ("sio:"), 0: Net Yaroze ("tty:")
 static int			usb;				// 1: USB link through the computer (libcomb, CombSetLink)
 static int			comb;				// libcomb used (serial or USB link)
 static long			tty = -1;
 #ifdef HAVE_COMB
-static long			comb_read = -1, comb_write = -1, ev_read, ev_write;
+static long			comb_read = -1, comb_write = -1, ev_read, ev_write, ev_error;
 static int			write_busy, write_packets, read_size;
 static uint8_t		comb_rx[MAX_PACKET * 8], comb_tx[MAX_PACKET * 8];
 #endif
-static uint32_t		blocked, resyncs;
+static uint32_t		blocked, resyncs, errors;
 #ifdef HAVE_COMB
 static long			write_left;			// Bytes left of the write in progress, and frame of its last progress
 static uint32_t		write_progress_frame;
@@ -117,7 +119,7 @@ static uint32_t		rate_frame, rate_rx_bytes, rate_tx_bytes, rx_rate, tx_rate;
 
 static void	ResetStats(void)
 {
-	tx_packets = rx_packets = lost = corrupted = tx_bytes = rx_bytes = blocked = resyncs = 0;
+	tx_packets = rx_packets = lost = corrupted = tx_bytes = rx_bytes = blocked = resyncs = errors = 0;
 	rtt_sum = rtt_count = rtt_max = rtt_last = 0;
 	rtt_min = 0xFFFFFFFF;
 	rx_started = 0;
@@ -152,8 +154,10 @@ static void	OpenComb(long baud, int size)
 		EnterCriticalSection();
 		ev_read = OpenEvent(HwSIO, EvSpIOER, EvMdNOINTR, NULL);
 		ev_write = OpenEvent(HwSIO, EvSpIOEW, EvMdNOINTR, NULL);
+		ev_error = OpenEvent(HwSIO, EvSpERROR, EvMdNOINTR, NULL);
 		EnableEvent(ev_read);
 		EnableEvent(ev_write);
+		EnableEvent(ev_error);
 		ExitCriticalSection();
 		comb_read = open("sio:", O_RDONLY | O_NOWAIT);
 		comb_write = open("sio:", O_WRONLY | O_NOWAIT);
@@ -170,6 +174,7 @@ static void	OpenComb(long baud, int size)
 	CombResetError();
 	TestEvent(ev_read);
 	TestEvent(ev_write);
+	TestEvent(ev_error);
 	write_busy = 0;
 	rx_len = 0;
 	read_size = size;
@@ -337,6 +342,15 @@ static void	ReceiveComb(void)
 {
 	int	n = 0;
 
+	// Receive error (framing, overrun: e.g. bytes at the old baud rate while the other console changes it): the
+	// library has cancelled the read, it is started again (the partial packet is dropped by the parser)
+	if (TestEvent(ev_error))
+	{
+		errors++;
+		CombResetError();
+		TestEvent(ev_read);
+		read(comb_read, comb_rx, read_size);
+	}
 	// Read ended: its bytes are kept, the next one is started. A few reads per call only: with the USB link, the
 	// next read can end at once (bytes already received), the sending would never get its turn
 	while ((n++ < 32) && TestEvent(ev_read))
@@ -382,7 +396,7 @@ static void	Receive(void)
 int	main(void)
 {
 	uint32_t		pad = 0, opad;
-	int			i, baud = 4, paused = 0, is_pal, connected, frame_ms;
+	int			i, baud = baud_idx, opened_per_frame = per_frame, opened_size = size_idx, paused = 0, is_pal, connected, frame_ms;
 	uint16_t		stat;
 
 #ifndef PSN00BSDK
@@ -430,13 +444,28 @@ int	main(void)
 		opad = pad;
 		pad = PadRead(1);
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))
-		// (PsyQ: the read size follows the packets per frame and their size)
-		if (PRESSED(PADLup) && (per_frame < 8))		{per_frame++; if (comb) OPEN();}
-		if (PRESSED(PADLdown) && (per_frame > 1))	{per_frame--; if (comb) OPEN();}
-		if (PRESSED(PADLright) && (size_idx < SIZES - 1))	{size_idx++; if (comb) OPEN();}
-		if (PRESSED(PADLleft) && (size_idx > 0))	{size_idx--; if (comb) OPEN();}
-		if (PRESSED(PADR1) && (baud < 5))			{baud++; OPEN(); ResetStats();}
-		if (PRESSED(PADL1) && (baud > 0))			{baud--; OPEN(); ResetStats();}
+		if (PRESSED(PADLup) && (per_frame < 8))		per_frame++;
+		if (PRESSED(PADLdown) && (per_frame > 1))	per_frame--;
+		if (PRESSED(PADLright) && (size_idx < SIZES - 1))	size_idx++;
+		if (PRESSED(PADLleft) && (size_idx > 0))	size_idx--;
+		if (PRESSED(PADR1) && (baud_idx < BAUDS - 1))	baud_idx++;
+		if (PRESSED(PADL1) && (baud_idx > 0))		baud_idx--;
+		// Settings changed (pad or computer): reopened (libcomb: the read size follows the packets per frame and
+		// their size), statistics reset
+		if ((per_frame < 1) || (per_frame > 8))		per_frame = 1;
+		if ((size_idx < 0) || (size_idx >= SIZES))	size_idx = 0;
+		if ((baud_idx < 0) || (baud_idx >= BAUDS))	baud_idx = 4;
+		if ((baud_idx != baud) || (per_frame != opened_per_frame) || (size_idx != opened_size))
+		{
+			if ((baud_idx != baud) || comb)
+			{
+				baud = baud_idx;
+				OPEN();
+			}
+			opened_per_frame = per_frame;
+			opened_size = size_idx;
+			ResetStats();
+		}
 		if (PRESSED(PADRdown))						paused = !paused;
 		if (PRESSED(PADstart))						ResetStats();
 
@@ -489,7 +518,7 @@ int	main(void)
 		if (usb)
 			PRINT("USB  %d x %d BYTES/FRAME%s", per_frame, sizes[size_idx], paused ? "  PAUSED" : "");
 		else
-			PRINT("BAUD  %d  %d x %d BYTES/FRAME%s", (int)bauds[baud], per_frame, sizes[size_idx],
+			PRINT("BAUD %d  %d x %d B/FRAME%s", (int)bauds[baud], per_frame, sizes[size_idx],
 				paused ? "  PAUSED" : "");
 		fnt_cur = fnt_stats;
 		PRINT("SENT      %d PACKETS  %d B/S\n", (int)tx_packets, (int)tx_rate);
@@ -499,7 +528,7 @@ int	main(void)
 			PRINT("  (%d.%d%s)", (int)(lost * 100 / (rx_packets + lost)), (int)((lost * 1000 / (rx_packets + lost)) % 10), "%");
 		PRINT("\nCORRUPTED %d", (int)corrupted);
 		if (comb)
-			PRINT("\nBLOCKED   %d  RESYNC %d", (int)blocked, (int)resyncs);
+			PRINT("\nBLOCKED   %d  RESYNC %d  ERRORS %d", (int)blocked, (int)resyncs, (int)errors);
 		fnt_cur = fnt_rtt;
 		if (rtt_count)
 			PRINT("ROUND TRIP  %d FRAMES (%d MS)\nAVG %d.%d  MIN %d  MAX %d FRAMES", (int)rtt_last, (int)(rtt_last * frame_ms),
