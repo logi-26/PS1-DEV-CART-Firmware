@@ -504,15 +504,6 @@ stopped (Ctrl+C, or a line on its input), and prints the throughput every second
 
 The `demos` folder holds programs that show what the cartridge can do.
 
-**[Radio](demos/radio/README.md)**: internet radio on the PlayStation. The computer fetches the station and encodes it
-to SPU ADPCM, the PlayStation's own sound format. `ps1transfer -net` passes it to the cartridge, and the PlayStation
-plays it through its SPU, with the song title on screen. It needs `pip install -r demos/radio/requirements.txt`, then
-`demos\radio\run.bat` starts the server and the program. Six UK stations are filled in, and you can give other
-stations or audio files instead. Left/Right changes station, Up/Down sets the volume.
-
-<p align="center">
-  <img src="screenshots/ps1/radio.png" alt="The radio demo playing Smooth Radio, with the song title, the buffer and the SPU RAM used." width="640">
-</p>
 
 **[PS1 PLAZA](demos/plaza/README.md)**: an online game for up to 24 PlayStations at once, showing what an online or
 MMO-style game could do with the cartridge.
@@ -570,20 +561,6 @@ PlayStation**. Every change is on the TV at once, with no rebuilding and no rest
   <img src="screenshots/ps1/live_hotreload.png" alt="The tile set changed while running: purple grass." width="260">
 </p>
 
-**[PS1 REWIND](demos/rewind/README.md)**: smooth rewind on a real PlayStation, like on an emulator. Hold a button
-and the game runs backwards frame by frame, for minutes; let go and it goes on from there.
-- **How:** a small library for programs that opt in. The game keeps its state in one block of memory (684 bytes in
-  the demo). Each frame the library keeps a copy in RAM (10 seconds) and sends the computer what changed (about
-  8 KB/s). Rewinding plays back from RAM, so it never waits, while older frames come from the computer to refill it.
-- **The demo:** PEG DROP, balls bouncing through pegs into scoring bins. On a console, it rewound 24 seconds at ×4
-  without waiting once, and each time came back to exactly the same state as the computer's copy.
-- **Running it:** `demos\rewind\run.bat` on the computer the cartridge is connected to.
-
-<p align="center">
-  <img src="screenshots/ps1/rewind_play.png" alt="PEG DROP while it plays: 38 seconds of history on the computer, 10 in the PlayStation's RAM." width="320">
-  <img src="screenshots/ps1/rewind_rewinding.png" alt="Rewinding: the balls go back up through the pegs." width="320">
-</p>
-
 **[PS1 SLI](demos/sli/README.md)**: two PlayStations draw **one 3D scene across two screens**, 640 × 240 in all,
 each drawing its half at 50 fps. It's a flight over an endless landscape, with a ship either controller steers.
 - **The split:** both consoles use the same camera, with the projection centred across the two screens (the GTE's
@@ -611,6 +588,30 @@ PlayStations and PCSX-Redux, each drawing its third, all at 50 fps.
   <img src="screenshots/ps1/sli3_1.png" alt="Three screens side by side: open sea, a green coast on the left and an island on the right." width="100%">
   <img src="screenshots/ps1/sli3_2.png" alt="Three screens side by side: an inlet winding through green land, the sea on the right." width="100%">
   <img src="screenshots/ps1/sli3_3.png" alt="Three screens side by side: a bay between two green coasts across all three." width="100%">
+</p>
+
+**[PS1 REWIND](demos/rewind/README.md)**: smooth rewind on a real PlayStation, like on an emulator. Hold a button
+and the game runs backwards frame by frame, for minutes; let go and it goes on from there.
+- **How:** a small library for programs that opt in. The game keeps its state in one block of memory (684 bytes in
+  the demo). Each frame the library keeps a copy in RAM (10 seconds) and sends the computer what changed (about
+  8 KB/s). Rewinding plays back from RAM, so it never waits, while older frames come from the computer to refill it.
+- **The demo:** PEG DROP, balls bouncing through pegs into scoring bins. On a console, it rewound 24 seconds at ×4
+  without waiting once, and each time came back to exactly the same state as the computer's copy.
+- **Running it:** `demos\rewind\run.bat` on the computer the cartridge is connected to.
+
+<p align="center">
+  <img src="screenshots/ps1/rewind_play.png" alt="PEG DROP while it plays: 38 seconds of history on the computer, 10 in the PlayStation's RAM." width="320">
+  <img src="screenshots/ps1/rewind_rewinding.png" alt="Rewinding: the balls go back up through the pegs." width="320">
+</p>
+
+**[Radio](demos/radio/README.md)**: internet radio on the PlayStation. The computer fetches the station and encodes it
+to SPU ADPCM, the PlayStation's own sound format. `ps1transfer -net` passes it to the cartridge, and the PlayStation
+plays it through its SPU, with the song title on screen. It needs `pip install -r demos/radio/requirements.txt`, then
+`demos\radio\run.bat` starts the server and the program. Six UK stations are filled in, and you can give other
+stations or audio files instead. Left/Right changes station, Up/Down sets the volume.
+
+<p align="center">
+  <img src="screenshots/ps1/radio.png" alt="The radio demo playing Smooth Radio, with the song title, the buffer and the SPU RAM used." width="640">
 </p>
 
 ## Profiler
