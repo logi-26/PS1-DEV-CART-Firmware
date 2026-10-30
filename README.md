@@ -548,6 +548,20 @@ PlayStation**. Every change is on the TV at once, with no rebuilding and no rest
   <img src="screenshots/ps1/live_hotreload.png" alt="The tile set changed while running: purple grass." width="260">
 </p>
 
+**[PS1 REWIND](demos/rewind/README.md)**: smooth rewind on a real PlayStation, like on an emulator. Hold a button
+and the game runs backwards frame by frame, for minutes; let go and it goes on from there.
+- **How:** a small library for programs that opt in. The game keeps its state in one block of memory (684 bytes in
+  the demo). Each frame the library keeps a copy in RAM (10 seconds) and sends the computer what changed (about
+  8 KB/s). Rewinding plays back from RAM, so it never waits, while older frames come from the computer to refill it.
+- **The demo:** PEG DROP, balls bouncing through pegs into scoring bins. On a console, it rewound 24 seconds at ×4
+  without waiting once, and each time came back to exactly the same state as the computer's copy.
+- **Running it:** `demos\rewind\run.bat` on the computer the cartridge is connected to.
+
+<p align="center">
+  <img src="screenshots/ps1/rewind_play.png" alt="PEG DROP while it plays: 38 seconds of history on the computer, 10 in the PlayStation's RAM." width="320">
+  <img src="screenshots/ps1/rewind_rewinding.png" alt="Rewinding: the balls go back up through the pegs." width="320">
+</p>
+
 **[PS1 SLI](demos/sli/README.md)**: two PlayStations draw **one 3D scene across two screens**, 640 × 240 in all,
 each drawing its half at 50 fps. It's a flight over an endless landscape, with a ship either controller steers.
 - **The split:** both consoles use the same camera, with the projection centred across the two screens (the GTE's
