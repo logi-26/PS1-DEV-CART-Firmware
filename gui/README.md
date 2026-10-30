@@ -79,9 +79,19 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     nothing pressed (players that joined). The console writes the slots over the game's buffer at every interrupt,
     together with the Cheats page's cheats (216 codes in all, 4 per slot). A real multitap must be plugged in (the
     game asks for the multitap's reply); disconnecting gives the slots back.
+    Each slot can also have its own **USB controller** (several players on controllers plugged into this computer;
+    the mapping saved for that model of controller is used, see Map buttons), the driven slot follows the page.
+    **Virtual multitap (none plugged in)**, a switch per port, for developers adding multitap support without a
+    multitap: the whole multitap reply is written into the program's pad buffer (the `00 80` header, the emulated
+    controllers, the others empty), so the program sees a multitap with those controllers. The buffer is the one the
+    program gave InitPAD (started with the remote controller option), or given by hand. It works for programs whose
+    pad driver fills a buffer: the BIOS's InitPAD with 34-byte buffers, PsyQ's libtap; not for one talking to the
+    controller port itself. A real controller on that port isn't seen meanwhile. The control tester shows a
+    multitap's 4 slots.
     **Run the control tester** starts the PS1 DEV CART control tester on the console (`ps1transfer -padtest`) and
     connects: it shows both ports as a program sees them (device, buttons, sticks, NeGcon values, the mouse pointer and
-    the GunCon sight, shots marked), to try each controller without a game of your own.
+    the GunCon sight, shots marked), to try each controller without a game of your own. A multitap (a virtual one)
+    is shown as its 4 slots.
     **Record** captures every change (buttons, sticks and other axes, mouse motion) with its time, so **Play** (looping or not) sends them again with the
     same timing; a recording can be saved to a file and loaded back (`.ps1pad`, next to the recorded events list).
   - **Memory Peek/Poke**: the variables of the running program, with its symbol file (ELF, Net Yaroze executable,

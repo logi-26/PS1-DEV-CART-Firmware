@@ -5,6 +5,11 @@
 * (InitPAD/StartPAD), real ones or emulated by the cartridge (digital pad, DualShock, analog joystick, NeGcon, mouse,
 * GunCon: the Remote Controller page chooses the device).
 *
+* A multitap's reply (00 80, then its 4 slots of 8 bytes: 00 and the controller's ID, or FF x 8 for an empty slot)
+* is shown as the port's 4 slots, each with a small diagram: the Remote Controller page's virtual multitap (written
+* into the pad buffer by the cartridge's code engine) or a pad driver reading a real one. The BIOS pad driver itself
+* reads the multitap's slot A only.
+*
 * Each port: the device type (the ID byte of its reply) and the buttons held, the sticks / NeGcon twist and analog
 * buttons / mouse motion / GunCon position, drawn on a small diagram. The mouse moves a pointer on the screen, the
 * GunCon aims a sight (the X/Y range the manager uses: the picture's edges at X 77-461, Y 25-248). The trigger (and
@@ -38,7 +43,7 @@
 #define	GUN_Y0			25
 #define	GUN_Y1			248
 #define	MARKS			8			// Shots kept
-#define	TILES			160			// Our tiles and lines per frame (the UI's are for the panels)
+#define	TILES			256			// Our tiles and lines per frame (the UI's are for the panels)
 #define	LINES			32
 
 // Device IDs (the second byte of the reply, see monitor/monitor.h)
@@ -48,6 +53,9 @@
 #define	ID_ANALOG_JOY	0x53
 #define	ID_ANALOG		0x73
 #define	ID_GUNCON		0x63
+#define	ID_MULTITAP		0x80		// (the multitap's reply: then 4 slots)
+#define	TAP_SLOTS		4
+#define	TAP_ROW_H		(DIAG_H / TAP_SLOTS)
 
 // Buttons, as PsyQ's bits (PadRead): ~(byte 2 << 8 | byte 3)
 #define	B_SELECT		(1 << 8)
@@ -79,11 +87,19 @@
 
 typedef struct
 {
-	uint8_t		id;			// ID byte, 0: no controller
+	uint8_t		id;			// ID byte, 0: no controller (empty slot)
+	uint16_t	bits;
+	uint8_t		axes[4];
+} Slot;
+
+typedef struct
+{
+	uint8_t		id;			// ID byte, 0: no controller, ID_MULTITAP: a multitap (slots)
 	uint16_t	bits, obits;
 	uint8_t		axes[4];
 	int			mouse_x, mouse_y;	// Mouse pointer on the screen
 	int			last_id;
+	Slot		slots[TAP_SLOTS];
 } Port;
 
 typedef struct
@@ -182,6 +198,7 @@ static const char	*DeviceName(uint8_t id)
 		case ID_NEGCON:		return ("NEGCON");
 		case ID_MOUSE:		return ("MOUSE");
 		case ID_GUNCON:		return ("GUNCON");
+		case ID_MULTITAP:	return ("MULTITAP");
 	}
 	return ("UNKNOWN");
 }
@@ -217,6 +234,23 @@ static void	ReadPort(int n)
 
 	p->obits = p->bits;
 	p->id = buf[0] ? 0 : buf[1];
+	if (p->id == ID_MULTITAP)			// A multitap: its slots
+	{
+		for (i = 0; i < TAP_SLOTS; i++)
+		{
+			volatile uint8_t	*s = buf + 2 + i * 8;
+			Slot				*t = &p->slots[i];
+			int					j;
+
+			t->id = s[0] ? 0 : s[1];
+			t->bits = t->id ? (~((s[2] << 8) | s[3]) & 0xFFFF) : 0;
+			for (j = 0; j < 4; j++)
+				t->axes[j] = t->id ? s[4 + j] : 0;
+		}
+		p->bits = 0;
+		p->last_id = p->id;
+		return;
+	}
 	p->bits = p->id ? (~((buf[2] << 8) | buf[3]) & 0xFFFF) : 0;
 	for (i = 0; i < 4; i++)
 		p->axes[i] = p->id ? buf[4 + i] : 0;
@@ -302,16 +336,65 @@ static void	PrintButtons(int fnt, Port *p)
 	FntPrint(fnt, "%s\n", any ? line : "-");
 }
 
+// A multitap slot's small diagram on its row: D-pad, shoulders, Select/Start, the 4 buttons, the sticks
+static void	ShowSlot(int x, int y, Slot *t)
+{
+	uint16_t	b = t->bits;
+
+	Tile(x, y + TAP_ROW_H - 1, PANEL_W - 8, 1, 40, 40, 40);		// (between the rows)
+	if (!t->id)
+		return;
+	if (t->id == ID_GUNCON)
+	{
+		Button(x + 6, y + 9, 28, 8, b & GUN_TRIGGER);
+		Button(x + 40, y + 9, 20, 8, b & GUN_A);
+		Button(x + 66, y + 9, 20, 8, b & GUN_B);
+		return;
+	}
+	Button(x + 10, y + 3, 6, 6, b & B_UP);
+	Button(x + 10, y + 17, 6, 6, b & B_DOWN);
+	Button(x + 3, y + 10, 6, 6, b & B_LEFT);
+	Button(x + 17, y + 10, 6, 6, b & B_RIGHT);
+	Button(x + 28, y + 3, 12, 4, b & B_L2);
+	Button(x + 28, y + 9, 12, 4, b & B_L1);
+	Button(x + 44, y + 3, 12, 4, b & B_R2);
+	Button(x + 44, y + 9, 12, 4, b & B_R1);
+	Button(x + 28, y + 17, 12, 4, b & B_SELECT);
+	Button(x + 44, y + 17, 12, 4, b & B_START);
+	Button(x + 69, y + 3, 6, 6, b & B_TRIANGLE);
+	Button(x + 69, y + 17, 6, 6, b & B_CROSS);
+	Button(x + 62, y + 10, 6, 6, b & B_SQUARE);
+	Button(x + 76, y + 10, 6, 6, b & B_CIRCLE);
+	if ((t->id == ID_ANALOG) || (t->id == ID_ANALOG_JOY))
+	{
+		Tile(x + 90, y + 3, 20, 20, C_OFF);
+		Tile(x + 90 + t->axes[2] * 16 / 255, y + 3 + t->axes[3] * 16 / 255, 4, 4, C_ON);
+		Tile(x + 116, y + 3, 20, 20, C_OFF);
+		Tile(x + 116 + t->axes[0] * 16 / 255, y + 3 + t->axes[1] * 16 / 255, 4, 4, C_ON);
+	}
+	else if (t->id == ID_NEGCON)
+		Bar(x + 90, y + 10, 46, t->axes[0], 1);
+}
+
 // A port's panel: text, then its diagram
 static void	ShowPort(int n)
 {
 	Port	*p = &ports[n];
-	int		x = 8 + n * (PANEL_W + 8), y = DIAG_Y, fnt = fnt_port[n], gx, gy, on;
+	int		x = 8 + n * (PANEL_W + 8), y = DIAG_Y, fnt = fnt_port[n], gx, gy, on, i;
 
 	UiTextPanel(x, TEXT_Y, PANEL_W, TEXT_LINES);
 	UiPanel(x, DIAG_Y, PANEL_W, DIAG_H);
 	Tile(x, TEXT_Y, PANEL_W, 3, n ? 255 : 80, n ? 170 : 200, n ? 60 : 255);	// The port's color
 	FntPrint(fnt, "PORT %d\n%s\n", n + 1, DeviceName(p->id));
+	if (p->id == ID_MULTITAP)			// Each slot: its device, and its diagram on its row (A at the top)
+	{
+		for (i = 0; i < TAP_SLOTS; i++)
+		{
+			FntPrint(fnt, "%c %s\n", 'A' + i, p->slots[i].id ? DeviceName(p->slots[i].id) : "-");
+			ShowSlot(x + 4, y + i * TAP_ROW_H, &p->slots[i]);
+		}
+		return;
+	}
 	if (p->id)
 		FntPrint(fnt, "ID %02X\n", p->id);
 	else
@@ -458,7 +541,7 @@ int	main(void)
 		ShowPort(0);
 		ShowPort(1);
 		Pointers();
-		UiHelp("CONTROLLERS: REAL ONES, OR EMULATED BY\nTHE MANAGER (REMOTE CONTROLLER PAGE)");
+		UiHelp("CONTROLLERS: REAL OR EMULATED BY THE\nMANAGER (REMOTE CONTROLLER, MULTITAP)");
 
 		DrawSync(0);
 		VSync(0);

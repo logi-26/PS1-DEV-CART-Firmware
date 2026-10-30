@@ -360,7 +360,9 @@ PlayStation's RAM: your program keeps all its RAM.
   changes can be recorded with their timing and played back (looping or not), to replay the same input, and saved
   to a file (`.ps1pad`). With a multitap (firmware 1.1): any of its 8 slots, 1A-2D, for a game reading a multitap,
   retail games from their disc too: the game's multitap buffer is found in its RAM and the cartridge's code engine
-  puts the emulated controllers in it.
+  puts the emulated controllers in it, each slot driven by the page or its own USB controller. Without a multitap:
+  a virtual one, for developers adding multitap support to their program (one reading the multitap through a pad
+  buffer, such as the BIOS's InitPAD or PsyQ's libtap).
 - **Profiler** (`ps1transfer -prof`, or the Profiler page of the GUI), without changing your program, see
   [below](#profiler).
 
@@ -398,7 +400,7 @@ buttons in a help bar at the bottom.
 | SPU synth | `-synth` | The PlayStation as a 16-slot sample synth: slot n plays MIDI channel n. Samples (VAG) uploaded at any time or sent as SysEx; ADSR, reverb, pan, fine tune per slot; MIDI input. |
 | Link cable tester | `-link [yaroze\|usb\|yarozeusb]` | Packets sent both ways every frame between two consoles: throughput, losses, round trip time, flow control lines. The serial cable can be used with libcomb (as games using the PlayStation link cable library) or like a Net Yaroze game (tty), or the USB link can be used instead of a cable. |
 | Video tester | (Movie Tools page) | Plays an STR movie (MDEC video, XA sound) as a game plays it from the CD: the sectors at the drive's pace (1x or 2x), each frame decoded once its sectors are in, the sound with it. The movie comes from the computer through the file server: loaded into RAM first (up to 1 MB) for the exact timing, or read while it plays. STR files of 2336, 2352 or 2048-byte sectors, BS versions 1-3, up to 640 pixels wide, 15 or 24-bit colour; frame, decode time, size, quantization, late and dropped frames, sound underruns shown on the screen and sent to the computer. |
-| Control tester | `-padtest` | Both controller ports as a program sees them through the BIOS: the device (digital pad, DualShock, analog joystick, NeGcon, mouse, GunCon), buttons held, sticks and analog values, a mouse pointer and a GunCon sight on the screen, the shots marked. With the remote controller option: the Remote Controller page drives it. |
+| Control tester | `-padtest` | Both controller ports as a program sees them through the BIOS: the device (digital pad, DualShock, analog joystick, NeGcon, mouse, GunCon), buttons held, sticks and analog values, a mouse pointer and a GunCon sight on the screen, the shots marked. A multitap's 4 slots too. With the remote controller option: the Remote Controller page drives it. |
 | Flasher | `-flash rom.rom` | Writes the cartridge flash. Also builds a CD image to repair a cartridge (see below). |
 
 **Palette editor** (TIM viewer): change the colours of a TIM's palette on the PlayStation and see the image redrawn
