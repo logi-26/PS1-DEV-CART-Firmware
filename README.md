@@ -134,10 +134,10 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/manager/console.png" alt="The program's printf, and the files it opens on the computer." width="100%">
 </p>
 
-**Remote Controller**: A controller driven from this computer on port 1, while the program runs.
+**Remote Controller**: Controllers driven from this computer: here a DualShock in slot 1B of a multitap, in a retail game (FIFA 99), next to the real controllers.
 
 <p align="center">
-  <img src="screenshots/manager/remote.png" alt="A controller driven from this computer on port 1, while the program runs." width="100%">
+  <img src="screenshots/manager/remote.png" alt="Controllers driven from this computer: here a DualShock in slot 1B of a multitap, in a retail game (FIFA 99), next to the real controllers." width="100%">
 </p>
 
 **Memory Peek/Poke**: Watch variables: the variables of a running game, read live by their symbol name.
