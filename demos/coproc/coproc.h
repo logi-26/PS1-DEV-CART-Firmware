@@ -19,6 +19,8 @@
 *		clear count (1: the smoke cleared each time it changes)
 *	'N'	smoke frame received: its sequence number (2) (frames are paced by the link)
 *	'Q'	smoke back on the PlayStation (the computer stops)
+*	'O'	lighting: the light x, y, z, the box x, z (2 each, world units), light colour (1) (when they change)
+*	'Y'	lighting colours received: their sequence number (2)
 * Computer -> PS1
 *	'W'	welcome: version (1)
 *	'U'	swarm positions: sequence (2), computer time per step (4, microseconds), steps since the last ones (2), unit count
@@ -29,6 +31,8 @@
 *		MDEC bitstream (BS version 2)
 *	'M'	smoke frame: sequence (2), computer time per step (2, 1/10 ms), steps since the last frame (2), width, height
 *		(2 + 2), then the frame as an MDEC bitstream (BS version 2)
+*	'C'	lighting colours: sequence (2), computer time (2, 1/10 ms), form factors' time (2, ms: when the box moved),
+*		patch count (2), then a colour a patch (3 bytes, gamma 2)
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 * If a copy of the MPL was not distributed with this file,
@@ -50,12 +54,15 @@
 #define	CP_SMOKE		'S'
 #define	CP_SMOKE_ACK	'N'
 #define	CP_SMOKE_END	'Q'
+#define	CP_LIGHT		'O'
+#define	CP_LIGHT_ACK	'Y'
 
 #define	CP_WELCOME		'W'
 #define	CP_UNITS		'U'
 #define	CP_MOVES		'V'
 #define	CP_FRAME		'F'
 #define	CP_SMOKE_FRAME	'M'
+#define	CP_LIGHT_COLOURS	'C'
 
 #define	CP_HEADER		3
 

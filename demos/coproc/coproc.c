@@ -1,7 +1,7 @@
 /*
 * PS1 CO-PROCESSOR: the computer as the PlayStation's co-processor, through the PS1 DEV CART (or PCSX-Redux).
 *
-* Three scenes, each one either computed by the PlayStation alone or by the computer (Select switches), with the time
+* Four scenes, each one either computed by the PlayStation alone or by the computer (Select switches), with the time
 * the work takes shown at the bottom:
 * - Swarm: 1000 units finding their way around walls to a target (path field, each unit pushed away from the ones near
 *   it), 50 steps a second. With the computer, it runs the simulation and sends the positions (3 bytes a unit); the
@@ -11,6 +11,9 @@
 *   few rows a frame.
 * - Smoke: a fluid stirred with the cursor (stable fluids). With the computer, it simulates a grid 16 times as fine
 *   (160 x 112) and sends it as MDEC frames; alone, the PlayStation simulates 40 x 28 and draws it as shaded quads.
+* - Bounced light: a room lit by radiosity (the light bouncing from wall to wall). With the computer, it works out all
+*   of it for each change and sends a colour a patch; alone, the PlayStation refines it progressively, a few patches
+*   a frame (the direct light at once, the bounces over seconds).
 *
 * The computer runs coproc_server.py and "ps1transfer -r -e -f coproc.ps-exe -net 127.0.0.1:7030" (run.bat), or
 * PCSX-Redux with its serial port bridged to the server (redux.bat). Without the computer, the PS1 alone modes still
@@ -1039,10 +1042,10 @@ static void	RayAloneRows(void)
 static uint32_t	pad, opad;
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))
 
-enum {S_MENU, S_SWARM, S_RAY, S_SMOKE};
+enum {S_MENU, S_SWARM, S_RAY, S_SMOKE, S_LIGHT};
 static int	screen = S_MENU, menu_item, fps, fps_count, second_frame;
-// For tests, set from the computer (ps1transfer -poke): 1 starts the swarm, 2 the ray tracer, 3 the smoke, as if chosen
-// on the menu
+// For tests, set from the computer (ps1transfer -poke): 1 starts the swarm, 2 the ray tracer, 3 the smoke, 4 the
+// lighting, as if chosen on the menu
 int			auto_start, auto_orbit;		// (auto_orbit: the ray tracer's camera turned by this much a frame)
 
 static void	Bar(const char *left, int mode_pc)
@@ -1462,30 +1465,547 @@ static void	ScreenSmoke(void)
 	Bar(s, smoke_pc);
 }
 
+/****************************************/
+// Lighting: a room open at the front, red on the left, green on the right, a box on the floor and a lamp facing down,
+// both moved with the pad. Every surface in patches of 80 x 80 (777), lit by radiosity: the light directly, then the light
+// each patch sends to the others (form factors, 0 where the box is in the way), bounce after bounce (as
+// coproc_server.py). PS1 alone: progressive refinement, in fixed point (the direct light at once, then the patch with
+// the most light not sent yet sends it, a few a frame); with the computer: all of it, for each change.
+// World: x -480..480, y -480..480 (downwards), z 0..960 (into the screen); the camera at z -1100. The sums on the PS1
+// in quarter units (a patch: 20).
+
+#define	LT_FACES		10
+#define	LT_N			777
+#define	LT_PATCH		80
+#define	LT_Q			4			// World units in the PS1's units
+#define	LT_A			((LT_PATCH / LT_Q) * (LT_PATCH / LT_Q))
+#define	LT_CAM_Z		1100		// The camera's distance to the front (z 0), and its screen distance
+#define	LT_SCREEN		256
+#define	LT_BUDGET		188			// PS1 alone: shooting time a frame, in horizontal blanks (12 ms)
+#define	LT_POWER		(16384 * 120 * 120 / 10 * 12)	// The light: 1.2 on the floor 480 below it (Q14), quarter units
+#define	LT_MAX_E		(4 * 16384)
+#define	LT_BOX_W		240
+#define	LT_BOX_H		320
+
+typedef struct
+{
+	int16_t	o[3], u[3], v[3];		// Origin, a patch's sides (world units)
+	uint8_t	nu, nv, axis;
+	int8_t	sign;					// Normal: sign along axis
+	uint8_t	rho[3];					// Reflectance (/256)
+	int		first, shown;			// First patch; drawn (the box's faces seen from the camera)
+} LtFace;
+
+static LtFace		lt_faces[LT_FACES];
+static int16_t		lt_c[LT_N][3], lt_o[LT_N][3];	// Patch centres, just off the surface (quarter units)
+static uint8_t		lt_axis[LT_N], lt_rho[LT_N][3];
+static int8_t		lt_sign[LT_N];
+static int32_t		lt_b[LT_N][3], lt_u[LT_N][3];	// Light (Q14: 16384 = white), light not sent yet
+static uint8_t		lt_rgb[LT_N][3];				// Colours shown (the PS1's or the computer's)
+static uint8_t		lt_gamma[1024];
+static int16_t		lt_box_lo[3], lt_box_hi[3];		// The box (quarter units)
+static int			lt_lx = -200, lt_ly = -150, lt_lz = 300, lt_bx = -80, lt_bz = 400, lt_colour;
+static int			lt_pc, lt_wanted_pc = 1, lt_changed, lt_shots, lt_shots_second, lt_shot_rate, lt_settled_frames;
+static int			lt_start_frame, lt_u0, lt_left, lt_got_pc, lt_pc_tenths, lt_pc_form_ms, lt_updates, lt_rate;
+static int			lt_sent_state[6] = {-1};
+static int			lt_shooter = -1, lt_next, lt_shot_u[3];	// PS1 alone: the shot under way (patch, next receiver, its light)
+int					auto_lamp;		// For tests (ps1transfer -poke): the lamp goes round by this much a frame
+static const uint8_t	lt_light_rgb[3][3] = {{255, 255, 255}, {255, 199, 128}, {153, 191, 255}};
+
+static void	LtFace_(int k, int ox, int oy, int oz, int ua, int va, int nu, int nv, int axis, int sign, int r, int g, int b)
+{
+	LtFace	*f = &lt_faces[k];
+
+	f->o[0] = ox;
+	f->o[1] = oy;
+	f->o[2] = oz;
+	memset(f->u, 0, sizeof(f->u));
+	memset(f->v, 0, sizeof(f->v));
+	f->u[ua] = LT_PATCH;
+	f->v[va] = LT_PATCH;
+	f->nu = nu;
+	f->nv = nv;
+	f->axis = axis;
+	f->sign = sign;
+	f->rho[0] = r;
+	f->rho[1] = g;
+	f->rho[2] = b;
+}
+
+// The faces and their patches, with the box where it is now (as lt_faces in coproc_server.py)
+static void	LtBuild(void)
+{
+	int	k, i, j, n = 0, y0 = 480 - LT_BOX_H;
+
+	LtFace_(0, -480, 480, 0, 0, 2, 12, 12, 1, -1, 192, 192, 192);		// Floor
+	LtFace_(1, -480, -480, 0, 0, 2, 12, 12, 1, 1, 192, 192, 192);		// Ceiling
+	LtFace_(2, -480, -480, 960, 0, 1, 12, 12, 2, -1, 192, 192, 192);	// Back
+	LtFace_(3, -480, -480, 0, 2, 1, 12, 12, 0, 1, 192, 41, 31);			// Left: red
+	LtFace_(4, 480, -480, 0, 2, 1, 12, 12, 0, -1, 38, 154, 46);			// Right: green
+	LtFace_(5, lt_bx, y0, lt_bz, 0, 2, 3, 3, 1, -1, 205, 192, 154);		// Box: top
+	LtFace_(6, lt_bx, y0, lt_bz, 0, 1, 3, 4, 2, -1, 205, 192, 154);		// front
+	LtFace_(7, lt_bx, y0, lt_bz + LT_BOX_W, 0, 1, 3, 4, 2, 1, 205, 192, 154);	// back
+	LtFace_(8, lt_bx, y0, lt_bz, 2, 1, 3, 4, 0, -1, 205, 192, 154);		// left
+	LtFace_(9, lt_bx + LT_BOX_W, y0, lt_bz, 2, 1, 3, 4, 0, 1, 205, 192, 154);	// right
+	for (k = 0; k < LT_FACES; k++)
+	{
+		LtFace	*f = &lt_faces[k];
+		int		cam[3] = {0, 0, -LT_CAM_Z};
+
+		f->first = n;
+		f->shown = (k < 5) || ((cam[f->axis] - f->o[f->axis]) * f->sign > 0);
+		for (j = 0; j < f->nv; j++)
+			for (i = 0; i < f->nu; i++, n++)
+			{
+				int	a;
+
+				for (a = 0; a < 3; a++)
+				{
+					lt_c[n][a] = (f->o[a] + f->u[a] * i + f->u[a] / 2 + f->v[a] * j + f->v[a] / 2) / LT_Q;
+					lt_o[n][a] = lt_c[n][a] + ((a == f->axis) ? f->sign : 0);
+					lt_rho[n][a] = f->rho[a];
+				}
+				lt_axis[n] = f->axis;
+				lt_sign[n] = f->sign;
+			}
+	}
+	lt_box_lo[0] = lt_bx / LT_Q;
+	lt_box_lo[1] = y0 / LT_Q;
+	lt_box_lo[2] = lt_bz / LT_Q;
+	lt_box_hi[0] = (lt_bx + LT_BOX_W) / LT_Q;
+	lt_box_hi[1] = 480 / LT_Q;
+	lt_box_hi[2] = (lt_bz + LT_BOX_W) / LT_Q;
+}
+
+// The segment p -> q goes through the box (slab test, t in Q12; touching doesn't count)
+static int	Blocked(const int16_t *p, const int16_t *q)
+{
+	int	a, t0 = 0, t1 = 4096;
+
+	for (a = 0; a < 3; a++)					// (most segments: both ends on the same side of a face of the box)
+		if (((p[a] <= lt_box_lo[a]) && (q[a] <= lt_box_lo[a])) || ((p[a] >= lt_box_hi[a]) && (q[a] >= lt_box_hi[a])))
+			return (0);
+	for (a = 0; a < 3; a++)
+	{
+		int	d = q[a] - p[a], ta, tb;
+
+		if (!d)
+		{
+			if ((p[a] <= lt_box_lo[a]) || (p[a] >= lt_box_hi[a]))
+				return (0);
+			continue;
+		}
+		ta = (lt_box_lo[a] - p[a]) * 4096 / d;
+		tb = (lt_box_hi[a] - p[a]) * 4096 / d;
+		if (ta > tb)
+		{
+			int	t = ta;
+
+			ta = tb;
+			tb = t;
+		}
+		if (ta > t0)	t0 = ta;
+		if (tb < t1)	t1 = tb;
+		if (t0 >= t1)
+			return (0);
+	}
+	return (1);
+}
+
+// Form factor between two patches (Q12): cos i cos j A / (pi r^2 + A), 0 if they don't face each other or the box is
+// in the way
+static int	LtForm(int i, int j)
+{
+	int	d[3], dni, dnj, r2, r, ci, cj;
+
+	d[0] = lt_c[j][0] - lt_c[i][0];
+	d[1] = lt_c[j][1] - lt_c[i][1];
+	d[2] = lt_c[j][2] - lt_c[i][2];
+	dni = d[lt_axis[i]] * lt_sign[i];
+	dnj = -d[lt_axis[j]] * lt_sign[j];
+	if ((dni <= 0) || (dnj <= 0))
+		return (0);
+	r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+	r = Isqrt(r2);
+	ci = dni * 4096 / r;
+	cj = dnj * 4096 / r;
+	if (Blocked(lt_o[i], lt_o[j]))
+		return (0);
+	return (((ci * cj) >> 12) * LT_A / (r2 * 355 / 113 + LT_A));
+}
+
+// The light directly (the first shot: the lamp sends its light, down: as the cosine from straight down)
+static void	LtDirect(void)
+{
+	int16_t	l[3] = {lt_lx / LT_Q, lt_ly / LT_Q, lt_lz / LT_Q};
+	int		j, k;
+
+	lt_u0 = 0;
+	for (j = 0; j < LT_N; j++)
+	{
+		int	d[3] = {lt_c[j][0] - l[0], lt_c[j][1] - l[1], lt_c[j][2] - l[2]}, dnj, r2, e = 0;
+
+		dnj = -d[lt_axis[j]] * lt_sign[j];
+		if ((dnj > 0) && (d[1] > 0))		// (facing the light, below it: the lamp faces down)
+		{
+			int	r;
+
+			r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+			r = Isqrt(r2);
+			e = ((((LT_POWER / r2) * ((dnj * 4096 / r) >> 4)) >> 8) * ((d[1] * 4096 / r) >> 4)) >> 8;
+			if (e > LT_MAX_E)
+				e = LT_MAX_E;
+			if (Blocked(l, lt_o[j]))
+				e = 0;
+		}
+		for (k = 0; k < 3; k++)
+		{
+			lt_b[j][k] = lt_u[j][k] = ((e * lt_light_rgb[lt_colour][k]) >> 8) * lt_rho[j][k] >> 8;
+			lt_u0 += lt_u[j][k] >> 4;
+		}
+	}
+	lt_shots = 0;
+	lt_settled_frames = 0;
+	lt_start_frame = frame;
+	lt_shooter = -1;
+}
+
+// Shots: the patch with the most light not sent yet sends it to all the others, a part of them a frame (until the
+// time is up: a whole shot takes about 90 ms). 0 when it's all sent (settled)
+static int	LtShoot(int start)
+{
+	int	j, k;
+
+	if (lt_shooter < 0)
+	{
+		int	i, most = 0;
+
+		for (i = 0; i < LT_N; i++)
+		{
+			int	s = lt_u[i][0] + lt_u[i][1] + lt_u[i][2];
+
+			if (s > most)
+			{
+				most = s;
+				lt_shooter = i;
+			}
+		}
+		if ((lt_shooter < 0) || (lt_left * 100 < lt_u0))	// (less than 1% left: it wouldn't show)
+		{
+			lt_shooter = -1;
+			return (0);
+		}
+		for (k = 0; k < 3; k++)
+		{
+			lt_shot_u[k] = lt_u[lt_shooter][k];
+			lt_u[lt_shooter][k] = 0;
+		}
+		lt_next = 0;
+	}
+	for (j = lt_next; (j < LT_N) && (((Now() - start) & 0xFFFF) < LT_BUDGET); j++)
+	{
+		int	f = (j == lt_shooter) ? 0 : LtForm(lt_shooter, j);
+
+		if (!f)
+			continue;
+		for (k = 0; k < 3; k++)
+		{
+			int	add = (((lt_shot_u[k] * f) >> 12) * lt_rho[j][k]) >> 8;
+
+			lt_b[j][k] += add;
+			lt_u[j][k] += add;
+		}
+	}
+	lt_next = j;
+	if (j == LT_N)
+	{
+		lt_shooter = -1;
+		lt_shots++;
+		lt_shots_second++;
+	}
+	return (1);
+}
+
+static void	LtColours(void)
+{
+	int	i, k;
+
+	lt_left = 0;
+	for (i = 0; i < LT_N; i++)
+		for (k = 0; k < 3; k++)
+		{
+			int	x = lt_b[i][k] >> 4;
+
+			lt_rgb[i][k] = lt_gamma[(x > 1023) ? 1023 : x];
+			lt_left += lt_u[i][k] >> 4;
+		}
+}
+
+// The computer's colours, a patch after the other (3 bytes each)
+static void	LightPacket(const uint8_t *p, int n)
+{
+	uint8_t	a[2];
+
+	if ((n < 8) || !lt_pc)
+		return;
+	a[0] = p[0];
+	a[1] = p[1];
+	Send(CP_LIGHT_ACK, a, 2);
+	lt_pc_tenths = U16(p + 2);
+	lt_pc_form_ms = U16(p + 4);
+	if ((U16(p + 6) != LT_N) || (n < 8 + LT_N * 3))
+		return;
+	memcpy(lt_rgb, p + 8, LT_N * 3);
+	lt_got_pc = 1;
+	lt_updates++;
+}
+
+static void	LightStart(void)
+{
+	int	i;
+
+	for (i = 0; i < 1024; i++)				// Gamma 2 (as coproc_server.py)
+		lt_gamma[i] = Isqrt(i * 65025 / 1023);
+	LtBuild();
+	LtDirect();
+	LtColours();
+	lt_pc = lt_got_pc = 0;
+	lt_sent_state[0] = -1;
+}
+
+static void	LtProject(const int16_t *w, int *x, int *y)
+{
+	int	z = w[2] + LT_CAM_Z;
+
+	*x = SCREEN_W / 2 + w[0] * LT_SCREEN / z;
+	*y = VIEW_H / 2 + w[1] * LT_SCREEN / z;
+}
+
+static void	ScreenLight(void)
+{
+	static int16_t	vx[13 * 13], vy[13 * 13];		// (a face's corners on the screen, their colours)
+	static uint32_t	vc[13 * 13];
+	int				f, i, j, k, spd = (pad & PADR1) ? 16 : 8, moved = 0;
+	char			s[48];
+
+	// Controls: the light (D-pad, L1/L2 up and down), the box (Square + D-pad, a patch at a time)
+	if (pad & PADRleft)
+	{
+		int	bx = lt_bx, bz = lt_bz;
+
+		if (PRESSED(PADLleft))	bx -= LT_PATCH;
+		if (PRESSED(PADLright))	bx += LT_PATCH;
+		if (PRESSED(PADLup))	bz += LT_PATCH;
+		if (PRESSED(PADLdown))	bz -= LT_PATCH;
+		if ((bx >= -480) && (bx <= 480 - LT_BOX_W) && (bz >= 0) && (bz <= 960 - LT_BOX_W) &&
+			!((lt_lx > bx - 40) && (lt_lx < bx + LT_BOX_W + 40) && (lt_lz > bz - 40) && (lt_lz < bz + LT_BOX_W + 40) &&
+			  (lt_ly > 480 - LT_BOX_H - 40)) && ((bx != lt_bx) || (bz != lt_bz)))
+		{
+			lt_bx = bx;
+			lt_bz = bz;
+			LtBuild();
+			moved = 1;
+		}
+	}
+	else
+	{
+		int	x = lt_lx, y = lt_ly, z = lt_lz;
+
+		if (pad & PADLleft)		x -= spd;
+		if (pad & PADLright)	x += spd;
+		if (pad & PADLup)		z += spd;
+		if (pad & PADLdown)		z -= spd;
+		if (pad & PADL1)		y -= spd;
+		if (pad & PADL2)		y += spd;
+		if (auto_lamp)
+		{
+			x = isin(frame * auto_lamp) * 300 >> 12;
+			z = 480 + (icos(frame * auto_lamp) * 300 >> 12);
+		}
+		if (x < -440)	x = -440;
+		if (x > 440)	x = 440;
+		if (y < -440)	y = -440;
+		if (y > 440)	y = 440;
+		if (z < 40)		z = 40;
+		if (z > 920)	z = 920;
+		if ((x > lt_bx - 40) && (x < lt_bx + LT_BOX_W + 40) && (z > lt_bz - 40) && (z < lt_bz + LT_BOX_W + 40) &&
+			(y > 480 - LT_BOX_H - 40))		// (not into the box)
+			x = lt_lx, y = lt_ly, z = lt_lz;
+		if ((x != lt_lx) || (y != lt_ly) || (z != lt_lz))
+		{
+			lt_lx = x;
+			lt_ly = y;
+			lt_lz = z;
+			moved = 1;
+		}
+	}
+	if (PRESSED(PADRright))
+	{
+		lt_colour = (lt_colour + 1) % 3;
+		moved = 1;
+	}
+	if (PRESSED(PADRup))
+	{
+		lt_lx = -200;
+		lt_ly = -150;
+		lt_lz = 300;
+		lt_bx = -80;
+		lt_bz = 400;
+		LtBuild();
+		moved = 1;
+	}
+	if (PRESSED(PADselect))
+	{
+		lt_wanted_pc = !lt_wanted_pc;
+		moved = 1;
+	}
+	if (PRESSED(PADstart))
+	{
+		screen = S_MENU;
+		return;
+	}
+	if (lt_pc != (lt_wanted_pc && Connected()))		// (the computer connected or gone meanwhile)
+	{
+		lt_pc = lt_wanted_pc && Connected();
+		lt_got_pc = 0;
+		lt_sent_state[0] = -1;
+		moved = 1;
+	}
+
+	if (lt_pc)
+	{
+		// The light and the box to the computer, when they change (and each second)
+		int	st[6] = {lt_lx, lt_ly, lt_lz, lt_bx, lt_bz, lt_colour};
+
+		if (memcmp(st, lt_sent_state, sizeof(st)) || !(frame % 50))
+		{
+			uint8_t	b[11];
+
+			for (i = 0; i < 5; i++)
+			{
+				b[i * 2] = st[i];
+				b[i * 2 + 1] = st[i] >> 8;
+			}
+			b[10] = lt_colour;
+			Send(CP_LIGHT, b, sizeof(b));
+			memcpy(lt_sent_state, st, sizeof(st));
+		}
+		if (!lt_got_pc && moved)		// (until the computer's first colours: the direct light)
+		{
+			LtDirect();
+			LtColours();
+		}
+	}
+	else
+	{
+		// PS1 alone: the direct light again after a change, then shots for LT_BUDGET
+		int	start = Now();
+
+		if (moved)
+			LtDirect();
+		else if (!lt_settled_frames)
+			while (((Now() - start) & 0xFFFF) < LT_BUDGET)
+				if (!LtShoot(start))
+				{
+					lt_settled_frames = frame - lt_start_frame;
+					break;
+				}
+		LtColours();
+	}
+
+	// The faces: their corners on the screen and their colours (the patches around each, averaged), a shaded quad a
+	// patch
+	for (f = 0; f < LT_FACES; f++)
+	{
+		static const uint8_t	shift[5] = {0, 0, 1, 0, 2};		// (1, 2 or 4 patches around a corner)
+		LtFace					*fc = &lt_faces[f];
+		int						nu = fc->nu, nv = fc->nv, layer = (f < 5) ? L_IMAGE : L_WALL;
+		POLY_G4					*q;
+
+		if (!fc->shown)
+			continue;
+		for (j = 0; j <= nv; j++)
+			for (i = 0; i <= nu; i++)
+			{
+				int	c = j * (nu + 1) + i, sum[3] = {0, 0, 0}, n = 0, pi, pj, z, inv;
+
+				z = fc->o[2] + fc->u[2] * i + fc->v[2] * j + LT_CAM_Z;
+				inv = (LT_SCREEN << 16) / z;
+				vx[c] = SCREEN_W / 2 + (((fc->o[0] + fc->u[0] * i + fc->v[0] * j) * inv) >> 16);
+				vy[c] = VIEW_H / 2 + (((fc->o[1] + fc->u[1] * i + fc->v[1] * j) * inv) >> 16);
+				for (pj = j - 1; pj <= j; pj++)
+					for (pi = i - 1; pi <= i; pi++)
+						if ((pi >= 0) && (pi < nu) && (pj >= 0) && (pj < nv))
+						{
+							const uint8_t	*rgb = lt_rgb[fc->first + pj * nu + pi];
+
+							sum[0] += rgb[0];
+							sum[1] += rgb[1];
+							sum[2] += rgb[2];
+							n++;
+						}
+				vc[c] = (sum[0] >> shift[n]) | ((sum[1] >> shift[n]) << 8) | ((sum[2] >> shift[n]) << 16);
+			}
+		q = Alloc(sizeof(POLY_G4) * nu * nv);
+		for (j = 0; q && (j < nv); j++)
+			for (i = 0; i < nu; i++, q++)
+			{
+				int	c = j * (nu + 1) + i, w = nu + 1;
+
+				setPolyG4(q);
+				setXY4(q, vx[c], vy[c], vx[c + 1], vy[c + 1], vx[c + w], vy[c + w], vx[c + w + 1], vy[c + w + 1]);
+				*(uint32_t *)&q->r0 = vc[c] | 0x38000000;		// (with the command: shaded quad)
+				*(uint32_t *)&q->r1 = vc[c + 1];
+				*(uint32_t *)&q->r2 = vc[c + w];
+				*(uint32_t *)&q->r3 = vc[c + w + 1];
+				addPrim(OT(layer), q);
+			}
+	}
+	// The light: a small square, smaller further away
+	{
+		int16_t	w[3] = {lt_lx, lt_ly, lt_lz};
+		int		x, y, r = 2 + 2800 / (lt_lz + LT_CAM_Z);
+		const uint8_t	*c = lt_light_rgb[lt_colour];
+
+		LtProject(w, &x, &y);
+		Rect(L_UNIT, x - r, y - r, r * 2 + 1, r * 2 + 1, c[0], c[1], c[2]);
+	}
+
+	if (lt_pc)
+		sprintf(s, "PC %d.%dMS %dKB %d/S %dFPS", lt_pc_tenths / 10, lt_pc_tenths % 10, (LT_N * 3 + 512) / 1024, lt_rate,
+			fps);
+	else if (lt_settled_frames)
+		sprintf(s, "SETTLED: %d SHOTS IN %d.%dS", lt_shots, lt_settled_frames / 50, (lt_settled_frames % 50) / 5);
+	else
+		sprintf(s, "SHOTS %d %d/S %d%% LEFT %dFPS", lt_shots, lt_shot_rate,
+			lt_u0 ? lt_left * 100 / lt_u0 : 0, fps);
+	Bar(s, lt_pc);
+}
+
 static void	ScreenMenu(void)
 {
-	static const char *const	items[3] = {"SWARM: 1000 UNITS", "RAY TRACER", "SMOKE"};
-	static const char *const	about[3] = {"PATHS AROUND WALLS, IN A CROWD", "SPHERES, REFLECTIONS AND SHADOWS",
-											"A FLUID YOU STIR, AROUND PILLARS"};
+	static const char *const	items[4] = {"SWARM: 1000 UNITS", "RAY TRACER", "SMOKE", "BOUNCED LIGHT"};
+	static const char *const	about[4] = {"PATHS AROUND WALLS, IN A CROWD", "SPHERES, REFLECTIONS AND SHADOWS",
+											"A FLUID YOU STIR, AROUND PILLARS", "LIGHT FROM WALL TO WALL (RADIOSITY)"};
 	int							i;
 
 	if (PRESSED(PADLup))
-		menu_item = (menu_item + 2) % 3;
+		menu_item = (menu_item + 3) % 4;
 	if (PRESSED(PADLdown))
-		menu_item = (menu_item + 1) % 3;
+		menu_item = (menu_item + 1) % 4;
 	Rect(L_PANEL, 0, 0, SCREEN_W, 14, C_BAR);
 	Text(L_TEXT, 8, 4, "PS1 CO-PROCESSOR", C_TEXT);
 	CentreText(L_TEXT, 28, "THE COMPUTER DOES THE HEAVY WORK,", C_TEXT);
 	CentreText(L_TEXT, 38, "THE PLAYSTATION SHOWS IT", C_TEXT);
-	for (i = 0; i < 3; i++)
+	for (i = 0; i < 4; i++)
 	{
-		Rect(L_PANEL, 70, 60 + i * 28, 180, 22, (i == menu_item) ? 50 : 20, (i == menu_item) ? 70 : 24,
+		Rect(L_PANEL, 70, 52 + i * 24, 180, 20, (i == menu_item) ? 50 : 20, (i == menu_item) ? 70 : 24,
 			(i == menu_item) ? 130 : 40);
-		CentreText(L_TEXT, 67 + i * 28, items[i], C_TEXT);
+		CentreText(L_TEXT, 58 + i * 24, items[i], C_TEXT);
 	}
-	CentreText(L_TEXT, 150, about[menu_item], C_DIM);
-	CentreText(L_TEXT, 172, "SELECT IN A SCENE: PS1 ALONE / PS1+PC", C_YELLOW);
-	CentreText(L_TEXT, 192, LinkName(), Connected() ? 80 : 128, Connected() ? 128 : 70, Connected() ? 80 : 70);
+	CentreText(L_TEXT, 156, about[menu_item], C_DIM);
+	CentreText(L_TEXT, 176, "SELECT IN A SCENE: PS1 ALONE / PS1+PC", C_YELLOW);
+	CentreText(L_TEXT, 196, LinkName(), Connected() ? 80 : 128, Connected() ? 128 : 70, Connected() ? 80 : 70);
 	Rect(L_PANEL, 0, SCREEN_H - 14, SCREEN_W, 14, C_PANEL);
 	Text(L_TEXT, 8, SCREEN_H - 11, "UP/DOWN:CHOOSE  X:START", C_TEXT);
 	if (auto_start)
@@ -1493,7 +2013,7 @@ static void	ScreenMenu(void)
 	if (PRESSED(PADRdown) || PRESSED(PADstart) || auto_start)
 	{
 		auto_start = 0;
-		screen = (menu_item == 2) ? S_SMOKE : menu_item ? S_RAY : S_SWARM;
+		screen = (menu_item == 3) ? S_LIGHT : (menu_item == 2) ? S_SMOKE : menu_item ? S_RAY : S_SWARM;
 		if (screen == S_SWARM)
 		{
 			SwarmWalls();
@@ -1505,6 +2025,8 @@ static void	ScreenMenu(void)
 		}
 		else if (screen == S_SMOKE)
 			SmokeStart();
+		else if (screen == S_LIGHT)
+			LightStart();
 		else
 		{
 			ray_full = 0;
@@ -1798,6 +2320,9 @@ static void	Packet(const uint8_t *p, int n)
 		case CP_SMOKE_FRAME:
 			SmokeFramePacket(p, n);
 			break;
+		case CP_LIGHT_COLOURS:
+			LightPacket(p, n);
+			break;
 	}
 }
 
@@ -1846,6 +2371,7 @@ int	main(void)
 			case S_SWARM:	ScreenSwarm();	break;
 			case S_RAY:		ScreenRay();	break;
 			case S_SMOKE:	ScreenSmoke();	break;
+			case S_LIGHT:	ScreenLight();	break;
 		}
 		// Hello each second: the welcome back keeps the connection known (and PCSX-Redux connects before the program
 		// runs: the first welcome may be missed)
@@ -1872,6 +2398,10 @@ int	main(void)
 			ray_frames = 0;
 			smoke_rate = smoke_frames;
 			smoke_frames = 0;
+			lt_shot_rate = lt_shots_second;
+			lt_shots_second = 0;
+			lt_rate = lt_updates;
+			lt_updates = 0;
 			second_frame = frame;
 		}
 

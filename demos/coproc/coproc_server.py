@@ -20,7 +20,12 @@ Smoke: the computer simulates the fluid (stable fluids) on a grid of 160 x 112, 
 PlayStation's own (40 x 28), 50 steps a second with the PlayStation's controls (the cursor, the wind), and sends it
 as MDEC frames, the next one once the PlayStation has the last one.
 
-The rules of all three are the PlayStation's too (coproc.c, PS1 alone): the same scenes, so the two can be compared.
+Bounced light: the computer lights a room by radiosity (the light bouncing from wall to wall, 777 patches): the
+form factors between all the patches when the box moves (with the box in the way or not), then the light, directly
+and bounce after bounce, each time the light moves. It sends a colour a patch; the PlayStation draws them with its
+Gouraud shading.
+
+The rules of all four are the PlayStation's too (coproc.c, PS1 alone): the same scenes, so the two can be compared.
 Protocol: coproc.h.
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -443,6 +448,110 @@ class SmokeRunner(threading.Thread):
                 self.in_flight = 0
 
 
+# Lighting (coproc.h, coproc.c has the same): a room open at the front (x -480..480, y -480..480 downwards, z 0..960
+# into the screen), red on the left, green on the right, a box on the floor that moves, a point light. Every surface in
+# patches of 80 x 80 (777). The light is a lamp facing down. The bounced light by radiosity: each patch's light, from the light directly and from all
+# the other patches (form factors, with the box in the way or not)
+LT_PATCH = 80
+LT_AREA = LT_PATCH * LT_PATCH
+LT_BOUNCES = 24             # Iterations of the solution (each one: one more bounce)
+LT_POWER = 1.2              # The light: its direct light on the floor 480 below it
+LT_IN_FLIGHT = 2            # Colours on their way to the PlayStation at most
+LT_MAX_E = 4.0              # Direct light at most (a patch right next to the light)
+LT_BOX = (240, 320, 240)    # Box size (x, y, z); it stands on the floor
+LIGHT_COLOURS = np.array(((1.0, 1.0, 1.0), (1.0, 0.78, 0.5), (0.6, 0.75, 1.0)), np.float32)
+WHITE, RED, GREEN, BOX = (0.75, 0.75, 0.75), (0.75, 0.16, 0.12), (0.15, 0.6, 0.18), (0.8, 0.75, 0.6)
+
+
+def lt_faces(bx, bz):
+    """The faces: (origin, u, v (a patch's sides), patches along u, v, normal axis, normal sign, reflectance), as
+    LtFaces in coproc.c."""
+    bw, bh, bd = LT_BOX
+    p, y0 = LT_PATCH, 480 - bh
+    return [
+        ((-480, 480, 0), (p, 0, 0), (0, 0, p), 12, 12, 1, -1, WHITE),       # Floor
+        ((-480, -480, 0), (p, 0, 0), (0, 0, p), 12, 12, 1, 1, WHITE),       # Ceiling
+        ((-480, -480, 960), (p, 0, 0), (0, p, 0), 12, 12, 2, -1, WHITE),    # Back
+        ((-480, -480, 0), (0, 0, p), (0, p, 0), 12, 12, 0, 1, RED),         # Left
+        ((480, -480, 0), (0, 0, p), (0, p, 0), 12, 12, 0, -1, GREEN),       # Right
+        ((bx, y0, bz), (p, 0, 0), (0, 0, p), bw // p, bd // p, 1, -1, BOX),     # Box: top
+        ((bx, y0, bz), (p, 0, 0), (0, p, 0), bw // p, bh // p, 2, -1, BOX),     # front
+        ((bx, y0, bz + bd), (p, 0, 0), (0, p, 0), bw // p, bh // p, 2, 1, BOX),  # back
+        ((bx, y0, bz), (0, 0, p), (0, p, 0), bd // p, bh // p, 0, -1, BOX),     # left
+        ((bx + bw, y0, bz), (0, 0, p), (0, p, 0), bd // p, bh // p, 0, 1, BOX),  # right
+    ]
+
+
+def segment_blocked(p, q, lo, hi):
+    """Segments p -> q (N x 3) going through the box lo..hi (slab test; touching doesn't count)."""
+    d = q - p
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ta, tb = (lo - p) / d, (hi - p) / d
+    flat = d == 0
+    inside = (p > lo) & (p < hi)
+    t_in = np.where(flat, np.where(inside, -np.inf, np.inf), np.minimum(ta, tb))
+    t_out = np.where(flat, np.where(inside, np.inf, -np.inf), np.maximum(ta, tb))
+    t0 = np.maximum(t_in.max(axis=1), 0)
+    t1 = np.minimum(t_out.min(axis=1), 1)
+    return t0 < t1
+
+
+class Lighting:
+    def __init__(self):
+        self.box = None
+        self.form_ms = 0.0
+
+    def build(self, bx, bz):
+        """Patches of the room with the box at bx, bz, and the form factors between them."""
+        t0 = time.perf_counter()
+        c, n, rho = [], [], []
+        for o, u, v, nu, nv, axis, sign, r in lt_faces(bx, bz):
+            o, u, v = np.array(o, np.float32), np.array(u, np.float32), np.array(v, np.float32)
+            normal = np.zeros(3, np.float32)
+            normal[axis] = sign
+            for j in range(nv):
+                for i in range(nu):
+                    c.append(o + (i + 0.5) * u + (j + 0.5) * v)
+                    n.append(normal)
+                    rho.append(r)
+        self.c, self.n, self.rho = np.array(c), np.array(n), np.array(rho, np.float32)
+        self.o = self.c + self.n * 4                # (just off the surface, for the box in the way)
+        bw, bh, bd = LT_BOX
+        self.lo = np.array((bx, 480 - bh, bz), np.float32)
+        self.hi = self.lo + np.array(LT_BOX, np.float32)
+        # Form factors: cos i cos j A / (pi r^2 + A) (a disc of the patch's area), 0 if the box is in the way
+        d = self.c[None, :, :] - self.c[:, None, :]
+        dni = (d * self.n[:, None, :]).sum(-1)
+        dnj = -(d * self.n[None, :, :]).sum(-1)
+        r2 = (d * d).sum(-1)
+        facing = (dni > 0) & (dnj > 0)
+        f = np.zeros_like(r2)
+        f[facing] = dni[facing] * dnj[facing] / r2[facing] * LT_AREA / (np.pi * r2[facing] + LT_AREA)
+        i, j = np.nonzero(np.triu(facing))
+        blocked = segment_blocked(self.o[i], self.o[j], self.lo, self.hi)
+        f[i[blocked], j[blocked]] = f[j[blocked], i[blocked]] = 0
+        self.f = f
+        self.box = (bx, bz)
+        self.form_ms = (time.perf_counter() - t0) * 1000
+
+    def solve(self, light, colour):
+        """Each patch's colour (gamma 2: as on the PlayStation), N x 3 bytes: the direct light, then LT_BOUNCES
+        iterations of B = rho (E + F B)."""
+        L = np.array(light, np.float32)
+        d = self.c - L
+        dnj = -(d * self.n).sum(-1)
+        r2 = (d * d).sum(-1)
+        # (a lamp facing down: its light falls off as the cosine from straight down)
+        e = np.where((dnj > 0) & (d[:, 1] > 0), LT_POWER * 480.0 * 480.0 * dnj * d[:, 1] / (r2 * r2), 0)
+        e = np.minimum(e, LT_MAX_E) * ~segment_blocked(np.broadcast_to(L, self.o.shape), self.o, self.lo, self.hi)
+        e = e[:, None] * LIGHT_COLOURS[colour % 3][None, :]
+        b = self.rho * e
+        for _ in range(LT_BOUNCES):
+            b = self.rho * (e + self.f @ b)
+        x = np.minimum(1023, (b * 1024).astype(np.int64))
+        return np.sqrt(x * 65025 // 1023).astype(np.uint8)   # (as Isqrt on the PlayStation: rounded down)
+
+
 class Client:
     def __init__(self, reader, writer, log):
         self.reader, self.writer, self.log = reader, writer, log
@@ -459,6 +568,13 @@ class Client:
         self.keyframe_t = 0.0
         self.hello = False
         self.smoke = None               # SmokeRunner while the computer simulates the smoke
+        self.lighting = Lighting()
+        self.light_wanted = None        # Latest light and box not lit yet
+        self.light_busy = False
+        self.light_in_flight = 0        # Colours sent the PlayStation hasn't said it has (LT_IN_FLIGHT at most)
+        self.light_sent_t = 0.0
+        self.light_seq = 0
+        self.light_last = None          # The light and box of the last colours sent
 
     def send(self, data):
         self.writer.write(data)
@@ -513,10 +629,49 @@ class Client:
         elif kind == b"Q":
             self.smoke_end()
             self.log("Smoke back on the PlayStation")
+        elif kind == b"O" and len(data) >= 11:
+            state = struct.unpack("<5hB", data[:11])
+            if state != self.light_last:
+                self.light_wanted = state
+            if not self.light_busy:
+                asyncio.ensure_future(self.light())
+        elif kind == b"Y":
+            self.light_in_flight = max(0, self.light_in_flight - 1)
         elif kind == b"R" and len(data) >= 9:
             self.ray_wanted = struct.unpack("<HBhhH", data[:9])
             if not self.ray_busy:
                 asyncio.ensure_future(self.ray())
+
+    async def light(self):
+        """The room's colours for the latest light and box (one at a time; at most LT_IN_FLIGHT on their way)."""
+        self.light_busy = True
+        loop = asyncio.get_running_loop()
+        try:
+            while self.light_wanted:
+                while self.light_in_flight >= LT_IN_FLIGHT and time.monotonic() - self.light_sent_t < 1.0:
+                    await asyncio.sleep(0.002)
+                if self.light_in_flight >= LT_IN_FLIGHT:     # (colours lost: sent again)
+                    self.light_in_flight = 0
+                lx, ly, lz, bx, bz, colour = state = self.light_wanted
+                self.light_wanted = None
+                lighting = self.lighting
+                t0 = time.perf_counter()
+                form_ms = 0
+                if lighting.box != (bx, bz):
+                    if lighting.box is None:
+                        self.log("Bounced light on the computer")
+                    await loop.run_in_executor(None, lighting.build, bx, bz)
+                    form_ms = int(lighting.form_ms)
+                rgb = await loop.run_in_executor(None, lighting.solve, (lx, ly, lz), colour)
+                tenths = int((time.perf_counter() - t0) * 10000)
+                self.light_seq = (self.light_seq + 1) & 0xFFFF
+                self.send(packet(b"C", struct.pack("<HHHH", self.light_seq, min(tenths, 65535), form_ms, len(rgb)) +
+                                 rgb.tobytes()))
+                self.light_last = state
+                self.light_in_flight += 1
+                self.light_sent_t = time.monotonic()
+        finally:
+            self.light_busy = False
 
     def smoke_end(self):
         if self.smoke:

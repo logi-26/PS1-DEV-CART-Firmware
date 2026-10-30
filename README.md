@@ -518,6 +518,9 @@ between the PlayStation alone and with the computer, so you can see the differen
     video format and decoded by its MDEC chip.
 - **Smoke:** coloured smoke you stir around pillars. The PlayStation alone simulates a 40 × 28 grid at 16 fps; the
   computer simulates 160 × 112, 16 times as fine, and sends 19 frames a second.
+- **Bounced light:** a room lit by radiosity, the light bouncing from wall to wall. With the computer, the bounces
+  follow the lamp live; alone, the PlayStation shows only the direct light while the lamp moves, and takes 83 seconds
+  to settle once it stops.
 - **Running it:** `demos\coproc\run.bat` on the computer the cartridge is connected to, or `demos\coproc\redux.bat`
   in the PCSX-Redux emulator.
 
@@ -525,6 +528,7 @@ between the PlayStation alone and with the computer, so you can see the differen
   <img src="screenshots/ps1/coproc_swarm.png" alt="The swarm with the computer: 1000 units flowing through a gap to the target at 49 fps." width="320">
   <img src="screenshots/ps1/coproc_ray.png" alt="The ray tracer with the computer: reflections and shadows, decoded by the MDEC." width="320">
   <img src="screenshots/ps1/coproc_smoke.png" alt="The smoke with the computer: a 160 x 112 fluid swirling around the pillars." width="320">
+  <img src="screenshots/ps1/coproc_light.png" alt="The bounced light with the computer: a room lit by radiosity, live while the lamp moves." width="320">
 </p>
 
 **[PS1 LIVE](demos/live/README.md)**: a small platform game that you edit on the computer **while it runs on the

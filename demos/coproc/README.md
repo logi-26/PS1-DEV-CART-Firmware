@@ -102,6 +102,44 @@ the flow carried along the flow, then the flow made incompressible), but at very
 | Select | PS1 / PS1+PC |
 | Start | Back to the menu |
 
+## Bounced light: a room lit by radiosity
+
+A room open at the front, with a red wall, a green wall and a box, lit by a lamp facing down. The light bounces from
+wall to wall: the ceiling, which the lamp doesn't reach, is lit by the floor; the red wall tints the room pink; the
+box's shadow is soft and greenish. Every surface is made of 777 patches, and each patch's light comes from the lamp
+and from all the other patches (radiosity, with the box in the way or not). The PlayStation draws the room with its
+Gouraud shading in both modes; only the lighting changes.
+
+<p align="center">
+  <img src="../../screenshots/ps1/coproc_light.png" alt="With the computer, the lamp moving: the ceiling lit by the floor, a soft greenish shadow." width="320">
+  <img src="../../screenshots/ps1/coproc_light_alone.png" alt="The PlayStation alone, the lamp moving: direct light only, a black ceiling and black shadows." width="320">
+</p>
+
+| | PS1 | PS1+PC |
+|---|---|---|
+| While the lamp or the box moves | **Direct light only**: a black ceiling, black shadows | **All the bounces, live** |
+| A new lighting | 83 seconds to settle (1,083 shots, 12 a second); a third of it still missing after 20 seconds | 12–15 ms on the computer, 25 a second |
+| Moving the box | The same | 125 ms more on the computer (the form factors again) |
+| Frame rate | 25 fps | 25 fps |
+| Link | – | 2.3 KB each time (a colour a patch) |
+
+- **Alone,** the PlayStation uses progressive radiosity in fixed point: the lamp's light at once, then the patch with
+  the most light not sent yet sends it to all the others, as many as fit in 12 ms a frame. It starts again from the
+  lamp at every change, so while you move something you only see the direct light.
+- **With the computer,** it works out the form factors between all the patches when the box moves (600,000 pairs),
+  then 24 bounces for every change of the lamp, and sends a colour a patch. Once settled, the PlayStation's room looks
+  the same: it's the same method.
+
+| Button | |
+|---|---|
+| D-pad (R1: faster) | Move the lamp (left/right, back/forward) |
+| L1 / L2 | Lamp up / down |
+| Square (hold) + D-pad | Move the box |
+| Circle | Lamp colour: white, warm, cool |
+| Triangle | Start again |
+| Select | PS1 / PS1+PC |
+| Start | Back to the menu |
+
 All the figures above were measured on a PAL PlayStation with a PS1 DEV CART, and a Windows PC.
 
 ## Running it
@@ -135,10 +173,10 @@ The link is the same as in the other demos: psxcomb's USB link and `ps1transfer 
 port and a bridge in PCSX-Redux. The program reads and writes the link without ever waiting, so the screen keeps
 moving while results are on their way.
 
-- **[coproc_server.py](coproc_server.py)** is the co-processor. It runs the swarm simulation, the ray tracer and the
-  smoke (numpy), and compresses frames with [mdec_encoder.py](mdec_encoder.py).
+- **[coproc_server.py](coproc_server.py)** is the co-processor. It runs the swarm simulation, the ray tracer, the
+  smoke and the radiosity (numpy), and compresses frames with [mdec_encoder.py](mdec_encoder.py).
 - **[coproc.c](coproc.c)** is the PlayStation program. It draws everything, decodes the frames with the MDEC, and has
-  the PS1 versions of the three scenes, following the same rules as the server, so the two modes can be compared.
+  the PS1 versions of the four scenes, following the same rules as the server, so the two modes can be compared.
 - **[coproc.h](coproc.h)** describes the messages between them.
 
 The pattern works for any heavy job: the PlayStation sends what it needs (a camera, a target, a game position), and
