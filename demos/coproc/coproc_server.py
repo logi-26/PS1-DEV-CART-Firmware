@@ -16,7 +16,11 @@ Ray tracer: the computer ray traces the scene (spheres, reflections, shadows) se
 PlayStation's own video format, mdec_encoder.py) that the PlayStation's MDEC decodes. One frame at a time: the next
 request comes with the camera of that moment.
 
-The rules of both are the PlayStation's too (coproc.c, PS1 alone): the same scenes, so the two can be compared.
+Smoke: the computer simulates the fluid (stable fluids) on a grid of 160 x 112, 16 times as fine as the
+PlayStation's own (40 x 28), 50 steps a second with the PlayStation's controls (the cursor, the wind), and sends it
+as MDEC frames, the next one once the PlayStation has the last one.
+
+The rules of all three are the PlayStation's too (coproc.c, PS1 alone): the same scenes, so the two can be compared.
 Protocol: coproc.h.
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -30,6 +34,7 @@ import heapq
 import math
 import socket
 import struct
+import threading
 import time
 
 import numpy as np
@@ -37,7 +42,7 @@ import numpy as np
 import mdec_encoder
 
 # coproc.h
-VERSION = 1
+VERSION = 2
 GRID_W, GRID_H, CELL = 80, 56, 4
 CELLS = GRID_W * GRID_H
 WALL_BYTES = CELLS // 8
@@ -270,6 +275,174 @@ def render(w, h, yaw, pitch, dist, samples=1):
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
+# Smoke (coproc.c has the same, on a grid of 40 x 28): "stable fluids" on a grid of 160 x 112 (cells of 2 pixels).
+# Speeds in cells a step, smoke in colour units (0-320)
+SM_W, SM_H, SM_CELL = 160, 112, 2
+SM_ITER = 40                # Pressure iterations (Jacobi)
+SM_REACH = 24               # The cursor's and the wind's reach (pixels)
+SM_WIND_X, SM_WIND_V = 12, 24
+SM_BG = np.array((8, 10, 20), np.float32)
+SM_FRAME_BYTES = 3500       # A frame's MDEC data at most
+SM_MAX_RATE = 30            # Frames a second at most
+SM_IN_FLIGHT = 2            # Frames sent the PlayStation hasn't said it has
+SM_PUSH_S = 0.2             # The cursor's push stops when no controls came for this long
+PILLARS = ((120, 112, 16), (208, 62, 12), (208, 162, 12))
+PALETTE = np.array(((255, 140, 40), (40, 200, 255), (255, 60, 160), (90, 255, 90), (255, 230, 60), (160, 120, 255)),
+                   np.float32)
+
+
+def shifted(a, dx, dy):
+    """a seen from the neighbour at (dx, dy) (0 past the edges)."""
+    out = np.zeros_like(a)
+    h, w = a.shape[-2:]
+    out[..., max(0, -dy):h - max(0, dy), max(0, -dx):w - max(0, dx)] = \
+        a[..., max(0, dy):h - max(0, -dy), max(0, dx):w - max(0, -dx)]
+    return out
+
+
+class Smoke:
+    def __init__(self):
+        cy, cx = (np.mgrid[0:SM_H, 0:SM_W] * SM_CELL + SM_CELL / 2).astype(np.float32)
+        self.solid = np.zeros((SM_H, SM_W), bool)
+        for x, y, r in PILLARS:
+            self.solid |= (cx - x) ** 2 + (cy - y) ** 2 < r * r
+        fluid = (~self.solid).astype(np.float32)
+        # The neighbours that are fluid (left, right, up, down), and how many
+        self.nbr = [shifted(fluid, dx, dy) * fluid for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
+        n = sum(self.nbr)
+        self.inv_n = np.where(n > 0, 1 / np.maximum(n, 1), 0).astype(np.float32)
+        self.fluid = fluid
+        self.cx, self.cy = cx, cy
+        self.gx, self.gy = np.meshgrid(np.arange(SM_W, dtype=np.float32), np.arange(SM_H, dtype=np.float32))
+        self.clear()
+
+    def clear(self):
+        self.f = np.zeros((5, SM_H, SM_W), np.float32)      # u, v (cells a step), smoke r, g, b
+        self.p = np.zeros((SM_H, SM_W), np.float32)
+        self.steps = 0
+
+    def splat(self, px, py, fx, fy, rgb, dt=1):
+        """Smoke of a colour (for dt steps) and a push (pixels a step * 16) around a place (pixels), less further away."""
+        # (in the cells within reach)
+        x0, x1 = max(0, (px - SM_REACH) // SM_CELL), min(SM_W, (px + SM_REACH) // SM_CELL + 1)
+        y0, y1 = max(0, (py - SM_REACH) // SM_CELL), min(SM_H, (py + SM_REACH) // SM_CELL + 1)
+        if x0 >= x1 or y0 >= y1:
+            return
+        win = np.s_[y0:y1, x0:x1]
+        d2 = (self.cx[win] - px) ** 2 + (self.cy[win] - py) ** 2
+        w = np.maximum(0, 1 - d2 / (SM_REACH * SM_REACH)) * self.fluid[win]
+        self.f[0][win] += fx / (16 * SM_CELL) * w
+        self.f[1][win] += fy / (16 * SM_CELL) * w
+        if rgb is not None:
+            self.f[2:, y0:y1, x0:x1] = np.minimum(self.f[2:, y0:y1, x0:x1] + rgb[:, None, None] * w * dt / 8, 320)
+
+    def advect(self, dt):
+        """Everything carried along the flow for dt steps: each cell takes what was where its flow comes from
+        (bilinear)."""
+        x = np.clip(self.gx - self.f[0] * dt, 0, SM_W - 1.001)
+        y = np.clip(self.gy - self.f[1] * dt, 0, SM_H - 1.001)
+        x0, y0 = x.astype(np.int32), y.astype(np.int32)
+        fx, fy = (x - x0).ravel(), (y - y0).ravel()
+        i = (y0 * SM_W + x0).ravel()
+        f = self.f.reshape(5, -1)
+        a, b = np.take(f, i, axis=1), np.take(f, i + 1, axis=1)
+        c, d = np.take(f, i + SM_W, axis=1), np.take(f, i + SM_W + 1, axis=1)
+        top = a + (b - a) * fx
+        out = top + (c + (d - c) * fx - top) * fy
+        self.f = out.reshape(5, SM_H, SM_W) * self.fluid
+
+    def project(self):
+        """The flow made incompressible: no flow through the pillars and the edges (as coproc.c)."""
+        u, v = self.f[0], self.f[1]
+        nl, nr, nu, nd = self.nbr
+        div = 0.5 * (shifted(u, 1, 0) * nr - shifted(u, -1, 0) * nl + shifted(v, 0, 1) * nd - shifted(v, 0, -1) * nu)
+        # (the pressure in a frame of zeros: the neighbours are slices of it)
+        pp = np.zeros((SM_H + 2, SM_W + 2), np.float32)
+        pp[1:-1, 1:-1] = self.p
+        for _ in range(SM_ITER):
+            pp[1:-1, 1:-1] = (pp[1:-1, :-2] * nl + pp[1:-1, 2:] * nr + pp[:-2, 1:-1] * nu + pp[2:, 1:-1] * nd -
+                              div) * self.inv_n
+        p = self.p = pp[1:-1, 1:-1].copy()
+        # (a pillar's or an edge's side: the pressure of the cell itself)
+        pl, pr = np.where(nl > 0, shifted(p, -1, 0), p), np.where(nr > 0, shifted(p, 1, 0), p)
+        pu, pd = np.where(nu > 0, shifted(p, 0, -1), p), np.where(nd > 0, shifted(p, 0, 1), p)
+        self.f[0] -= 0.5 * (pr - pl) * self.fluid
+        self.f[1] -= 0.5 * (pd - pu) * self.fluid
+
+    def step(self, cursor, dt=1):
+        """A step dt steps long (1/50 s each: longer when the computer falls behind, as on the PlayStation).
+        cursor: (x, y, push x, push y (pixels a step * 16), pushing, wind, colour)."""
+        x, y, fx, fy, push, wind, colour = cursor
+        if wind:
+            self.splat(SM_WIND_X, 112, SM_WIND_V * dt, 0, PALETTE[(self.steps // 150) % 6], dt)
+        if push:
+            self.splat(x, y, fx * dt, fy * dt, PALETTE[colour % 6], dt)
+        self.advect(dt)
+        self.project()
+        self.f[:2] *= (1 - 1 / 128) ** dt  # (the flow slows down, the smoke fades)
+        self.f[2:] *= (1 - 1 / 128) ** dt
+        self.steps += dt
+
+    def frame(self):
+        """The smoke as an RGB frame (SM_H x SM_W x 3)."""
+        return np.clip(np.moveaxis(self.f[2:], 0, -1) + SM_BG, 0, 255).astype(np.uint8)
+
+
+class SmokeRunner(threading.Thread):
+    """The computer's smoke, in its own thread: 50 steps a second with the latest controls, and a frame each time
+    the PlayStation has one of the last ones (SM_IN_FLIGHT, at most SM_MAX_RATE a second)."""
+
+    def __init__(self, client):
+        super().__init__(daemon=True)
+        self.client, self.loop = client, asyncio.get_running_loop()
+        self.smoke = Smoke()
+        self.cursor = (160, 112, 0, 0, False, True, 0)
+        self.cursor_t = 0.0
+        self.clears = None
+        self.in_flight = 0
+        self.sent_t = 0.0
+        self.seq = 0
+        self.running = True
+
+    def controls(self, data):
+        x, y, dx, dy, n, flags, colour, clears = struct.unpack("<HHhhBBBB", data[:12])
+        if self.clears is not None and clears != self.clears:
+            self.smoke.clear()
+        self.clears = clears
+        # (the cursor's move over n frames: a push a step of half of it, as on the PlayStation)
+        self.cursor = (x, y, dx / max(n, 1) / 2, dy / max(n, 1) / 2, bool(flags & 1), bool(flags & 2), colour)
+        self.cursor_t = time.monotonic()
+
+    def run(self):
+        period = 1 / STEP_HZ
+        last_t = time.monotonic()
+        step_ms, steps = 0.0, 0
+        while self.running:
+            time.sleep(max(0.0, last_t + period - time.monotonic()))
+            dt = max(1, min(3, int((time.monotonic() - last_t) / period + 0.01)))  # (steps due: more when behind)
+            last_t += dt * period
+            if time.monotonic() - last_t > 3 * period:
+                last_t = time.monotonic()
+            cursor = self.cursor
+            if time.monotonic() - self.cursor_t > SM_PUSH_S:
+                cursor = cursor[:4] + (False,) + cursor[5:]
+            t0 = time.perf_counter()
+            self.smoke.step(cursor, dt)
+            step_ms = step_ms * 0.9 + (time.perf_counter() - t0) * 1000 * 0.1
+            steps += dt
+            now = time.monotonic()
+            if self.in_flight < SM_IN_FLIGHT and now - self.sent_t >= 1 / SM_MAX_RATE:
+                bs, _ = mdec_encoder.encode_frame_fit(self.smoke.frame(), SM_FRAME_BYTES, 2)
+                self.seq = (self.seq + 1) & 0xFFFF
+                data = packet(b"M", struct.pack("<HHHHH", self.seq, min(int(step_ms * 10), 65535), steps, SM_W, SM_H)
+                              + bs)
+                self.in_flight += 1
+                self.sent_t, steps = now, 0
+                self.loop.call_soon_threadsafe(self.client.send, data)
+            elif self.in_flight and now - self.sent_t > 1.0:    # (a frame lost: the next one sent)
+                self.in_flight = 0
+
+
 class Client:
     def __init__(self, reader, writer, log):
         self.reader, self.writer, self.log = reader, writer, log
@@ -285,6 +458,7 @@ class Client:
         self.sent_xy = None             # Positions the PlayStation has (the moves are from them)
         self.keyframe_t = 0.0
         self.hello = False
+        self.smoke = None               # SmokeRunner while the computer simulates the smoke
 
     def send(self, data):
         self.writer.write(data)
@@ -299,6 +473,7 @@ class Client:
                 self.message(kind, data)
         finally:
             ticker.cancel()
+            self.smoke_end()
 
     def message(self, kind, data):
         s = self.swarm
@@ -327,10 +502,26 @@ class Client:
         elif kind == b"E":
             self.swarm_on = False
             self.log("Swarm back on the PlayStation")
+        elif kind == b"S" and len(data) >= 12:
+            if not self.smoke:
+                self.smoke = SmokeRunner(self)
+                self.smoke.start()
+                self.log("Smoke on the computer")
+            self.smoke.controls(data)
+        elif kind == b"N" and self.smoke:
+            self.smoke.in_flight = max(0, self.smoke.in_flight - 1)
+        elif kind == b"Q":
+            self.smoke_end()
+            self.log("Smoke back on the PlayStation")
         elif kind == b"R" and len(data) >= 9:
             self.ray_wanted = struct.unpack("<HBhhH", data[:9])
             if not self.ray_busy:
                 asyncio.ensure_future(self.ray())
+
+    def smoke_end(self):
+        if self.smoke:
+            self.smoke.running = False
+            self.smoke = None
 
     async def tick(self):
         """Swarm steps at 50 a second (in real time), positions sent once the last ones arrived."""

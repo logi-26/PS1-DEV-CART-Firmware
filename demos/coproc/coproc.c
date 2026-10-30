@@ -1,7 +1,7 @@
 /*
 * PS1 CO-PROCESSOR: the computer as the PlayStation's co-processor, through the PS1 DEV CART (or PCSX-Redux).
 *
-* Two scenes, each one either computed by the PlayStation alone or by the computer (Select switches), with the time
+* Three scenes, each one either computed by the PlayStation alone or by the computer (Select switches), with the time
 * the work takes shown at the bottom:
 * - Swarm: 1000 units finding their way around walls to a target (path field, each unit pushed away from the ones near
 *   it), 50 steps a second. With the computer, it runs the simulation and sends the positions (3 bytes a unit); the
@@ -9,6 +9,8 @@
 * - Ray tracer: spheres with reflections and shadows. With the computer, it ray traces the camera's view and sends it
 *   as an MDEC bitstream, decoded by the PlayStation's MDEC; alone, the PlayStation ray traces it in fixed point, a
 *   few rows a frame.
+* - Smoke: a fluid stirred with the cursor (stable fluids). With the computer, it simulates a grid 16 times as fine
+*   (160 x 112) and sends it as MDEC frames; alone, the PlayStation simulates 40 x 28 and draws it as shaded quads.
 *
 * The computer runs coproc_server.py and "ps1transfer -r -e -f coproc.ps-exe -net 127.0.0.1:7030" (run.bat), or
 * PCSX-Redux with its serial port bridged to the server (redux.bat). Without the computer, the PS1 alone modes still
@@ -55,7 +57,7 @@
 
 enum {L_BG, L_IMAGE, L_WALL, L_UNIT, L_MARK, L_PANEL, L_TEXT, LAYERS};
 
-#define	PRIM_BYTES		49152
+#define	PRIM_BYTES		65536		// (the PS1's smoke: 1053 shaded quads)
 
 static DISPENV		disp[2];
 static DRAWENV		draw[2];
@@ -699,12 +701,45 @@ static void	MdecInit(void)
 	DecDCTPutEnv(NULL, 0);
 }
 
-// A frame of the computer: decompressed (DecDCTvlc), decoded by the MDEC, its 16-pixel strips uploaded
-static void	FramePacket(const uint8_t *p, int n)
+// A frame of the computer (MDEC bitstream of w x h): decompressed (DecDCTvlc), decoded by the MDEC, its 16-pixel strips
+// uploaded at TEX_X, TEX_Y. 0 if it couldn't be decoded
+static int	MdecShow(const uint8_t *bs, int n, int w, int h)
 {
 	VLC_Context	ctx;
 	RECT		rect;
-	int			w, h, x, i, codes, padded, start = Now();
+	int			x, i, codes, padded;
+
+	if ((w > 320) || (h > 224) || (w & 15) || (h & 15) || (n > (int)sizeof(bs_buf)))
+		return (0);
+	memcpy(bs_buf, bs, n);
+	if (DecDCTvlcStart(&ctx, rle, RLE_WORDS, bs_buf) != 0)
+		return (0);
+	if (*(volatile uint32_t *)0x1F801824 & (1 << 29))	// MDEC still busy (not expected): reset
+		MdecInit();
+	codes = rle[0] & 0xFFFF;
+	padded = (codes + 31) & ~31;			// (fed in 32-word chunks: zero after the codes, see videostreamer)
+	for (i = codes; i < padded; i++)
+		rle[1 + i] = 0;
+	DecDCTin(rle, DECDCT_MODE_16BPP_BIT15);
+	DecDCTout(frame_buf, w * h / 2);
+	if (DecDCToutSync(0))
+	{
+		MdecInit();
+		return (0);
+	}
+	for (x = 0; x < w; x += 16)
+	{
+		setRECT(&rect, TEX_X + x, TEX_Y, 16, h);
+		LoadImage(&rect, frame_buf + x * h / 2);
+	}
+	DrawSync(0);
+	return (1);
+}
+
+// A ray traced frame
+static void	FramePacket(const uint8_t *p, int n)
+{
+	int	w, h, start = Now();
 
 	if (n < 10)
 		return;
@@ -718,30 +753,8 @@ static void	FramePacket(const uint8_t *p, int n)
 	ray_encode_ms = U16(p + 8);
 	ray_bytes = n - 10;
 	ray_frames++;
-	if (!ray_pc)
+	if (!ray_pc || !MdecShow(p + 10, n - 10, w, h))
 		return;
-	memcpy(bs_buf, p + 10, n - 10);
-	if (DecDCTvlcStart(&ctx, rle, RLE_WORDS, bs_buf) != 0)
-		return;
-	if (*(volatile uint32_t *)0x1F801824 & (1 << 29))	// MDEC still busy (not expected): reset
-		MdecInit();
-	codes = rle[0] & 0xFFFF;
-	padded = (codes + 31) & ~31;			// (fed in 32-word chunks: zero after the codes, see videostreamer)
-	for (i = codes; i < padded; i++)
-		rle[1 + i] = 0;
-	DecDCTin(rle, DECDCT_MODE_16BPP_BIT15);
-	DecDCTout(frame_buf, w * h / 2);
-	if (DecDCToutSync(0))
-	{
-		MdecInit();
-		return;
-	}
-	for (x = 0; x < w; x += 16)
-	{
-		setRECT(&rect, TEX_X + x, TEX_Y, 16, h);
-		LoadImage(&rect, frame_buf + x * h / 2);
-	}
-	DrawSync(0);
 	ray_w = w;
 	ray_h = h;
 	if ((U16(p) == ray_id) && ray_quality)
@@ -1026,9 +1039,10 @@ static void	RayAloneRows(void)
 static uint32_t	pad, opad;
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))
 
-enum {S_MENU, S_SWARM, S_RAY};
+enum {S_MENU, S_SWARM, S_RAY, S_SMOKE};
 static int	screen = S_MENU, menu_item, fps, fps_count, second_frame;
-// For tests, set from the computer (ps1transfer -poke): 1 starts the swarm, 2 the ray tracer, as if chosen on the menu
+// For tests, set from the computer (ps1transfer -poke): 1 starts the swarm, 2 the ray tracer, 3 the smoke, as if chosen
+// on the menu
 int			auto_start, auto_orbit;		// (auto_orbit: the ray tracer's camera turned by this much a frame)
 
 static void	Bar(const char *left, int mode_pc)
@@ -1048,25 +1062,429 @@ static const char	*LinkName(void)
 	return ((link_kind == LINK_CART) ? "COMPUTER CONNECTED (USB)" : "COMPUTER CONNECTED (PCSX-REDUX)");
 }
 
+/****************************************/
+// Smoke: a fluid stirred with the cursor, around three pillars, a wind blowing from the left. "Stable fluids" (as
+// coproc_server.py): the smoke and the speeds carried along the flow (traced back a step, mixed from the 4 nearest
+// cells), then the flow made incompressible (its pressure, by iterations). PS1 alone: a grid of 40 x 28 (cells of 8
+// pixels) in fixed point, drawn as shaded quads; with the computer: 160 x 112 (cells of 2 pixels), sent as MDEC frames.
+
+#define	SM_W			40
+#define	SM_H			28
+#define	SM_N			(SM_W * SM_H)
+#define	SM_CELL			8
+#define	SM_ITER			6			// Pressure iterations (Gauss-Seidel, over-relaxed: 1.5)
+#define	SM_REACH		24			// The cursor's and the wind's reach (pixels)
+#define	SM_WIND_X		12			// The wind: from there, to the right
+#define	SM_WIND_V		24			// Its push (pixels a step * 16, each step)
+#define	SM_BG			8, 10, 20
+
+// (as coproc_server.py)
+static const int16_t	pillars[3][3] = {{120, 112, 16}, {208, 62, 12}, {208, 162, 12}};	// x, y, radius (pixels)
+static const uint8_t	palette[6][3] = {{255, 140, 40}, {40, 200, 255}, {255, 60, 160}, {90, 255, 90}, {255, 230, 60},
+										 {160, 120, 255}};
+
+static int32_t	sm_buf[2][5][SM_N];						// Speeds (cells a step * 256), smoke (colour * 256): this step's and
+static int32_t	*su, *sv, *sd[3];						// the next one's (swapped)
+static int32_t	sp[SM_N], sdiv[SM_N];
+static uint8_t	solid[SM_N], nbr_fluid[SM_N];			// Pillars; the neighbours that are fluid (bits: left, right, up, down)
+static uint32_t	cell_rgb[SM_N];
+static int		smoke_pc, smoke_wanted_pc = 1, smoke_wind = 1, smoke_colour, smoke_clears, smoke_last_frame;
+static int		smoke_cx = 60, smoke_cy = 112, smoke_push, smoke_sent_x, smoke_sent_y, smoke_sent_frame;
+static int		smoke_us, smoke_pc_tenths, smoke_bytes, smoke_w, smoke_frames, smoke_rate;
+int				auto_stir;		// For tests (ps1transfer -poke): 1 = the cursor stirs by itself
+
+static void	SmokeBuffers(int b)
+{
+	su = sm_buf[b][0];
+	sv = sm_buf[b][1];
+	sd[0] = sm_buf[b][2];
+	sd[1] = sm_buf[b][3];
+	sd[2] = sm_buf[b][4];
+}
+
+static void	SmokeClear(void)
+{
+	int	c, k;
+
+	memset(sm_buf, 0, sizeof(sm_buf));
+	memset(sp, 0, sizeof(sp));
+	SmokeBuffers(0);
+	for (c = 0; c < SM_N; c++)
+	{
+		int	x = (c % SM_W) * SM_CELL + SM_CELL / 2, y = (c / SM_W) * SM_CELL + SM_CELL / 2;
+
+		solid[c] = 0;
+		for (k = 0; k < 3; k++)
+			if ((x - pillars[k][0]) * (x - pillars[k][0]) + (y - pillars[k][1]) * (y - pillars[k][1]) <
+				pillars[k][2] * pillars[k][2])
+				solid[c] = 1;
+	}
+	for (c = 0; c < SM_N; c++)
+	{
+		int	x = c % SM_W, y = c / SM_W;
+
+		nbr_fluid[c] = solid[c] ? 0 : ((x > 0) && !solid[c - 1]) | (((x < SM_W - 1) && !solid[c + 1]) << 1) |
+					   (((y > 0) && !solid[c - SM_W]) << 2) | (((y < SM_H - 1) && !solid[c + SM_W]) << 3);
+	}
+}
+
+// Smoke of a colour (for dt steps) and a push (pixels a step * 16) around a place (pixels), less further away
+static void	Splat(int px, int py, int fx, int fy, const uint8_t *rgb, int dt)
+{
+	int	x, y, r2 = SM_REACH * SM_REACH;
+
+	for (y = (py - SM_REACH) / SM_CELL; y <= (py + SM_REACH) / SM_CELL; y++)
+		for (x = (px - SM_REACH) / SM_CELL; x <= (px + SM_REACH) / SM_CELL; x++)
+		{
+			int	c = y * SM_W + x, dx = x * SM_CELL + SM_CELL / 2 - px, dy = y * SM_CELL + SM_CELL / 2 - py, d2, w, k;
+
+			if ((x < 0) || (x >= SM_W) || (y < 0) || (y >= SM_H) || solid[c])
+				continue;
+			d2 = dx * dx + dy * dy;
+			if (d2 >= r2)
+				continue;
+			w = (r2 - d2) * 256 / r2;						// (256 at the centre)
+			su[c] += (fx * 256 / (16 * SM_CELL)) * w >> 8;	// (pixels * 16 -> cells * 256)
+			sv[c] += (fy * 256 / (16 * SM_CELL)) * w >> 8;
+			if (rgb)
+				for (k = 0; k < 3; k++)
+				{
+					sd[k][c] += rgb[k] * w * dt / 8;
+					if (sd[k][c] > (320 << 8))
+						sd[k][c] = 320 << 8;
+				}
+		}
+}
+
+// Everything carried along the flow for dt steps: each cell takes what was where its flow comes from (mixed from the
+// 4 cells around, into the other buffers)
+#define	MIX(_f_)	(top = (_f_)[c0] + ((((_f_)[c0 + 1] - (_f_)[c0]) * fx) >> 8), 					 top + ((((_f_)[c0 + SM_W] + ((((_f_)[c0 + SM_W + 1] - (_f_)[c0 + SM_W]) * fx) >> 8)) - top) * fy >> 8))
+
+static void	SmokeAdvect(int dt)
+{
+	int32_t	*f[5] = {su, sv, sd[0], sd[1], sd[2]}, *o[5];
+	int		i, j, k, c = 0, top;
+
+	SmokeBuffers(su == sm_buf[0][0]);
+	o[0] = su;
+	o[1] = sv;
+	o[2] = sd[0];
+	o[3] = sd[1];
+	o[4] = sd[2];
+	for (j = 0; j < SM_H; j++)
+		for (i = 0; i < SM_W; i++, c++)
+		{
+			int	x, y, fx, fy, c0;
+
+			if (solid[c])
+			{
+				for (k = 0; k < 5; k++)
+					o[k][c] = 0;
+				continue;
+			}
+			x = (i << 8) - f[0][c] * dt;
+			y = (j << 8) - f[1][c] * dt;
+			if (x < 0)							x = 0;
+			if (x > ((SM_W - 1) << 8) - 1)		x = ((SM_W - 1) << 8) - 1;
+			if (y < 0)							y = 0;
+			if (y > ((SM_H - 1) << 8) - 1)		y = ((SM_H - 1) << 8) - 1;
+			fx = x & 255;
+			fy = y & 255;
+			c0 = (y >> 8) * SM_W + (x >> 8);
+			for (k = 0; k < 5; k++)
+				o[k][c] = MIX(f[k]);
+		}
+}
+
+// The flow made incompressible: its divergence (no flow through the pillars and the edges), the pressure that removes
+// it (Gauss-Seidel over-relaxed, from the last step's), its gradient taken off the speeds
+static void	SmokeProject(void)
+{
+	static const int	recip[5] = {0, 256, 128, 85, 64};
+	int					c, it;
+
+	for (c = 0; c < SM_N; c++)
+	{
+		int	m = nbr_fluid[c];
+
+		if (solid[c])
+		{
+			sdiv[c] = 0;
+			continue;
+		}
+		sdiv[c] = (((m & 2) ? su[c + 1] : 0) - ((m & 1) ? su[c - 1] : 0) +
+				   ((m & 8) ? sv[c + SM_W] : 0) - ((m & 4) ? sv[c - SM_W] : 0)) >> 1;
+	}
+	for (it = 0; it < SM_ITER; it++)
+		for (c = 0; c < SM_N; c++)
+		{
+			int	m = nbr_fluid[c], sum = 0, n = 0;
+
+			if (m == 15)		// (most cells: all 4 neighbours are fluid)
+			{
+				sum = (sp[c - 1] + sp[c + 1] + sp[c - SM_W] + sp[c + SM_W] - sdiv[c]) >> 2;
+				sp[c] = sum + ((sum - sp[c]) >> 1);
+				continue;
+			}
+			if (solid[c])
+				continue;
+			if (m & 1)	{sum += sp[c - 1]; n++;}
+			if (m & 2)	{sum += sp[c + 1]; n++;}
+			if (m & 4)	{sum += sp[c - SM_W]; n++;}
+			if (m & 8)	{sum += sp[c + SM_W]; n++;}
+			sum = ((sum - sdiv[c]) * recip[n]) >> 8;
+			sp[c] = sum + ((sum - sp[c]) >> 1);
+		}
+	for (c = 0; c < SM_N; c++)
+	{
+		int	m = nbr_fluid[c];
+
+		if (solid[c])
+			continue;
+		su[c] -= (((m & 2) ? sp[c + 1] : sp[c]) - ((m & 1) ? sp[c - 1] : sp[c])) >> 1;
+		sv[c] -= (((m & 8) ? sp[c + SM_W] : sp[c]) - ((m & 4) ? sp[c - SM_W] : sp[c])) >> 1;
+	}
+}
+
+static const uint8_t	*WindColour(void)
+{
+	return (palette[(frame / 150) % 6]);
+}
+
+// A step of the PS1's own smoke, dt steps long (one a frame: a slow frame counts as several)
+static void	SmokeStep(int dt, int mx, int my)
+{
+	int	start = Now(), c, k;
+
+	if (dt > 3)
+		dt = 3;
+	if (smoke_wind)
+		Splat(SM_WIND_X, VIEW_H / 2, SM_WIND_V * dt, 0, WindColour(), dt);
+	if (smoke_push)
+		Splat(smoke_cx, smoke_cy, mx * 16 / 2, my * 16 / 2, palette[smoke_colour], dt);
+	SmokeAdvect(dt);
+	SmokeProject();
+	for (c = 0; c < SM_N; c++)		// (it fades, the flow slows down: 1/128 a step)
+	{
+		su[c] -= (su[c] >> 7) * dt;
+		sv[c] -= (sv[c] >> 7) * dt;
+		for (k = 0; k < 3; k++)
+			sd[k][c] -= (sd[k][c] >> 7) * dt;
+	}
+	smoke_us = (smoke_us * 7 + HblanksToUs(Now() - start)) / 8;
+}
+
+// A smoke frame of the computer
+static void	SmokeFramePacket(const uint8_t *p, int n)
+{
+	uint8_t	a[2];
+
+	if ((n < 10) || !smoke_pc)
+		return;
+	a[0] = p[0];
+	a[1] = p[1];
+	Send(CP_SMOKE_ACK, a, 2);
+	smoke_pc_tenths = U16(p + 2);
+	smoke_bytes = n - 10;
+	if (MdecShow(p + 10, n - 10, U16(p + 6), U16(p + 8)))
+	{
+		smoke_w = U16(p + 6);
+		smoke_frames++;
+	}
+}
+
+static void	SmokeToPs1(void)
+{
+	if (smoke_pc)
+		Send(CP_SMOKE_END, NULL, 0);
+	smoke_pc = 0;
+	smoke_w = 0;
+}
+
+static void	SmokeStart(void)
+{
+	SmokeClear();
+	smoke_last_frame = frame;
+	smoke_pc = 0;
+	smoke_w = 0;
+	smoke_clears++;
+}
+
+static void	ScreenSmoke(void)
+{
+	int		i, j, spd = (pad & PADR1) ? 6 : 3, ox = smoke_cx, oy = smoke_cy, dt = frame - smoke_last_frame;
+	char	s[48];
+
+	smoke_last_frame = frame;
+	if (auto_stir)					// (tests: round and round, pushing)
+	{
+		smoke_cx = 160 + (isin(frame * 23) * 110 >> 12);
+		smoke_cy = 112 + (icos(frame * 37) * 80 >> 12);
+		smoke_push = 1;
+	}
+	else
+	{
+		if (pad & PADLleft)		smoke_cx -= spd;
+		if (pad & PADLright)	smoke_cx += spd;
+		if (pad & PADLup)		smoke_cy -= spd;
+		if (pad & PADLdown)		smoke_cy += spd;
+		smoke_push = (pad & PADRdown) != 0;
+	}
+	if (smoke_cx < 4)				smoke_cx = 4;
+	if (smoke_cx > SCREEN_W - 5)	smoke_cx = SCREEN_W - 5;
+	if (smoke_cy < 4)				smoke_cy = 4;
+	if (smoke_cy > VIEW_H - 5)		smoke_cy = VIEW_H - 5;
+	if (PRESSED(PADRleft))
+		smoke_colour = (smoke_colour + 1) % 6;
+	if (PRESSED(PADRright))
+		smoke_wind = !smoke_wind;
+	if (PRESSED(PADRup))
+	{
+		SmokeClear();
+		smoke_clears++;
+	}
+	if (PRESSED(PADselect))
+	{
+		smoke_wanted_pc = !smoke_wanted_pc;
+		SmokeToPs1();
+	}
+	if (PRESSED(PADstart))
+	{
+		SmokeToPs1();
+		screen = S_MENU;
+		return;
+	}
+	if (smoke_pc && !Connected())
+		SmokeToPs1();
+	else if (!smoke_pc && smoke_wanted_pc && Connected())	// (the computer connected meanwhile)
+	{
+		smoke_pc = 1;
+		smoke_sent_x = smoke_cx;
+		smoke_sent_y = smoke_cy;
+		smoke_sent_frame = frame;
+	}
+
+	if (smoke_pc)
+	{
+		// The controls to the computer, each frame
+		uint8_t	b[12];
+		int		dx = (smoke_cx - smoke_sent_x) * 16, dy = (smoke_cy - smoke_sent_y) * 16, n = frame - smoke_sent_frame;
+
+		b[0] = smoke_cx;
+		b[1] = smoke_cx >> 8;
+		b[2] = smoke_cy;
+		b[3] = smoke_cy >> 8;
+		b[4] = dx;
+		b[5] = dx >> 8;
+		b[6] = dy;
+		b[7] = dy >> 8;
+		b[8] = (n < 1) ? 1 : (n > 255) ? 255 : n;
+		b[9] = (smoke_push ? CP_SMOKE_PUSH : 0) | (smoke_wind ? CP_SMOKE_WIND : 0);
+		b[10] = smoke_colour;
+		b[11] = smoke_clears;
+		Send(CP_SMOKE, b, sizeof(b));
+		smoke_sent_x = smoke_cx;
+		smoke_sent_y = smoke_cy;
+		smoke_sent_frame = frame;
+		if (smoke_w)		// Its frame, scaled up
+		{
+			POLY_FT4	*q = Alloc(sizeof(POLY_FT4));
+
+			if (q)
+			{
+				setPolyFT4(q);
+				setShadeTex(q, 1);
+				setXY4(q, 0, 0, SCREEN_W, 0, 0, VIEW_H, SCREEN_W, VIEW_H);
+				setUV4(q, 0, 0, CP_SMOKE_W - 1, 0, 0, CP_SMOKE_H - 1, CP_SMOKE_W - 1, CP_SMOKE_H - 1);
+				q->tpage = getTPage(2, 0, TEX_X, TEX_Y);
+				q->clut = 0;
+				addPrim(OT(L_IMAGE), q);
+			}
+		}
+		else
+			CentreText(L_TEXT, 100, "WAITING FOR THE COMPUTER", C_DIM);
+	}
+	else
+	{
+		// The PS1's own: a step, then the grid as shaded quads between the cells' centres (to the screen's edges)
+		SmokeStep(dt, smoke_cx - ox, smoke_cy - oy);
+		for (i = 0; i < SM_N; i++)
+		{
+			int	r = 8 + (sd[0][i] >> 8), g = 10 + (sd[1][i] >> 8), b = 20 + (sd[2][i] >> 8);
+
+			cell_rgb[i] = ((r > 255) ? 255 : r) | (((g > 255) ? 255 : g) << 8) | (((b > 255) ? 255 : b) << 16);
+		}
+		for (j = 0; j < SM_H - 1; j++)
+		{
+			int			y0 = j ? j * SM_CELL + SM_CELL / 2 : 0;
+			int			y1 = (j == SM_H - 2) ? VIEW_H : (j + 1) * SM_CELL + SM_CELL / 2;
+			POLY_G4		*q = Alloc(sizeof(POLY_G4) * (SM_W - 1));
+
+			for (i = 0; q && (i < SM_W - 1); i++, q++)
+			{
+				int			x0 = i ? i * SM_CELL + SM_CELL / 2 : 0;
+				int			x1 = (i == SM_W - 2) ? SCREEN_W : (i + 1) * SM_CELL + SM_CELL / 2;
+				uint32_t	*c = &cell_rgb[j * SM_W + i];
+
+				setPolyG4(q);
+				setXY4(q, x0, y0, x1, y0, x0, y1, x1, y1);
+				*(uint32_t *)&q->r0 = (c[0] & 0xFFFFFF) | 0x38000000;
+				*(uint32_t *)&q->r1 = c[1];
+				*(uint32_t *)&q->r2 = c[SM_W];
+				*(uint32_t *)&q->r3 = c[SM_W + 1];
+				addPrim(OT(L_IMAGE), q);
+			}
+		}
+	}
+
+	// The pillars, the cursor (its colour)
+	for (i = 0; i < 3; i++)
+		for (j = -pillars[i][2]; j <= pillars[i][2]; j++)
+		{
+			int	w = Isqrt(pillars[i][2] * pillars[i][2] - j * j);
+
+			Rect(L_WALL, pillars[i][0] - w, pillars[i][1] + j, w * 2 + 1, 1, 60, 70, 95);
+		}
+	{
+		const uint8_t	*c = palette[smoke_colour];
+
+		Rect(L_MARK, smoke_cx - 6, smoke_cy, 4, 1, c[0], c[1], c[2]);
+		Rect(L_MARK, smoke_cx + 3, smoke_cy, 4, 1, c[0], c[1], c[2]);
+		Rect(L_MARK, smoke_cx, smoke_cy - 6, 1, 4, c[0], c[1], c[2]);
+		Rect(L_MARK, smoke_cx, smoke_cy + 3, 1, 4, c[0], c[1], c[2]);
+	}
+
+	if (smoke_pc)
+		sprintf(s, "PC %d.%dMS 160X112 %dKB %dFR/S", smoke_pc_tenths / 10, smoke_pc_tenths % 10,
+			(smoke_bytes + 512) / 1024, smoke_rate);
+	else
+		sprintf(s, "SIM %dMS 40X28 %dFPS", (smoke_us + 500) / 1000, fps);
+	Bar(s, smoke_pc);
+}
+
 static void	ScreenMenu(void)
 {
-	static const char *const	items[2] = {"SWARM: 1000 UNITS", "RAY TRACER"};
+	static const char *const	items[3] = {"SWARM: 1000 UNITS", "RAY TRACER", "SMOKE"};
+	static const char *const	about[3] = {"PATHS AROUND WALLS, IN A CROWD", "SPHERES, REFLECTIONS AND SHADOWS",
+											"A FLUID YOU STIR, AROUND PILLARS"};
 	int							i;
 
-	if (PRESSED(PADLup) || PRESSED(PADLdown))
-		menu_item ^= 1;
+	if (PRESSED(PADLup))
+		menu_item = (menu_item + 2) % 3;
+	if (PRESSED(PADLdown))
+		menu_item = (menu_item + 1) % 3;
 	Rect(L_PANEL, 0, 0, SCREEN_W, 14, C_BAR);
 	Text(L_TEXT, 8, 4, "PS1 CO-PROCESSOR", C_TEXT);
 	CentreText(L_TEXT, 28, "THE COMPUTER DOES THE HEAVY WORK,", C_TEXT);
 	CentreText(L_TEXT, 38, "THE PLAYSTATION SHOWS IT", C_TEXT);
-	for (i = 0; i < 2; i++)
+	for (i = 0; i < 3; i++)
 	{
-		Rect(L_PANEL, 70, 64 + i * 28, 180, 22, (i == menu_item) ? 50 : 20, (i == menu_item) ? 70 : 24,
+		Rect(L_PANEL, 70, 60 + i * 28, 180, 22, (i == menu_item) ? 50 : 20, (i == menu_item) ? 70 : 24,
 			(i == menu_item) ? 130 : 40);
-		CentreText(L_TEXT, 71 + i * 28, items[i], C_TEXT);
+		CentreText(L_TEXT, 67 + i * 28, items[i], C_TEXT);
 	}
-	CentreText(L_TEXT, 136, menu_item ? "SPHERES, REFLECTIONS AND SHADOWS" : "PATHS AROUND WALLS, IN A CROWD", C_DIM);
-	CentreText(L_TEXT, 164, "SELECT IN A SCENE: PS1 ALONE / PS1+PC", C_YELLOW);
+	CentreText(L_TEXT, 150, about[menu_item], C_DIM);
+	CentreText(L_TEXT, 172, "SELECT IN A SCENE: PS1 ALONE / PS1+PC", C_YELLOW);
 	CentreText(L_TEXT, 192, LinkName(), Connected() ? 80 : 128, Connected() ? 128 : 70, Connected() ? 80 : 70);
 	Rect(L_PANEL, 0, SCREEN_H - 14, SCREEN_W, 14, C_PANEL);
 	Text(L_TEXT, 8, SCREEN_H - 11, "UP/DOWN:CHOOSE  X:START", C_TEXT);
@@ -1075,7 +1493,7 @@ static void	ScreenMenu(void)
 	if (PRESSED(PADRdown) || PRESSED(PADstart) || auto_start)
 	{
 		auto_start = 0;
-		screen = menu_item ? S_RAY : S_SWARM;
+		screen = (menu_item == 2) ? S_SMOKE : menu_item ? S_RAY : S_SWARM;
 		if (screen == S_SWARM)
 		{
 			SwarmWalls();
@@ -1085,6 +1503,8 @@ static void	ScreenMenu(void)
 			if (swarm_wanted_pc && Connected())
 				SwarmToComputer();
 		}
+		else if (screen == S_SMOKE)
+			SmokeStart();
 		else
 		{
 			ray_full = 0;
@@ -1375,6 +1795,9 @@ static void	Packet(const uint8_t *p, int n)
 		case CP_FRAME:
 			FramePacket(p, n);
 			break;
+		case CP_SMOKE_FRAME:
+			SmokeFramePacket(p, n);
+			break;
 	}
 }
 
@@ -1422,6 +1845,7 @@ int	main(void)
 			case S_MENU:	ScreenMenu();	break;
 			case S_SWARM:	ScreenSwarm();	break;
 			case S_RAY:		ScreenRay();	break;
+			case S_SMOKE:	ScreenSmoke();	break;
 		}
 		// Hello each second: the welcome back keeps the connection known (and PCSX-Redux connects before the program
 		// runs: the first welcome may be missed)
@@ -1446,6 +1870,8 @@ int	main(void)
 			units_count_second = 0;
 			ray_rate = ray_frames;
 			ray_frames = 0;
+			smoke_rate = smoke_frames;
+			smoke_frames = 0;
 			second_frame = frame;
 		}
 

@@ -14,6 +14,11 @@
 *	'E'	swarm back on the PlayStation (the computer stops)
 *	'R'	ray traced frame wanted: id (2), quality (1: 0 moving, 1 still), yaw, pitch (2 + 2: 4096 = a turn), distance (2,
 *		1/256 units)
+*	'S'	smoke on the computer, the controls (each frame): cursor x, y (2 + 2, pixels), its move since the last ones
+*		(2 + 2, pixels * 16), frames since the last ones (1), flags (1: CP_SMOKE_*), colour (1: index in the palette),
+*		clear count (1: the smoke cleared each time it changes)
+*	'N'	smoke frame received: its sequence number (2) (frames are paced by the link)
+*	'Q'	smoke back on the PlayStation (the computer stops)
 * Computer -> PS1
 *	'W'	welcome: version (1)
 *	'U'	swarm positions: sequence (2), computer time per step (4, microseconds), steps since the last ones (2), unit count
@@ -22,6 +27,8 @@
 *		(when they all fit; the positions again every 2 seconds)
 *	'F'	ray traced frame: id (2), width, height (2 + 2), render time (2, ms), encode time (2, ms), then the frame as an
 *		MDEC bitstream (BS version 2)
+*	'M'	smoke frame: sequence (2), computer time per step (2, 1/10 ms), steps since the last frame (2), width, height
+*		(2 + 2), then the frame as an MDEC bitstream (BS version 2)
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 * If a copy of the MPL was not distributed with this file,
@@ -31,7 +38,7 @@
 #ifndef _COPROC_H_
 #define _COPROC_H_
 
-#define	CP_VERSION		1
+#define	CP_VERSION		2
 
 #define	CP_HELLO		'H'
 #define	CP_SWARM_BEGIN	'B'
@@ -40,11 +47,15 @@
 #define	CP_SWARM_ACK	'K'
 #define	CP_SWARM_END	'E'
 #define	CP_RAY			'R'
+#define	CP_SMOKE		'S'
+#define	CP_SMOKE_ACK	'N'
+#define	CP_SMOKE_END	'Q'
 
 #define	CP_WELCOME		'W'
 #define	CP_UNITS		'U'
 #define	CP_MOVES		'V'
 #define	CP_FRAME		'F'
+#define	CP_SMOKE_FRAME	'M'
 
 #define	CP_HEADER		3
 
@@ -61,5 +72,12 @@
 // Ray tracer: frames of 160 x 112 (moving) or 320 x 224 (still), shown on 320 x 224
 #define	CP_RAY_W		160
 #define	CP_RAY_H		112
+
+// Smoke: fluid on the screen (320 x 224); the PlayStation's grid has cells of 8 pixels (40 x 28), the computer's of 2
+// (160 x 112, its frames). Speeds in pixels a step (50 steps a second)
+#define	CP_SMOKE_PUSH	1			// Flags: the cursor pushes smoke, the wind blows
+#define	CP_SMOKE_WIND	2
+#define	CP_SMOKE_W		160			// The computer's frames
+#define	CP_SMOKE_H		112
 
 #endif
