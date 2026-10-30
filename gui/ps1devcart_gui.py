@@ -29,7 +29,7 @@ from runner import Runner  # noqa: E402
 from settings import Settings  # noqa: E402
 from widgets import MonoText  # noqa: E402
 
-APP_VERSION = "1.0"     # PS1 DEV CART release (the same as the firmware, ps1transfer and the PS1 tools)
+APP_VERSION = "1.1"     # PS1 DEV CART release (the same as the firmware)
 APP_TITLE = "PS1 Dev Cart Manager " + APP_VERSION
 
 def resource(*parts):
@@ -92,6 +92,9 @@ class App(tb.Window):
         self.runner = Runner(self, self._on_text, self._on_progress, self._on_task, self._on_pcdrv)
         self.devices = []
         self.firmware = None        # The cartridge's firmware (-info): "devcart", "original", None (not known)
+        self.fw_version = self.fw_features = None   # Its version (major, minor) and features (-info), None: unknown
+        self.engine_codes = {}      # The code engine's codes of each page using it (codeengine.py)
+        self.engine_sent = None     # Its table last written to the console (None: to write again)
         self.listing = False        # ps1transfer -l runs (refresh_devices)
         self.list_again = False     # Asked again meanwhile: listed once more after it
         self.pages = {}
@@ -409,6 +412,7 @@ class App(tb.Window):
 
     def _notify_device(self):
         self.firmware = None        # (the other cartridge's, known from its status)
+        self.fw_version = self.fw_features = None
         self._show_firmware_note()
         for page in self.pages.values():
             page.on_device_changed()
@@ -440,6 +444,16 @@ class App(tb.Window):
         else:
             self.fw.configure(text="")
         self.firmware = fw
+        self.game = info.get("game")    # (the game booted from its disc: its executable, for the Cheats page)
+        # The PS1 DEV CART firmware's version (major, minor) and features (Cheats page: older firmware), None: unknown
+        try:
+            self.fw_version = tuple(int(x) for x in info["firmware_version"].split(".")) if fw == "devcart" else None
+        except (KeyError, ValueError):
+            self.fw_version = None
+        try:
+            self.fw_features = int(info["features"], 16) if fw == "devcart" else None
+        except (KeyError, ValueError):
+            self.fw_features = None
         self._show_firmware_note()
 
     def _show_firmware_note(self):

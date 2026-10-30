@@ -8,6 +8,8 @@
 * Commands, one per line on the standard input (addresses in hexadecimal, sizes in bytes):
 *	read ADDR SIZE		"MEMREAD ADDR HEX" (the bytes, up to 4096)
 *	write ADDR HEX		the bytes written (little endian values as the PS1 stores them): "MEMWROTE ADDR SIZE"
+*	dump ADDR SIZE FILE	RAM read in one go into FILE (up to the whole 2 MB, about 4 s while a game runs; "read" asks
+*						for each block: much slower for a large area): "MEMDUMP ADDR SIZE FILE"
 *	pad BITS			remote pad (program started with -pad): the buttons of the selected port pressed (PsyQ pad bits
 *						in hexadecimal: PADLup 1000, PADRdown 0040...; 0: none), "pad off": the computer lets go
 *	padport N			N = 0: port 1 (default), 1: port 2 is driven from here (the other port keeps a real
@@ -85,6 +87,35 @@ static void	Read(void)
 	for (i = 0; i < size; i++)
 		sprintf(hex + i * 2, "%02X", buf[i]);
 	printf("MEMREAD %08X %s\n", adrs, hex);
+}
+
+static void	Dump(void)
+{
+	char		*arg = strtok(NULL, " \t"), *file;
+	uint32_t	adrs, size;
+	uint8_t		*buf;
+	FILE		*f;
+
+	if (!Address(arg, &adrs) || !(arg = strtok(NULL, " \t")) || !(size = strtoul(arg, NULL, 0)) ||
+		(size > ((adrs >= 0x80000000) ? 0x80200000 : 0x1F800400) - adrs) || !(file = strtok(NULL, "")))
+	{
+		printf("MEMERR dump ADDR SIZE FILE (RAM address and size)\n");
+		return;
+	}
+	while ((*file == ' ') || (*file == '\t'))
+		file++;
+	if (!(buf = malloc(size)))
+	{
+		printf("MEMERR dump: out of memory\n");
+		return;
+	}
+	if (!Usb('D', buf, adrs, size))
+		printf("MEMERR dump: USB error\n");
+	else if (!(f = fopen(file, "wb")) || (fwrite(buf, 1, size, f) != size) || fclose(f))
+		printf("MEMERR dump: can't write %s\n", file);
+	else
+		printf("MEMDUMP %08X %u %s\n", adrs, size, file);
+	free(buf);
 }
 
 static void	Write(void)
@@ -301,6 +332,8 @@ int	MemLive(void)
 			Read();
 		else if (!strcmp(cmd, "write"))
 			Write();
+		else if (!strcmp(cmd, "dump"))
+			Dump();
 		else if (!strcmp(cmd, "pad"))
 		{
 			LiveDrain();

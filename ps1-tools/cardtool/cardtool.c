@@ -1,6 +1,7 @@
 /*
 * PS1 DEV CART memory card backup/restore
 * Uploaded and executed by "ps1transfer -mcbackup card.mcd" or "ps1transfer -mcrestore card.mcd" [-slot 2]
+* (a multitap's slots too: -slot 1b, 2d...: cardserver.h CARD_SLOT)
 *
 * Backup:	the 1024 sectors (128KB) of the card are read and written to the computer file with the PCDRV
 *			file server of ps1transfer (psxpcdrv).
@@ -41,7 +42,7 @@ typedef struct
 {
 	uint32_t	magic;
 	uint32_t	mode;
-	uint32_t	slot;		// 1 or 2
+	uint32_t	slot;		// CARD_SLOT(port 1 or 2, multitap slot 0-3: A-D), see cardserver.h
 	char	name[64];	// Backup file name (in the ps1transfer -p directory)
 } CardData;
 
@@ -121,11 +122,37 @@ static void	ClearEvents(void)
 	}
 }
 
-// Card present and ready (a new card must be acknowledged with _card_clear)
-// (3 tries: once, the first check after a reset said "no card" with a card inserted)
-static int	CardReady(long chan)
+// "1", "2", "1B"...: the slot shown
+static const char	*SlotName(int slot)
 {
-	int	ret = 1, i;
+	static char	name[4];
+
+	name[0] = '0' + CARD_SLOT_PORT(slot);
+	name[1] = CARD_SLOT_TAP(slot) ? 'A' + CARD_SLOT_TAP(slot) : 0;
+	name[2] = 0;
+	return (name);
+}
+
+// The BIOS channel of a slot (00h port 1, 10h port 2, + the multitap slot)
+static long	SlotChan(int slot)
+{
+	return (((CARD_SLOT_PORT(slot) == 2) ? 0x10 : 0x00) | CARD_SLOT_TAP(slot));
+}
+
+// Card present and ready (a new card must be acknowledged with _card_clear)
+// (3 tries: once, the first check after a reset said "no card" with a card inserted). A multitap's slot B-D: its first
+// sector read directly (the BIOS driver only knows slot A)
+static int	CardReady(int slot)
+{
+	long	chan = SlotChan(slot);
+	int		ret = 1, i;
+
+	if (CARD_SLOT_TAP(slot))
+	{
+		static uint8_t	sector[128];
+
+		return (CardIoSectorRetry(slot, 0, sector, 0));
+	}
 
 	for (i = 0; (i < 3) && ret; i++)
 	{
@@ -142,13 +169,16 @@ static int	CardReady(long chan)
 	return (ret == 0);
 }
 
-// Direct access first (cardio.h), the BIOS driver if it fails
-static int	SectorAccess(long chan, int sector, uint8_t *buf, int write)
+// Direct access first (cardio.h), the BIOS driver if it fails (not for a multitap's slot B-D)
+static int	SectorAccess(int slot, int sector, uint8_t *buf, int write)
 {
-	int	i;
+	long	chan = SlotChan(slot);
+	int		i;
 
-	if (CardIoSectorRetry(chan ? 2 : 1, sector, buf, write))
+	if (CardIoSectorRetry(slot, sector, buf, write))
 		return (1);
+	if (CARD_SLOT_TAP(slot))
+		return (0);
 	bios_sectors++;
 	for (i = 0; i < RETRY; i++)
 	{
@@ -160,11 +190,11 @@ static int	SectorAccess(long chan, int sector, uint8_t *buf, int write)
 	return (0);
 }
 
-static int	CardAccess(long chan, uint8_t *data, int write)
+static int	CardAccess(int slot, uint8_t *data, int write)
 {
 	for (progress = 0; progress < CARD_SECTORS; progress++)
 	{
-		if (!SectorAccess(chan, progress, data + progress * SECTOR_SIZE, write))
+		if (!SectorAccess(slot, progress, data + progress * SECTOR_SIZE, write))
 		{
 			sprintf(result, "ERROR %s SECTOR %d", write ? "WRITING" : "READING", progress);
 			printf("Card: error %s sector %d\n", write ? "writing" : "reading", progress);
@@ -228,21 +258,20 @@ static int	Confirm(char *title)
 static int	ServerCommand(CardServerMailbox *mb)
 {
 	uint8_t	*image = (uint8_t *)CARDSRV_IMAGE_ADRS;
-	long	chan = (mb->slot == 2) ? 0x10 : 0x00;
 	int		i, write = (mb->cmd == CARDSRV_WRITE), sector;
 
-	if ((mb->count > CARDSRV_SECTORS) || ((mb->cmd != CARDSRV_READ) && !write) || ((mb->slot != 1) && (mb->slot != 2)))
+	if ((mb->count > CARDSRV_SECTORS) || ((mb->cmd != CARDSRV_READ) && !write) || !CARD_SLOT_VALID(mb->slot))
 		return (CARDSRV_BAD_COMMAND);
 	mb->text[CARDSRV_TEXT - 1] = 0;
-	sprintf(status, "SLOT %d: %s", (int)mb->slot, write ? "WRITE" : "READ");
-	if (!CardReady(chan))
+	sprintf(status, "SLOT %s: %s", SlotName(mb->slot), write ? "WRITE" : "READ");
+	if (!CardReady(mb->slot))
 	{
-		sprintf(result, "NO MEMORY CARD IN SLOT %d", (int)mb->slot);
+		sprintf(result, "NO MEMORY CARD IN SLOT %s", SlotName(mb->slot));
 		return (CARDSRV_NO_CARD);
 	}
 	if (write)
 	{
-		sprintf(status, "SLOT %d: %s\n%d SECTOR(S) TO WRITE", (int)mb->slot, mb->text, (int)mb->count);
+		sprintf(status, "SLOT %s: %s\n%d SECTOR(S) TO WRITE", SlotName(mb->slot), mb->text, (int)mb->count);
 		result[0] = 0;
 		if (!Confirm("SERVER"))
 		{
@@ -253,7 +282,7 @@ static int	ServerCommand(CardServerMailbox *mb)
 	for (i = 0; i < mb->count; i++)
 	{
 		sector = mb->sectors[i] & (CARDSRV_SECTORS - 1);
-		if (!SectorAccess(chan, sector, image + sector * SECTOR_SIZE, write))
+		if (!SectorAccess(mb->slot, sector, image + sector * SECTOR_SIZE, write))
 		{
 			mb->error_sector = sector;
 			sprintf(result, "ERROR %s SECTOR %d", write ? "WRITING" : "READING", sector);
@@ -261,11 +290,11 @@ static int	ServerCommand(CardServerMailbox *mb)
 		}
 		if ((i & 15) == 15)
 		{
-			sprintf(status, "SLOT %d: %s %d/%d", (int)mb->slot, write ? "WRITING" : "READING", i + 1, (int)mb->count);
+			sprintf(status, "SLOT %s: %s %d/%d", SlotName(mb->slot), write ? "WRITING" : "READING", i + 1, (int)mb->count);
 			Display("SERVER");
 		}
 	}
-	sprintf(status, "SLOT %d", (int)mb->slot);
+	sprintf(status, "SLOT %s", SlotName(mb->slot));
 	sprintf(result, "%s %d SECTOR(S): OK", write ? "WROTE" : "READ", (int)mb->count);
 	return (CARDSRV_OK);
 }
@@ -297,7 +326,6 @@ static void	Server(void)
 int	main(void)
 {
 	CardData	*cd = (CardData *)CARD_DATA_ADRS;
-	long		chan;
 	int			i, ok = 0, is_pal;
 	char		*title;
 
@@ -345,22 +373,23 @@ int	main(void)
 		sprintf(result, "USE: PS1TRANSFER -MCBACKUP FILE\n  OR PS1TRANSFER -MCRESTORE FILE");
 		goto end;
 	}
-	chan = (cd->slot == 2) ? 0x10 : 0x00;
+	if (!CARD_SLOT_VALID(cd->slot))
+		cd->slot = 1;
 	title = (cd->mode == MODE_BACKUP) ? "BACKUP" : "RESTORE";
-	sprintf(status, "SLOT %d", (int)cd->slot);
-	printf("Card: %s, slot %d\n", (cd->mode == MODE_BACKUP) ? "backup" : "restore", (int)cd->slot);
+	sprintf(status, "SLOT %s", SlotName(cd->slot));
+	printf("Card: %s, slot %s\n", (cd->mode == MODE_BACKUP) ? "backup" : "restore", SlotName(cd->slot));
 
-	if (!CardReady(chan))
+	if (!CardReady(cd->slot))
 	{
-		sprintf(result, "NO MEMORY CARD IN SLOT %d", (int)cd->slot);
+		sprintf(result, "NO MEMORY CARD IN SLOT %s", SlotName(cd->slot));
 		goto end;
 	}
 
 	if (cd->mode == MODE_BACKUP)
 	{
-		if (CardAccess(chan, card, 0))
+		if (CardAccess(cd->slot, card, 0))
 		{
-			sprintf(status, "SLOT %d READ, SENDING TO PC...", (int)cd->slot);
+			sprintf(status, "SLOT %s READ, SENDING TO PC...", SlotName(cd->slot));
 			Display(title);
 			if ((ok = SendBackup(cd->name)))
 				sprintf(result, "BACKUP SAVED: %s", cd->name);
@@ -369,14 +398,14 @@ int	main(void)
 	else
 	{
 		// The card is overwritten: confirmation with the controller
-		sprintf(status, "SLOT %d: OVERWRITE THE CARD ?", (int)cd->slot);
+		sprintf(status, "SLOT %s: OVERWRITE THE CARD ?", SlotName(cd->slot));
 		printf("Card: waiting for confirmation on the PS1 (Cross: write, Circle: cancel)\n");
 		if (!Confirm(title))
 			sprintf(result, "CANCELLED, CARD NOT MODIFIED");
 		else
 		{
-			sprintf(status, "SLOT %d: WRITING...", (int)cd->slot);
-			if ((ok = CardAccess(chan, (uint8_t *)cd + CARD_IMAGE_OFFSET, 1)))
+			sprintf(status, "SLOT %s: WRITING...", SlotName(cd->slot));
+			if ((ok = CardAccess(cd->slot, (uint8_t *)cd + CARD_IMAGE_OFFSET, 1)))
 				sprintf(result, "CARD RESTORED");
 		}
 	}
@@ -387,7 +416,7 @@ end:
 	printf("Card: %s\n", result);
 	printf("%c", 4);	// EOT: end of ps1transfer console mode
 	if (ok)
-		sprintf(status, "SLOT %d: DONE", (int)cd->slot);
+		sprintf(status, "SLOT %s: DONE", SlotName(cd->slot));
 	while (1)
 		Display(title);
 

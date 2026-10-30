@@ -3,6 +3,7 @@ from pages.run import RunPsxPage, RunYarozePage
 from pages.console import ConsolePage
 from pages.controller import ControllerPage
 from pages.memory import MemoryPage
+from pages.cheats import CheatsPage
 from pages.screen import ScreenPage
 from pages.debug import DebugPage
 from pages.frame import FramePage
@@ -20,5 +21,5 @@ from pages.firmware import FirmwarePage
 from pages.settings_page import SettingsPage
 
 PAGES = [RunPsxPage, RunYarozePage, ConsolePage, ControllerPage, MemoryPage, ProfilerPage, HotReloadPage, ScreenPage,
-         DebugPage, FramePage, ViewersPage, TimPage, SpuPage, SoundPage, SynthPage, MoviePage, CardPage, LinkTestPage, FirmwarePage,
-         SettingsPage]
+         DebugPage, FramePage, ViewersPage, TimPage, SpuPage, SoundPage, SynthPage, MoviePage, CardPage, LinkTestPage,
+         CheatsPage, FirmwarePage, SettingsPage]

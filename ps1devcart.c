@@ -48,8 +48,8 @@ static uint32_t	*p_ReturnFromExceptionOld = (uint32_t *)0x8000DF7C;
 // Menu screen images stored in the ROM file system (cartrom/tim.tfs), missing ones are skipped
 static char	*tim_files[] = {"logo.tim", "font.tim"};
 
-#define	FIRMWARE_VERSION	DEVCART_VERSION	// Firmware version, shown on the menu (devcart_ui.h: the same for the tools)
-#define	FIRMWARE_VERSION_BCD	0x10	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
+#define	FIRMWARE_VERSION	"1.1"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
+#define	FIRMWARE_VERSION_BCD	0x11	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
 // In the ROM as text: the Manager's Firmware page reads the version of a ROM file from it (used by the menu: kept)
 static const char	firmware_tag[] = "Firmware: " FIRMWARE_VERSION;
 
@@ -538,10 +538,12 @@ static int	CD_FindFile(const char *path, uint32_t *size)
 	}
 }
 
-void	BootDisc(void)
+#include "cheatmenu.h"
+
+void	BootDisc(int with_cheats)
 {
 	struct EXEC			exe;
-	char				boot[64], *p;
+	char				boot[64], exe_name[sizeof(((DiscId *)0)->exe)], *p;
 	uint32_t			tcb, event, stack, size, file_size;
 	int					lba, n, i;
 
@@ -578,6 +580,21 @@ void	BootDisc(void)
 		stack = CnfHex(disc_cnf, "STACK", stack);
 	}
 
+	// The executable's name without "cdrom:\" and ";1": the disc's serial number (cheats, ps1transfer -info "game=")
+	{
+		const char	*name = boot;
+
+		for (p = boot; *p; p++)
+			if ((*p == ':') || (*p == '\\'))
+				name = p + 1;
+		for (i = 0; (i < sizeof(exe_name) - 1) && name[i] && (name[i] != ';'); i++)
+			exe_name[i] = name[i];
+		exe_name[i] = 0;
+	}
+	// Select + Triangle: the game's cheats in the cartridge (the cheat screen), set in the code engine's table
+	if (with_cheats && !CheatMenu(exe_name))
+		return;
+
 	// The PS-X EXE: header (load address and size), then the program under the firmware, free RAM cleared
 	if ((lba = CD_FindFile(boot, &file_size)) <= 0)
 	{
@@ -610,6 +627,15 @@ void	BootDisc(void)
 	EnterCriticalSection();
 	IRQ_STAT = 0;
 	SetConf(event, tcb, stack);
+
+	// The disc's executable for the computer (ps1transfer -info "game=")
+	{
+		volatile DiscId	*id = (volatile DiscId *)DISC_ID_ADRS;
+
+		for (i = 0; i < sizeof(exe_name); i++)
+			id->exe[i] = exe_name[i];
+		id->magic = DISC_ID_MAGIC;
+	}
 
 	// The stack of SYSTEM.CNF (as the BIOS does), the kernel hook enabled with the BIOS TTY device kept
 	exe.s_addr = stack;
@@ -716,7 +742,10 @@ int main(void)
 	ExitCriticalSection();
 	kernel_hook_params->usb_packet_log2 = USB_BIG_PACKET_LOG2;	// Tells ps1transfer that big packets can be used
 	// Memory/VRAM access while a program runs, device ID, big packets also while a program runs
-	kernel_hook_params->features = FEATURE_LIVE_ACCESS | FEATURE_DEVICE_ID | FEATURE_HOOK_BIG_PACKETS | FEATURE_BOOT_DISC;
+	kernel_hook_params->features = FEATURE_LIVE_ACCESS | FEATURE_DEVICE_ID | FEATURE_HOOK_BIG_PACKETS | FEATURE_BOOT_DISC |
+		FEATURE_DISC_ID | FEATURE_CHEATS;
+	((volatile DiscId *)DISC_ID_ADRS)->magic = 0;		// (no disc booted)
+	((volatile CheatTable *)CHEAT_TABLE_ADRS)->magic = 0;	// (no cheats: the computer or the menu sets them)
 
 	// Save entire VRAM in RAM at boot (so the computer can download VRAM data)
 	StoreImage(&vram, (uint32_t *)0x80020000);
@@ -781,13 +810,15 @@ int main(void)
 		// Start + Select held half a second: the disc is booted (again after a failure only once released). All the
 		// buttons "pressed" is a bad read: the boot started by itself with a single read.
 		pad = PadRead(1) & 0xFFFF;
-		if (((pad & (PADstart | PADselect)) == (PADstart | PADselect)) && (pad != 0xFFFF))
+		// Select + Triangle: the same, the game's cheats in the cartridge chosen first
+		if ((((pad & (PADstart | PADselect)) == (PADstart | PADselect)) ||
+			 ((pad & (PADselect | PADRup)) == (PADselect | PADRup))) && (pad != 0xFFFF))
 		{
 			if (!boot_hold)
 				boot_hold = VSync(-1) + 1;
 			else if ((boot_hold > 0) && (VSync(-1) + 1 - boot_hold >= 30))
 			{
-				BootDisc();
+				BootDisc(!(pad & PADstart));
 				boot_hold = -1;
 			}
 		}
@@ -825,7 +856,7 @@ int main(void)
 				break;
 
 				case USB_STATE_BOOT_DISC:	// ps1transfer -bootcd
-					BootDisc();
+					BootDisc(0);
 				break;
 			}
 		}

@@ -20,11 +20,12 @@ ROM_SIZE = 128 * 1024
 ROM_TYPES = [("Cartridge ROM", "*.rom *.bin"), ("All files", "*.*")]
 MONITOR_OFFSET = 0x19000        # Debug monitor in the ROM (monitor/monitor.h MONITOR_ROM_ADRS 0x1F019000)
 
-FEATURES = {0x01: "live memory/VRAM access", 0x02: "device ID", 0x04: "big packets while a program runs"}
+FEATURES = {0x01: "live memory/VRAM access", 0x02: "device ID", 0x04: "big packets while a program runs",
+            0x08: "disc boot", 0x10: "game booted from its disc known", 0x20: "code engine (cheats)"}
 INFO_ROWS = (("device", "Cartridge (USB serial)"), ("state", "State"), ("firmware", "Firmware"),
              ("firmware_version", "Firmware version"), ("features", "Features"), ("monitor", "Debug monitor"),
              ("monitor_version", "Monitor version"), ("escaped_answers", "Escaped answers"),
-             ("debug_session", "Debug session"), ("tty_mode", "TTY mode"))
+             ("debug_session", "Debug session"), ("tty_mode", "TTY mode"), ("game", "Game booted from its disc"))
 
 
 def default_rom():

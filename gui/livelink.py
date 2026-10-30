@@ -9,4 +9,4 @@ You can obtain one at https://mozilla.org/MPL/2.0/.
 """
 LIVE_LINK = "Live link"
 FRAME_CAPTURE = "Frame capture"
-LIVE_PROTOCOL = ("MEMLIVE", "MEMREAD", "MEMWROTE", "MEMERR", "MEMPAD", "FRM")   # Its answers (not in the log)
+LIVE_PROTOCOL = ("MEMLIVE", "MEMREAD", "MEMWROTE", "MEMDUMP", "MEMERR", "MEMPAD", "FRM")   # Its answers (not in the log)

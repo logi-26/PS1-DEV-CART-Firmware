@@ -23,7 +23,14 @@ from widgets import FileField, labeled
 
 CARD_TYPES = [("Memory card images", "*.mcd *.mcr *.gme *.bin"), ("All files", "*.*")]
 SAVE_TYPES = [("Single saves", "*.mcs"), ("All files", "*.*")]
-SOURCES = ["Image file", "Card in slot 1", "Card in slot 2"]
+# The card slots: 1 and 2 (a multitap's slot A too), and a multitap's slots B-D on either port
+SLOTS = ["1", "2", "1B", "1C", "1D", "2B", "2C", "2D"]
+SOURCES = ["Image file"] + ["Card in slot %s%s" % (slot, " (multitap)" if len(slot) > 1 else "") for slot in SLOTS]
+
+
+def slot_of(source):
+    """'Card in slot 1B (multitap)' -> '1B', None for the image file."""
+    return source.split()[3] if source.startswith("Card in slot ") else None
 
 # "  block  1: BENETYA-0001MYGAME   1 block(s)  "NET YAROZE SAVE""
 SAVE_LINE = re.compile(r'^\s*block\s+(\d+):\s+(\S+)\s+(\d+) block\(s\)\s*(?:"(.*)")?')
@@ -42,7 +49,7 @@ class CardPage(Page):
         box.pack(fill="x", pady=(0, 8))
         row = tb.Frame(box)
         row.pack(fill="x", pady=(0, 4))
-        f, self.slot = labeled(row, "Slot", tb.Combobox, values=("1", "2"), state="readonly", field_width=4)
+        f, self.slot = labeled(row, "Slot", tb.Combobox, values=SLOTS, state="readonly", field_width=4)
         self.slot.set(s.field("card.slot", "1"))
         f.pack(side="left")
         tb.Label(row, text="Backup: about 12 s. Restore: about 30 s, confirm on the PS1 with the pad.",
@@ -61,11 +68,11 @@ class CardPage(Page):
         box.pack(fill="both", expand=True)
         row = tb.Frame(box)
         row.pack(fill="x")
-        self.source = tb.Combobox(row, values=SOURCES, state="readonly", width=15)
+        self.source = tb.Combobox(row, values=SOURCES, state="readonly", width=26)
         self.source.set(s.field("card.source", SOURCES[0]))
         self.source.bind("<<ComboboxSelected>>", lambda e: self._source_changed())
         self.source.pack(side="left", padx=(0, 6))
-        self.image = FileField(row, self.app, "card.image", "Image", filetypes=CARD_TYPES)
+        self.image = FileField(row, self.app, "card.image", "Image", filetypes=CARD_TYPES, width=40)
         self.image.pack(side="left", fill="x", expand=True)
         self.open_button = tb.Button(row, text="Open", bootstyle="primary", command=self.open_saves)
         self.open_button.pack(side="left", padx=(6, 0))
@@ -109,8 +116,9 @@ class CardPage(Page):
         if self.action == "saves":
             return ["-mclist", self._target(), "-icons", self.icon_dir] if self._live() else None
         if self.action == "restore":
-            return ["-mcrestore", self.restore_file.get(), "-slot", self.slot.get()] if self.restore_file.get() else None
-        return ["-mcbackup", self.backup_file.get(), "-slot", self.slot.get()] if self.backup_file.get() else None
+            return (["-mcrestore", self.restore_file.get(), "-slot", self.slot.get().lower()] if self.restore_file.get()
+                    else None)
+        return ["-mcbackup", self.backup_file.get(), "-slot", self.slot.get().lower()] if self.backup_file.get() else None
 
     def backup(self):
         self.action = "backup"
@@ -147,10 +155,10 @@ class CardPage(Page):
 
     def _target(self):
         """ps1transfer name of what is browsed: the image file, or slot1/slot2."""
-        return "slot%s" % self.source.get()[-1] if self._live() else self.image.get()
+        return "slot%s" % slot_of(self.source.get()).lower() if self._live() else self.image.get()
 
     def _describe(self):
-        return "the card in slot %s" % self.source.get()[-1] if self._live() else os.path.basename(self.image.get())
+        return "the card in slot %s" % slot_of(self.source.get()) if self._live() else os.path.basename(self.image.get())
 
     def _source_changed(self, load=True):
         self.app.settings.set_field("card.source", self.source.get())
@@ -170,7 +178,7 @@ class CardPage(Page):
 
     def _run(self, args, name, on_done=None):
         """Image: at once (no cartridge). Card slot: with the cartridge (the card tool runs on the PS1)."""
-        if self._live() or any(a in ("slot1", "slot2") for a in args):
+        if self._live() or any(a.startswith("slot") for a in args):
             self.app.run(args, name, on_done=lambda code, out: on_done(code, out) if on_done else None)
         else:
             code, lines = self.app.run_offline(args, name)
@@ -201,7 +209,7 @@ class CardPage(Page):
         shutil.rmtree(self.icon_dir, ignore_errors=True)
         os.makedirs(self.icon_dir, exist_ok=True)
         if self._live():
-            self.summary.configure(text="Reading the card in slot %s..." % self.source.get()[-1])
+            self.summary.configure(text="Reading the card in slot %s..." % slot_of(self.source.get()))
         self._run(["-mclist", self._target(), "-icons", self.icon_dir], "Card saves", on_done=self._show_saves)
 
     def _show_saves(self, code, lines):
@@ -269,9 +277,10 @@ class CardPage(Page):
             return
         menu = tk.Menu(self, tearoff=0)
         menu.add_command(label="Card image file...", command=lambda: self._copy(save, None))
-        for slot in ("1", "2"):
-            if self._target() != "slot" + slot:
-                menu.add_command(label="Card in slot %s" % slot, command=lambda s=slot: self._copy(save, "slot" + s))
+        for slot in SLOTS:
+            if self._target() != "slot" + slot.lower():
+                menu.add_command(label="Card in slot %s" % slot,
+                                 command=lambda s=slot: self._copy(save, "slot" + s.lower()))
         x, y = self.copy_button.winfo_rootx(), self.copy_button.winfo_rooty() + self.copy_button.winfo_height()
         menu.tk_popup(x, y)
 
@@ -281,7 +290,8 @@ class CardPage(Page):
             if not dst:
                 return
             dst = os.path.normpath(dst)
-        elif not self.app.confirm("Copy %s to the card in slot %s? (you confirm on the PS1)" % (save[1], dst[-1])):
+        elif not self.app.confirm("Copy %s to the card in slot %s? (you confirm on the PS1)" % (save[1],
+                                                                                               dst[4:].upper())):
             return
         self._run(["-mccopy", self._target(), save[0], dst], "Copy save")
 
@@ -290,8 +300,8 @@ class CardPage(Page):
         if not self._image_ok() or not save:
             return
         if self._live():
-            question = "Delete %s from the card in slot %s? (you confirm again on the PS1)" % (save[1],
-                                                                                              self.source.get()[-1])
+            question = "Delete %s from the card in slot %s? (you confirm again on the PS1)" % (
+                save[1], slot_of(self.source.get()))
         else:
             question = "Delete %s from %s? (a .bak copy of the image is kept)" % (save[1], self._describe())
         if self.app.confirm(question):

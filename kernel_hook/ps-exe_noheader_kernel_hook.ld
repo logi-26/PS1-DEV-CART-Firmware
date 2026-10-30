@@ -33,12 +33,14 @@ TLOAD_ADDR = DEFINED(TLOAD_ADDR) ? TLOAD_ADDR : 0x80010000;
 
 /*
 Kernel hook part uses unused/reserved kernel space (to be safe, from 0x8000C160 to 0x8000DF7F)
+0x8000D800-0x8000DEDF holds the code engine's cheat table (CheatTable, see usb.h), written by the computer or the menu
+0x8000DEE0-0x8000DEFF holds the booted disc's executable name (DiscId, see usb.h), written by the firmware
 0x8000DF00-0x8000DF6F holds the debug monitor state at a fixed address (see monitor/monitor.h)
 https://problemkaputt.de/psx-spx.htm#biosmemorymap
 https://github.com/Lameguy64/PSn00bSDK/blob/master/indev/psn00bdbg-mk2/doc/overview.txt
 */
 MEMORY {
-    ram (rwx)   : ORIGIN = 0x8000C160, LENGTH = 0x1DA0
+    ram (rwx)   : ORIGIN = 0x8000C160, LENGTH = 0x16A0
     kmon (rw)   : ORIGIN = 0x8000DF00, LENGTH = 0x70
     khp (rw)    : ORIGIN = 0x8000DF70, LENGTH = 0x10
     dcache      : ORIGIN = 0x1f800000, LENGTH = 0x400

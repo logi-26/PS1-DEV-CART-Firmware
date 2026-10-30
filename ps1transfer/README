@@ -72,7 +72,7 @@ Parameters:
    clears the old areas, a save on the PS1 keeps the new position), "quit"
 -mcbackup Save a memory card to a 128KB image file (cardtool.ps-exe next to ps1transfer)
 -mcrestore Write a memory card image (128KB raw or DexDrive .gme) to a memory card, confirmation on the PS1
--slot Memory card slot 1 or 2 for -mcbackup/-mcrestore (default 1)
+-slot Memory card slot 1 or 2 for -mcbackup/-mcrestore (default 1), or a multitap's slot: 1a-1d, 2a-2d
 -padtest Control tester (padtest.ps-exe next to ps1transfer), with -pad: both controller ports as a program sees
    them through the BIOS (device, buttons, sticks, NeGcon, mouse pointer, GunCon sight), real or emulated
 -link [yaroze] Link cable tester (linktest.ps-exe next to ps1transfer), run it on both consoles. The serial port is
@@ -116,7 +116,8 @@ Parameters:
    (InitPAD); the firmware needs the debug monitor version 8, version 9 for port 2, version 11 for the other devices
 -memlive Memory of the running program read/written on request ("read ADDR SIZE", "write ADDR HEX"), the remote pad
    ("pad", "padport", "padstate", "padtype", "padaxes", "padmove"), "screen FILE" (the frame being drawn, 16-bit
-   pixels: "MEMSCREEN X Y W H FILE"); its printf is shown and its files served meanwhile
+   pixels: "MEMSCREEN X Y W H FILE"), "dump ADDR SIZE FILE" (RAM read in one go, up to the whole 2MB: "MEMDUMP");
+   its printf is shown and its files served meanwhile
 -hot file[@where] Hot reload a file into the running program (VRAM, SPU RAM or RAM), can be used several times
 -watch With -hot: send each file again when it changes on disk, and show the printf of the program
 -flash rom.rom Flash a cartridge ROM: checked first (128KB, cartridge boot header), uploaded to RAM, flashed by the
@@ -126,7 +127,8 @@ Parameters:
    import discs, no modchip; not on Japanese consoles), then SYSTEM.CNF and the game are loaded as the BIOS does.
    A program running is reset first. The messages are on the TV.
 -info Cartridge state as key=value lines: device, state (menu, running, stopped, crashed), firmware, features, monitor,
-   monitor_version, escaped_answers (1: answers after a DLE, text a program prints can't be taken for them)
+   monitor_version, escaped_answers (1: answers after a DLE, text a program prints can't be taken for them), game (the
+   disc booted from the menu: its executable, e.g. SLES_015.84, firmware 1.1)
 -rename NAME With -n SERIAL: renames the cartridge, i.e. its USB serial number (1 to 15 letters and digits), the
    name -n, -l and the PS1 menu use. Only the cartridge's USB chip (FT245R) is written, with FTDI's own EEPROM
    programming function: its settings are saved first (%LOCALAPPDATA%\PS1-DEV-CART\eeprom-backups\SERIAL-date.txt,
@@ -382,6 +384,11 @@ ps1transfer -mccopy slot1 SAVE slot2               (source and destination: a sl
 The memory card tool runs in server mode and stays running, so the next commands start at once. Writes are
 confirmed on the PS1 (Cross: write, Circle: cancel). A save is imported into never used blocks first, then into the
 blocks of deleted saves (they can't be undeleted any more once reused). Give -n before the command.
+
+With a multitap: the card in any of its slots, "slot1a"-"slot1d" and "slot2a"-"slot2d" ("slot1" is "slot1a"), and
+-slot 1b... for -mcbackup/-mcrestore:
+ps1transfer -mclist slot1c                          saves of the card in slot C of the multitap on port 1
+ps1transfer -mcbackup card.mcd -slot 2b             whole card in slot B of the multitap on port 2
 
 
 TIM and VRAM viewer:

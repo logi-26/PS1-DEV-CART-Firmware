@@ -45,12 +45,73 @@ static inline void	**GetB0Table(void)
 	return ((void **(*)(void))0xB0)();
 }
 
+// Code engine: the cheat table's codes applied (see usb.h, CheatTable)
+static void	ApplyCheats(void)
+{
+	volatile CheatTable	*t = (volatile CheatTable *)CHEAT_TABLE_ADRS;
+	uint32_t			i, n;
+
+	if (t->magic != CHEAT_TABLE_MAGIC)
+		return;
+	n = (t->count < CHEAT_MAX) ? t->count : CHEAT_MAX;
+	for (i = 0; i < n; i++)
+	{
+		uint32_t			code = t->codes[i].code, type = code >> 24, v = t->codes[i].value, cur;
+		volatile uint8_t	*a = (volatile uint8_t *)(0x80000000 | (code & 0x1FFFFF));
+		bool				wide = (type == 0x80) || ((type & 0xF0) == 0xD0) || (type == 0xC0);
+
+		if (wide && (code & 1))		// (a 16-bit access on an odd address: a bus error)
+			continue;
+		if (type == 0x80)
+			*(volatile uint16_t *)a = v;
+		else if (type == 0x30)
+			*a = v;
+		else if (((type & 0xF0) == 0xD0) || ((type & 0xF0) == 0xE0))
+		{
+			bool	ok;
+
+			if (type & 0x0C)		// (D4-DF, E4-EF: not tests)
+				continue;
+			cur = (type & 0xF0) == 0xD0 ? *(volatile uint16_t *)a : *a;
+			if ((type & 0xF0) == 0xE0)
+				v &= 0xFF;
+			switch (type & 3)
+			{
+				case 0:		ok = cur == v;	break;
+				case 1:		ok = cur != v;	break;
+				case 2:		ok = cur < v;	break;
+				default:	ok = cur > v;	break;
+			}
+			if (!ok)
+				i++;				// The next code skipped
+		}
+		else if ((type == 0x50) && (i + 1 < n))
+		{
+			uint32_t	next = t->codes[i + 1].code, w = t->codes[i + 1].value, k, count = (code >> 8) & 0xFF;
+			uint32_t	step = code & 0xFF, ntype = next >> 24, base = 0x80000000 | (next & 0x1FFFFF);
+
+			i++;
+			for (k = 0; k < count; k++, base += step, w += v)
+			{
+				if (ntype == 0x30)
+					*(volatile uint8_t *)base = w;
+				else if ((ntype == 0x80) && !(base & 1))
+					*(volatile uint16_t *)base = w;
+			}
+		}
+		else if ((type == 0xC0) && (*(volatile uint16_t *)a != v))
+			return;					// The codes after it only when the value is equal
+	}
+}
+
 void	ReturnFromExceptionHook(void)
 {
 	int	ret;
 
 	if (kernel_hook_params.is_enabled)
 	{
+		ApplyCheats();
+
 		// TTY device is replaced by the USB one (default), the serial port one (Net Yaroze like) or kept (BIOS one)
 		if (!is_tty_enabled)
 		{

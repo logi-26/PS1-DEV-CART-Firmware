@@ -178,6 +178,9 @@ entry:
 psexe:
 	.incbin	"../ps1devcart.ps-exe"
 psexe_end:
+	# Cheats of games (cheatmenu.h: CHEAT_DB_ROM, 20KB), written by the computer (the Manager's Cheats page): empty here.
+	# The build fails ("attempt to move .org backwards") if the firmware reaches it
+	.org	0x0000B000
 	.org	0x00010000
 	.incbin	"tim.tfs"
 	# Debug monitor, executed from the flash (see monitor/monitor.h MONITOR_ROM_ADRS): after the menu images (they end

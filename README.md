@@ -85,6 +85,12 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/ps1/flasher.png" alt="The firmware written to the cartridge, then checked." width="640">
 </p>
 
+**Cheat screen**: Select + Triangle on the menu: the cheats of the disc in the drive, ticked before the game boots.
+
+<p align="center">
+  <img src="screenshots/ps1/cheats.png" alt="Select + Triangle on the menu: the cheats of the disc in the drive, ticked before the game boots." width="640">
+</p>
+
 </details>
 
 ### PS1 Dev Cart Manager
@@ -206,6 +212,12 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/manager/linktest.png" alt="The link tester running on two consoles through the USB link relay." width="100%">
 </p>
 
+**Cheats**: The game in the drive detected, and its cheats from the cheat database, switched on while it runs.
+
+<p align="center">
+  <img src="screenshots/manager/cheats.png" alt="The game in the drive detected, and its cheats from the cheat database, switched on while it runs." width="100%">
+</p>
+
 **Firmware**: The cartridge's information, and the ROM ready to flash.
 
 <p align="center">
@@ -288,7 +300,15 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
 - **START + SELECT** boots the disc in the drive (or `ps1transfer -bootcd`). The CD drive is unlocked first (the
   "nocash unlock", as in Unirom), so burned and import discs boot without a modchip or disc swapping. Not on Japanese
   consoles, whose drive can't be unlocked (licensed discs still boot). The unlock stays when the lid is opened. The
-  game runs with the kernel hook: reset, memory access and screenshots from the computer.
+  game runs with the kernel hook: reset, memory access and screenshots from the computer, and its serial number is
+  kept for the Manager's cheats (`ps1transfer -info`: `game=`).
+- **Code engine**: cheats applied by the console at every interrupt while a game runs, like a cheat cartridge: up to
+  216 PS1 GameShark codes (writes, tests, slides) set from the Manager's Cheats page. They stay on until the console
+  is reset, without the computer.
+- **SELECT + TRIANGLE** (held half a second) boots the disc with its cheats: the cheat screen lists the cheats of
+  that game (found by the disc's serial number) among the ones written to the cartridge, X ticks them, START boots
+  with them on, O goes back. The cartridge holds the cheats of about 50 games (20 KB), chosen in the Manager (Cheats
+  page, On the cartridge tab).
 
 **Running programs**
 - Upload and execute PS-X EXE programs, reset the console from the computer.
@@ -338,7 +358,9 @@ PlayStation's RAM: your program keeps all its RAM.
   the Namco GunCon (aimed at the console's picture). A game controller plugged into the computer, such as a PS1
   controller on a USB adapter, drives it too (buttons and sticks, with its own button mapping). Controller
   changes can be recorded with their timing and played back (looping or not), to replay the same input, and saved
-  to a file (`.ps1pad`).
+  to a file (`.ps1pad`). With a multitap (firmware 1.1): any of its 8 slots, 1A-2D, for a game reading a multitap,
+  retail games from their disc too: the game's multitap buffer is found in its RAM and the cartridge's code engine
+  puts the emulated controllers in it.
 - **Profiler** (`ps1transfer -prof`, or the Profiler page of the GUI), without changing your program, see
   [below](#profiler).
 
@@ -372,7 +394,7 @@ buttons in a help bar at the bottom.
 | TMD model viewer | `-m model.tmd -t texture.tim -tod anim.tod` | Shows a 3D model with its textures: rotate, zoom. Its own GTE renderer handles every TMD polygon type (flat/gouraud, textured, lit/unlit, gradation). Plays TOD animations (hierarchical objects, as PsyQ's TOD sample functions); with `-mdllive` (the GUI's Model viewer page) its controls are on the computer too, linked live with the controller's. |
 | Sound tester | `-snd bank.vh -snd bank.vb -snd music.seq` | Plays the instruments of a VAB sound bank, SEQ music and VAG samples. Its own VAB/SEQ player matches Sony's libsnd. With `-sndlive` (the GUI's Sound page) its controls are on the computer too, linked live with the controller's, and the VAB editor tunes the bank live. |
 | TIM and VRAM viewer | `-tim file.tim` | Up to 32 TIMs: VRAM map with overlaps, TIM view with zoom and CLUTs, warnings (overlaps, texture page crossing, CLUT position). **Palette editor** and **CLUT swap**, save/reload through the file server. |
-| Memory card tool | `-mcbackup`, `-mcrestore`, `-mclist slot1`, ... | Backup (about 12 s) and restore (about 30 s) of a whole card. Browse the saves (with icons) and export, import, copy or delete one save directly on the card (only the sectors needed; writes confirmed on the console). Also works on card image files without a console. |
+| Memory card tool | `-mcbackup`, `-mcrestore`, `-mclist slot1`, ... | Backup (about 12 s) and restore (about 30 s) of a whole card, in slot 1 or 2 or a multitap's slot (`-slot 1b`, `slot2c`...). Browse the saves (with icons) and export, import, copy or delete one save directly on the card (only the sectors needed; writes confirmed on the console). Also works on card image files without a console. |
 | SPU synth | `-synth` | The PlayStation as a 16-slot sample synth: slot n plays MIDI channel n. Samples (VAG) uploaded at any time or sent as SysEx; ADSR, reverb, pan, fine tune per slot; MIDI input. |
 | Link cable tester | `-link [yaroze\|usb\|yarozeusb]` | Packets sent both ways every frame between two consoles: throughput, losses, round trip time, flow control lines. The serial cable can be used with libcomb (as games using the PlayStation link cable library) or like a Net Yaroze game (tty), or the USB link can be used instead of a cable. |
 | Video tester | (Movie Tools page) | Plays an STR movie (MDEC video, XA sound) as a game plays it from the CD: the sectors at the drive's pace (1x or 2x), each frame decoded once its sectors are in, the sound with it. The movie comes from the computer through the file server: loaded into RAM first (up to 1 MB) for the exact timing, or read while it plays. STR files of 2336, 2352 or 2048-byte sectors, BS versions 1-3, up to 640 pixels wide, 15 or 24-bit colour; frame, decode time, size, quantization, late and dropped frames, sound underruns shown on the screen and sent to the computer. |
@@ -664,6 +686,7 @@ Each page shows the command it runs. See [gui/README.md](gui/README.md).
 | Console & File Server | printf of the running program, **Attach** to one already running; file server activity (files opened, created and refused, bytes read and written). |
 | Remote Controller | Controller port 1 or 2 driven from the computer (mouse, keyboard), for programs reading their pads through the BIOS: a digital pad, DualShock, analog joystick, NeGcon, mouse or GunCon; record and play back controller sequences. |
 | Memory Peek/Poke | The program's variables from its symbol file, a watch list with live values (typed, editable), peek, poke, upload, download. |
+| Cheats | Finds a value in the RAM of the running game, a retail game booted from its disc too (equal to a value, or changed, increased, decreased since the last search: about 4 seconds a search), then keeps it: cheats frozen or written once, a list per game, GameShark / Action Replay codes in and out. **Known cheats**: the game booted from its disc is detected and its cheats listed from a database built from your own cheat files and game lists (switch them on). **On the cartridge**: the games whose cheats the cartridge keeps (read, add, remove, space left, write), chosen on the console with Select + Triangle. |
 | Profiler | Runs (or attaches to) a program, a Net Yaroze game too, and shows live what limits its frame rate with hints, CPU/GPU load, where the time goes, frame time, RAM used and free, stack, DMA, SPU voices and the functions with their callers. |
 | Hot Reload | Files and where they go, sent at once or each time they are saved. |
 | Screen Capture | Screenshots, live while a program runs, with automatic refresh; **Screen on the TV (auto)** finds the screen the program shows. |

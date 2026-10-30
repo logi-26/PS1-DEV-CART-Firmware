@@ -347,6 +347,45 @@ int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, 
 #define	FEATURE_DEVICE_ID	(1 << 1)	// 'I' command (menu): device ID (USB serial number) shown on the menu, see ps1devcart.c
 #define	FEATURE_HOOK_BIG_PACKETS	(1 << 2)	// Kernel hook and debug monitor use HOOK_PACKET_SIZE packets (file server, live 'D'/'U')
 #define	FEATURE_BOOT_DISC	(1 << 3)	// 'C' command (menu): the CD drive unlocked and the disc booted, see ps1devcart.c
+#define	FEATURE_DISC_ID		(1 << 4)	// The disc booted: its executable at DISC_ID_ADRS while the game runs (cheats)
+#define	FEATURE_CHEATS		(1 << 5)	// Code engine: the cheat table at CHEAT_TABLE_ADRS applied by the kernel hook
+
+// Code engine (kernel hook): the cheats of the table applied at every interrupt while a program runs, like a cheat
+// cartridge. Written by the computer (the Manager's Cheats page) or the menu; cleared at the menu. In the kernel
+// hook's space (see kernel_hook/ps-exe_noheader_kernel_hook.ld). Codes as the PS1 GameShark's (code: its first word,
+// type << 24 | address): 80 16-bit / 30 8-bit write; D0-D3 16-bit / E0-E3 8-bit test (=, !=, <, >) of the next code;
+// 50 slide (5000nnss iiii: the next 80/30 code nn times, the address + ss and the value + iiii each time); C0 the
+// codes after it only if the 16-bit value is equal. Other types are skipped (the increments would run several times a
+// frame: every interrupt), and so is a 16-bit code on an odd address.
+#define	CHEAT_TABLE_ADRS	0x8000D800
+#define	CHEAT_TABLE_MAGIC	0x53544843	// "CHTS"
+#define	CHEAT_MAX			216
+
+typedef struct
+{
+	uint32_t	code;		// Type << 24 | address (RAM offset)
+	uint16_t	value;
+	uint16_t	reserved;
+} CheatCode;
+
+typedef struct
+{
+	uint32_t	magic;		// CHEAT_TABLE_MAGIC: on
+	uint32_t	count;		// Codes used
+	CheatCode	codes[CHEAT_MAX];
+} CheatTable;
+
+// The game booted from its disc (BootDisc): its executable's name from SYSTEM.CNF (e.g. "SLES_015.42"), the disc's
+// serial number. In the kernel hook's space (see kernel_hook/ps-exe_noheader_kernel_hook.ld); cleared at the menu and
+// when a program is executed from the computer
+#define	DISC_ID_ADRS		0x8000DEE0
+#define	DISC_ID_MAGIC		0x43534944	// "DISC"
+
+typedef struct
+{
+	uint32_t	magic;		// DISC_ID_MAGIC: a disc was booted
+	char		exe[28];	// Its executable, without "cdrom:\" and ";1"
+} DiscId;
 
 #ifndef HOOK
 #define	DEVICE_ID_SIZE		16
@@ -586,6 +625,7 @@ int		USB_ProcessReceive(void)
 			PadRemoteSetup();
 
 		kernel_hook_params->is_enabled = true;
+		((volatile DiscId *)DISC_ID_ADRS)->magic = 0;	// (not a disc)
 		// ps1transfer "-c off" / "-c sio" choose what the kernel hook does with the TTY device (e.g. for serial link play)
 		kernel_hook_params->tty_mode = USB_cmd[4] & ~(EXEC_PROF_FILL | EXEC_PAD);
 

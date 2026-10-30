@@ -288,7 +288,10 @@ class ScrollFrame(tb.Frame):
         self.canvas.configure(scrollregion=(0, 0, self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()))
 
     def _wheel(self, event):
-        w = self.winfo_containing(event.x_root, event.y_root)
+        try:
+            w = self.winfo_containing(event.x_root, event.y_root)
+        except KeyError:        # (over a window Tk made itself: a combobox's open list, "popdown")
+            return
         while w is not None and w is not self:
             w = w.master
         if w is self and self.inner.winfo_reqheight() > self.canvas.winfo_height():

@@ -6,6 +6,7 @@
 * controllers and the display keep working between sectors (the BIOS reads the controllers on the VBlank interrupt).
 * Commands as described in the nocash PSX specifications ("Memory Card Read/Write Commands"):
 *	read:	81 52 00 00 MSB LSB 00 00 00 00 [128 x 00] 00 00	answers: FLAG 5A 5D - - 5C 5D MSB LSB [data] CHK 47
+*	(81: the card of the port; through a multitap, 81-84 the card of its slot A-D)
 *	write:	81 57 00 00 MSB LSB [128 data] CHK 00 00 00			answers: FLAG 5A 5D - - - 5C 5D 47
 * The card acknowledges each byte (/ACK), except the last one. CHK = MSB ^ LSB ^ each data byte, 47 ('G') = good.
 * A sector that fails is done again by the caller with the BIOS (cardtool.c).
@@ -66,7 +67,8 @@ static int	CardIoByte(uint8_t out, int ack)
 	return (in);
 }
 
-// One command with the interrupts off: write (buf -> card) or read (card -> buf). 1: done, 0: failed
+// One command with the interrupts off: write (buf -> card) or read (card -> buf). 1: done, 0: failed. slot: the port
+// and the multitap slot (cardserver.h: CARD_SLOT)
 static int	CardIoSector(int slot, int sector, uint8_t *buf, int write)
 {
 	uint8_t	msb = sector >> 8, lsb = sector, chk = msb ^ lsb, data[128];
@@ -76,11 +78,11 @@ static int	CardIoSector(int slot, int sector, uint8_t *buf, int write)
 	JOY_MODE = 0x000D;		// 8 bits, baud rate x1
 	JOY_BAUD = 0x0088;		// 250 kHz
 	JOY_CTRL = JOY_CTRL_TX_ENABLE | JOY_CTRL_SELECT | JOY_CTRL_ACK_IRQ | JOY_CTRL_IRQ_RESET |
-		((slot == 2) ? JOY_CTRL_PORT2 : 0);
+		((CARD_SLOT_PORT(slot) == 2) ? JOY_CTRL_PORT2 : 0);
 	for (i = 0; i < 100; i++)	// (a short delay after the selection)
 		__asm__ volatile ("nop");
 
-	if ((CardIoByte(0x81, 1) < 0) || (CardIoByte(write ? 0x57 : 0x52, 1) < 0) || (CardIoByte(0, 1) != 0x5A) ||
+	if ((CardIoByte(0x81 + CARD_SLOT_TAP(slot), 1) < 0) || (CardIoByte(write ? 0x57 : 0x52, 1) < 0) || (CardIoByte(0, 1) != 0x5A) ||
 		(CardIoByte(0, 1) != 0x5D) || (CardIoByte(msb, 1) < 0) || (CardIoByte(lsb, 1) < 0))
 		goto out;
 	if (write)

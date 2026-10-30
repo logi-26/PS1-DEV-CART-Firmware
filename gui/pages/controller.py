@@ -20,6 +20,14 @@ drives the pad too, on any page: its buttons are added to the ones held with the
 move the DualShock's (NeGcon: the left stick twists, Cross/Square/L1 are I/II/L). "Map buttons..." asks for each PS1
 button in turn on the controller; the mapping is saved for that controller (by its USB vendor and product ID).
 
+Multitap: a game reading a multitap (its 4 slots) gets a controller in any slot, on port 1 or port 2, through the
+cartridge's code engine (firmware 1.1, codeengine.py): "Find the multitap" reads the RAM and looks for the game's
+multitap buffer (00 80, then 4 slots of 8 bytes: 00 and the controller's ID, or FF x 8 for an empty slot), then each
+slot set to a controller has its 8 bytes written over the buffer by the console at every interrupt. The slot chosen
+with "Drive" follows the page's controls; the others are controllers with nothing pressed (players joined). A real
+multitap must be plugged in (the game asks for the multitap's reply). The mouse can't be driven this way (its motion
+is relative). Works with games reading the multitap through the BIOS or their own driver alike.
+
 Recording and playback: "Record" captures every change (buttons, axes, mouse motion) and the time it happened;
 "Play" sends them again with the same timing (to the device recorded). A recording can be saved and loaded again.
 
@@ -36,9 +44,12 @@ from tkinter import filedialog
 
 import ttkbootstrap as tb
 
+import codeengine
 import gamepad
+from livelink import FRAME_CAPTURE
 from pages.base import Page
 from settings import config_dir
+from widgets import ScrollFrame
 
 # Buttons: name, PsyQ pad bit, keys, shape (kind, x, y, w, h) on the pad drawing, label
 BUTTONS = (
@@ -86,6 +97,12 @@ USB_NONE = "None"
 # Map buttons: the PS1 buttons asked for in turn, then the sticks (name, text)
 LEARN_BUTTONS = ("Up", "Right", "Down", "Left", "Triangle", "Circle", "Cross", "Square", "L1", "R1", "L2", "R2",
                  "Select", "Start", "L3", "R3")
+# Multitap: its slots (port and slot A-D), the devices a slot can be (not the mouse: its motion is relative)
+TAP_SLOTS = tuple("%d%s" % (port, tap) for port in (1, 2) for tap in "ABCD")
+TAP_REAL = "Real controller"
+TAP_DEVICES = (TAP_REAL,) + tuple(d[0] for d in DEVICES if d[2] != "mouse")
+TAP_IDS = {d[1] for d in DEVICES}
+RAM, RAM_SIZE = 0x80000000, 0x200000
 LEARN_STICKS = (("LX", "the left stick to the right"), ("LY", "the left stick down"),
                 ("RX", "the right stick to the right"), ("RY", "the right stick down"))
 
@@ -112,6 +129,49 @@ def describe(kind, bits, axes, dx=0, dy=0):
     if dx or dy:
         text += "  move %+d,%+d" % (dx, dy)
     return text
+
+
+def find_multitap(data):
+    """The multitap buffers in a RAM dump: [address, ...] (00 80, then 4 slots: 00 and a controller's ID, or FF x 8;
+    one controller at least)."""
+    found, i = [], data.find(b"\x00\x80")
+    while 0 <= i <= len(data) - 34:
+        slots = [data[i + 2 + n * 8:i + 10 + n * 8] for n in range(4)]
+        if (all(s == b"\xff" * 8 or (s[0] == 0 and s[1] in TAP_IDS) for s in slots) and
+                any(s[0] == 0 for s in slots)):
+            found.append(RAM + i)
+        i = data.find(b"\x00\x80", i + 1)
+    return found
+
+
+def multitap_port(data, adrs):
+    """The port of a multitap buffer (0: port 1, 1: port 2, None: not known), from where the game keeps its address:
+    the two pad buffers' addresses side by side (InitPAD(buf1, len1, buf2, len2), or a pad library's), port 1 first."""
+    word, i = struct.pack("<I", adrs), data.find(struct.pack("<I", adrs))
+    while i >= 0:
+        if i % 4 == 0:
+            before = struct.unpack_from("<I", data, i - 4)[0] if i >= 4 else 0
+            after = struct.unpack_from("<I", data, i + 4)[0] if i + 8 <= len(data) else 0
+            if 0 < adrs - before <= 0x100:
+                return 1
+            if 0 < after - adrs <= 0x100:
+                return 0
+        i = data.find(word, i + 1)
+    return None
+
+
+def slot_codes(buf, tap, device, bits, axes):
+    """The code engine's codes (80 writes) putting a controller in a multitap slot: its 8 bytes in the buffer (00, ID,
+    the buttons (active low), 4 more bytes: sticks, NeGcon twist and analog buttons, GunCon position)."""
+    data = bytes((0, DEVICE[device][1], ~bits >> 8 & 0xFF, ~bits & 0xFF)) + (bytes(axes) if axes else b"\xff" * 4)
+    adrs = buf + 2 + tap * 8
+    return [(0x80000000 | (adrs + i) & 0xFFFFFF, data[i] | data[i + 1] << 8) for i in range(0, 8, 2)]
+
+
+def released_axes(kind):
+    """A device's axes with nothing held."""
+    return {"analog": (128, 128, 128, 128), "negcon": (128, 0, 0, 0),
+            "guncon": tuple(struct.pack("<HH", *GUN_OFF))}.get(kind)
 
 
 class ControllerPage(Page):
@@ -162,14 +222,28 @@ class ControllerPage(Page):
         self.learn_rest = None      # The controller at rest (inputs pressed are the ones that change from it)
         self.learn_wait = False     # Waiting for the controller to be released
 
+        self.tap_bufs = [None, None]    # The game's multitap buffer on port 1 and port 2 (address)
+        self.tap_found = []         # The buffers found ("Find the multitap")
+        self.tap_dumping = False    # The RAM being read (then searched)
+        self.want_find = False      # Find the multitap once connected
+        self.engine = None          # The code engine is there (firmware 1.1), None: not known yet
+        self.engine_read = False    # Its features asked
+        saved = self.app.settings.field("controller.multitap", {})
+        self.tap_devices = {slot: saved.get(slot) if saved.get(slot) in TAP_DEVICES[1:] else None
+                            for slot in TAP_SLOTS}     # Slot -> device (None: the real controller, untouched)
+
         tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w", pady=(0, 4))
-        tb.Label(self, text="A controller driven from this computer, on port 1 or port 2: a digital pad, or another "
+        scroll = ScrollFrame(self)          # (taller than the page: the multitap, recording and the controls)
+        scroll.pack(fill="both", expand=True)
+        page = self.page = scroll.inner
+        tb.Label(page, text="A controller driven from this computer, on port 1 or port 2: a digital pad, or another "
                             "controller the program sees instead (DualShock, analog joystick, NeGcon, mouse, GunCon), "
                             "driven with the mouse and the keyboard like in an emulator. Start the program with the "
                             "remote controller option (Run PSX, Run Net Yaroze, Frame Inspector). Works with programs "
-                            "reading their pads through the BIOS (PsyQ's PadInit, Net Yaroze, PSn00bSDK's InitPAD).",
+                            "reading their pads through the BIOS (PsyQ's PadInit, Net Yaroze, PSn00bSDK's InitPAD). "
+                            "With a multitap: any of its slots, for games reading it, retail ones too (Multitap below).",
                  wraplength=1000, justify="left", bootstyle="secondary").pack(anchor="w", pady=(0, 8))
-        bar = tb.Frame(self)
+        bar = tb.Frame(page)
         bar.pack(fill="x", pady=(0, 8))
         self.connect_button = tb.Button(bar, text="Connect", bootstyle="success", width=12, command=self.toggle)
         self.connect_button.pack(side="left")
@@ -189,11 +263,11 @@ class ControllerPage(Page):
             side="left", padx=12)
         tb.Button(bar, text="Run the control tester", bootstyle="info-outline", command=self.run_tester).pack(
             side="right")
-        self.status = tb.Label(self, text="Not connected. (Run the control tester: the console shows what it sees "
+        self.status = tb.Label(page, text="Not connected. (Run the control tester: the console shows what it sees "
                                           "of both ports, to try the controllers here)", bootstyle="secondary")
         self.status.pack(anchor="w", pady=(0, 8))
 
-        box = tb.Frame(self)        # USB controller: one row (and the Map buttons prompt under it while mapping)
+        box = tb.Frame(page)        # USB controller: one row (and the Map buttons prompt under it while mapping)
         box.pack(fill="x", pady=(0, 8))
         bar = tb.Frame(box)
         bar.pack(fill="x")
@@ -218,7 +292,9 @@ class ControllerPage(Page):
         tb.Button(self.learn_bar, text="Cancel", bootstyle="danger-outline", width=8,
                   command=self.learn_cancel).pack(side="left", padx=(6, 0))
 
-        box = self.section("Recording")
+        self._build_multitap()
+
+        box = self.section("Recording", page)
         box.pack(fill="x", pady=(0, 8))
         bar = tb.Frame(box)
         bar.pack(fill="x")
@@ -239,8 +315,8 @@ class ControllerPage(Page):
         self.record_status = tb.Label(box, text="Nothing recorded.", bootstyle="secondary")
         self.record_status.pack(anchor="w", pady=(4, 0))
 
-        body = tb.Frame(self)
-        body.pack(fill="both", expand=True)
+        body = tb.Frame(page)
+        body.pack(fill="both", expand=True, pady=(0, 8))
         self.left = tb.Frame(body)
         self.left.pack(side="left", anchor="n")
         right = tb.Frame(body, padding=(10, 0, 0, 0))
@@ -384,6 +460,194 @@ class ControllerPage(Page):
                        "guncon": [self.gun_panel]}
         self.app.bind_all("<Escape>", lambda e: self.release_mouse(), add="+")
 
+    def _build_multitap(self):
+        box = self.section("Multitap (code engine, firmware 1.1)", self.page)
+        box.pack(fill="x", pady=(0, 8))
+        bar = tb.Frame(box)
+        bar.pack(fill="x")
+        tb.Button(bar, text="Find the multitap", bootstyle="info-outline", command=self.tap_find).pack(side="left")
+        self.tap_drive = tk.StringVar(value="")
+        tb.Radiobutton(bar, text="Drive the port above (no multitap)", variable=self.tap_drive, value="",
+                       command=self.tap_drive_changed).pack(side="left", padx=(16, 0))
+        self.tap_status = tb.Label(box, text="With a game reading a multitap: Find the multitap (the game running), "
+                                             "then give each slot a controller and choose the one to drive.",
+                                   bootstyle="secondary", wraplength=1000, justify="left")
+        self.tap_status.pack(anchor="w", pady=(4, 6))
+        ports = tb.Frame(box)
+        ports.pack(fill="x")
+        self.tap_combos, self.tap_labels, self.tap_entries = {}, {}, []
+        for port in (1, 2):
+            col = tb.Frame(ports)
+            col.pack(side="left", anchor="n", padx=(0, 24))
+            row = tb.Frame(col)
+            row.pack(anchor="w")
+            tb.Label(row, text="Port %d multitap buffer" % port).pack(side="left")
+            entry = tb.Combobox(row, width=12)
+            entry.bind("<<ComboboxSelected>>", lambda e: self.tap_buffers_changed())
+            entry.bind("<FocusOut>", lambda e: self.tap_buffers_changed())
+            entry.bind("<Return>", lambda e: self.tap_buffers_changed())
+            entry.pack(side="left", padx=(6, 0))
+            self.tap_entries.append(entry)
+            for tap in "ABCD":
+                slot = "%d%s" % (port, tap)
+                row = tb.Frame(col)
+                row.pack(anchor="w", pady=(4, 0))
+                tb.Radiobutton(row, text="Drive " + slot, variable=self.tap_drive, value=slot, width=9,
+                               command=self.tap_drive_changed).pack(side="left")
+                combo = tb.Combobox(row, values=TAP_DEVICES, state="readonly", width=19)
+                combo.set(self.tap_devices[slot] or TAP_REAL)
+                combo.bind("<<ComboboxSelected>>", lambda e, s=slot: self.tap_device_chosen(s))
+                combo.pack(side="left", padx=(4, 0))
+                self.tap_combos[slot] = combo
+                label = tb.Label(row, text="", bootstyle="secondary", font=("Consolas", 9), width=30)
+                label.pack(side="left", padx=(8, 0))
+                self.tap_labels[slot] = label
+
+    # ---------------------------------------------------------------- multitap
+
+    def tapping(self):
+        """The multitap slot the page's controls drive, None: the port, through the debug monitor."""
+        return self.tap_drive.get() or None
+
+    def tap_find(self):
+        """The RAM read (dump), then searched for the game's multitap buffers."""
+        if self.tap_dumping:
+            return
+        if self.app.live_task() == FRAME_CAPTURE:
+            return self.app.error("The frame capture runs (Frame Inspector): stop it first.")
+        self.want_find = True
+        if self.connected:
+            self.tap_dump()
+        elif not self.want:
+            self.toggle()
+        return None
+
+    def tap_dump(self):
+        self.want_find = False
+        self.tap_dumping = True
+        os.makedirs(config_dir(), exist_ok=True)
+        self.tap_status.configure(text="Reading the RAM (about 4 seconds)...")
+        self.app.live_send("dump %08X %d %s" % (RAM, RAM_SIZE, os.path.join(config_dir(), "multitap_ram.bin")))
+
+    def tap_dumped(self):
+        self.tap_dumping = False
+        try:
+            with open(os.path.join(config_dir(), "multitap_ram.bin"), "rb") as f:
+                data = f.read()
+        except OSError as e:
+            return self.tap_status.configure(text="Can't read the RAM file: %s" % e)
+        self.tap_found = find_multitap(data)
+        values = ["%08X" % a for a in self.tap_found]
+        for entry in self.tap_entries:
+            entry.configure(values=values)
+        if self.engine is False:
+            self.tap_show()                     # (the firmware first: without its code engine, no slot is driven)
+            return None
+        if not self.tap_found:
+            self.tap_status.configure(text="No multitap buffer found: is the game running, reading a multitap (often "
+                                           "chosen in its options, or once it shows its menu)?")
+            return None
+        # Each buffer on its port when the game's addresses tell it, else the first port free (port 1 first)
+        ports = {a: multitap_port(data, a) for a in self.tap_found}
+        self.tap_bufs = [next((a for a in self.tap_found if ports[a] == port), None) for port in (0, 1)]
+        for a in self.tap_found:
+            if ports[a] is None and a not in self.tap_bufs and None in self.tap_bufs:
+                self.tap_bufs[self.tap_bufs.index(None)] = a
+        for port, entry in enumerate(self.tap_entries):
+            entry.set("%08X" % self.tap_bufs[port] if self.tap_bufs[port] else "")
+        self.tap_show(data)
+        self.tap_apply()
+        return None
+
+    def tap_buffers_changed(self):
+        for port, entry in enumerate(self.tap_entries):
+            text = entry.get().strip()
+            try:
+                adrs = int(text, 16) if text else None
+            except ValueError:
+                adrs = None
+            if adrs is not None and adrs < RAM:
+                adrs += RAM
+            self.tap_bufs[port] = adrs if adrs is None or RAM <= adrs < RAM + RAM_SIZE - 34 else None
+        self.tap_show()
+        self.tap_apply()
+
+    def tap_show(self, data=None):
+        """The slots' state (from a RAM dump: what the real controllers are), and the status."""
+        for slot, label in self.tap_labels.items():
+            port, tap = int(slot[0]) - 1, "ABCD".index(slot[1])
+            buf = self.tap_bufs[port]
+            if data and buf:
+                raw = data[buf - RAM + 2 + tap * 8:buf - RAM + 10 + tap * 8]
+                seen = ("empty" if raw == b"\xff" * 8 else
+                        next((d[0] for d in DEVICES if d[1] == raw[1]), "ID %02X" % raw[1]))
+                label.configure(text="(found: %s)" % seen)
+            elif not buf:
+                label.configure(text="")
+        found = " ".join("port %d: %08X" % (i + 1, b) for i, b in enumerate(self.tap_bufs) if b)
+        drive = self.tapping()
+        self.tap_status.configure(text=(
+            "The cartridge's firmware has no code engine (1.1 needed): flash it from the Firmware page."
+            if self.engine is False else
+            ("Multitap buffer " + found + ". " if found else "No multitap buffer: Find the multitap. ") +
+            ("Driving slot %s (%s)." % (drive, self.tap_devices[drive]) if drive else
+             "Choose the slot to drive (Drive 1A...).")))
+
+    def tap_device_chosen(self, slot):
+        name = self.tap_combos[slot].get()
+        self.tap_devices[slot] = None if name == TAP_REAL else name
+        self.app.settings.set_field("controller.multitap", {s: d for s, d in self.tap_devices.items() if d})
+        if slot == self.tapping():
+            if self.tap_devices[slot] is None:
+                self.tap_drive.set("")
+                self.tap_drive_changed()
+                return
+            self.device.set(name)
+            self.device_chosen()
+        self.tap_show()
+        self.tap_apply()
+
+    def tap_drive_changed(self):
+        slot = self.tapping()
+        if slot:
+            if self.tap_devices[slot] is None:      # (a real controller's slot: driven as the page's device)
+                name = self.device.get() if self.kind() != "mouse" else DEVICES[0][0]
+                self.tap_devices[slot] = name
+                self.tap_combos[slot].set(name)
+                self.app.settings.set_field("controller.multitap", {s: d for s, d in self.tap_devices.items() if d})
+            if self.device.get() != self.tap_devices[slot]:
+                self.device.set(self.tap_devices[slot])
+                self.device_changed()
+            if self.connected:
+                self.app.live_send("pad off")       # (the debug monitor lets the port go)
+        elif self.connected:
+            self.app.live_send("padport %d" % self.port.get())
+            self.app.live_send("padtype %02X" % self.device_id())
+        self.sent = None
+        self.tap_show()
+        self.show_state()
+        self.send()
+
+    def tap_codes(self):
+        """The code engine's codes of the slots set to a controller (the driven one with the controls' state)."""
+        lines = []
+        drive = self.tapping()
+        for slot in TAP_SLOTS:
+            device, buf = self.tap_devices[slot], self.tap_bufs[int(slot[0]) - 1]
+            if device and buf:
+                if slot == drive:
+                    bits, axes = self.bits(), self.axes()
+                else:
+                    bits, axes = 0, released_axes(DEVICE[device][2])
+                lines += slot_codes(buf, "ABCD".index(slot[1]), device, bits, axes)
+        return lines
+
+    def tap_apply(self):
+        """The slots' codes given to the code engine, written to the console if they changed."""
+        codeengine.set_codes(self.app, "multitap", self.tap_codes() if self.connected else [])
+        if self.connected and self.engine and codeengine.changed(self.app):
+            codeengine.write(self.app)
+
     # ---------------------------------------------------------------- device
 
     def kind(self):
@@ -419,6 +683,16 @@ class ControllerPage(Page):
         self.device_changed()
 
     def device_changed(self):
+        slot = self.tapping()
+        if slot:
+            if self.kind() == "mouse":
+                self.device.set(self.tap_devices[slot])
+                self.app.error("The mouse can't be driven through the multitap (its motion is relative): choose "
+                               "\"Drive the port above\" for it.")
+                return
+            self.tap_devices[slot] = self.device.get()
+            self.tap_combos[slot].set(self.device.get())
+            self.app.settings.set_field("controller.multitap", {s: d for s, d in self.tap_devices.items() if d})
         self.app.settings.set_field("controller.device", self.device.get())
         self.release_mouse()
         self.pressed.clear()
@@ -427,7 +701,8 @@ class ControllerPage(Page):
         self.usb_axes = None        # (the USB controller's sticks applied again, to the new device)
         self.move = [0, 0]
         self.show_panel()
-        if self.connected:
+        self.show_state()
+        if self.connected and not slot:
             self.app.live_send("padtype %02X" % self.device_id())
             self.sent = None
         self.send()
@@ -476,9 +751,16 @@ class ControllerPage(Page):
         self.sent = None
         self.connect_button.configure(text="Disconnect", bootstyle="danger")
         self.pad_state = None
-        self.app.live_send("padport %d" % self.port.get())
-        self.app.live_send("padtype %02X" % self.device_id())
+        self.engine, self.engine_read = None, True
+        self.app.live_send("read %08X 4" % codeengine.HOOK_PARAMS)
+        if self.tapping():
+            self.app.live_send("pad off")
+        else:
+            self.app.live_send("padport %d" % self.port.get())
+            self.app.live_send("padtype %02X" % self.device_id())
         self.send()
+        if self.want_find:
+            self.tap_dump()
         self.poll()
         if self.kind() == "guncon":
             self.refresh_screen()
@@ -490,16 +772,22 @@ class ControllerPage(Page):
         if self.playing:
             self.stop_play()
         self.release_mouse()
+        release = self.app.live_release
         if self.connected:
             self.app.live_send("pad off")
-        self.connected = self.want = self.want_play = False
+            if codeengine.codes(self.app, "multitap"):    # (the slots given back to the real controllers)
+                codeengine.set_codes(self.app, "multitap", [])
+                if self.engine:
+                    codeengine.write(self.app)
+                    release = lambda: self.after(300, self.app.live_release)    # (the write sent first)
+        self.connected = self.want = self.want_play = self.want_find = self.tap_dumping = False
         for job in ("poll_job", "screen_job"):
             if getattr(self, job):
                 self.after_cancel(getattr(self, job))
                 setattr(self, job, None)
         self.connect_button.configure(text="Connect", bootstyle="success")
         self.status.configure(text="Not connected.")
-        self.app.live_release()
+        release()
 
     def poll(self):
         self.poll_job = None
@@ -508,12 +796,14 @@ class ControllerPage(Page):
             self.poll_job = self.after(STATE_POLL_MS, self.poll)
 
     def using_live(self):
-        return self.connected or self.want
+        return self.connected or self.want or self.tap_dumping
 
     def live_stopped(self):
         if self.playing:
             self.stop_play()
         self.release_mouse()
+        codeengine.set_codes(self.app, "multitap", [])
+        self.tap_dumping = self.want_find = False
         if self.connected or self.want:
             self.connected = self.want = self.want_play = False
             self.connect_button.configure(text="Connect", bootstyle="success")
@@ -531,10 +821,34 @@ class ControllerPage(Page):
             self.show_state()
         elif line.startswith("MEMSCREEN"):
             self.load_screen(line.split(None, 5))
+        elif line.startswith("MEMREAD %08X " % codeengine.HOOK_PARAMS) and self.engine_read:
+            self.engine_read = False
+            try:
+                self.engine = bool(bytes.fromhex(line.split()[2])[3] & codeengine.FEATURE_CHEATS)
+            except (IndexError, ValueError):
+                return
+            self.tap_show()
+            self.show_state()
+            self.tap_apply()
+        elif line.startswith("MEMDUMP") and self.tap_dumping:
+            self.tap_dumped()
+        elif line.startswith("MEMERR dump") and self.tap_dumping:
+            self.tap_dumping = False
+            self.tap_status.configure(text=line[7:])
         elif line.startswith(("MEMERR", "FRMERR")) and self.connected and "controllers" in line:
             self.status.configure(text=line[7:])
 
     def show_state(self):
+        slot = self.tapping()
+        if slot and self.connected:
+            buf = self.tap_bufs[int(slot[0]) - 1]
+            self.status.configure(text=(
+                "The cartridge's firmware has no code engine (1.1 needed): flash it from the Firmware page."
+                if self.engine is False else
+                "Port %s's multitap buffer isn't known: Find the multitap (the game running)." % slot[0] if not buf else
+                "Driving multitap slot %s as a %s (the game's multitap buffer at 0x%08X, written by the code engine)."
+                % (slot, self.device.get(), buf)))
+            return
         if not self.pad_state:
             return
         ready, buf1, buf2, version = self.pad_state
@@ -605,6 +919,9 @@ class ControllerPage(Page):
             self.record_event(bits, axes, dx, dy)
         self.last_state = (bits, axes)
         if not self.connected:
+            return
+        if self.tapping():
+            self.tap_apply()
             return
         state = (self.device_id(), bits, axes)
         if self.sent is None or self.sent[1] != bits or self.sent[0] != state[0]:
@@ -1103,8 +1420,9 @@ class ControllerPage(Page):
         c.create_line(105, 60, 415, 60, fill=LINE)
         c.create_text(260, 92, text="NeGcon" if kind == "negcon" else "PlayStation", fill="#6c757d",
                       font=("", 10, "italic"))
-        c.create_text(260, 160, text="PORT %d" % (self.port.get() + 1), fill="#f0ad4e" if self.port.get() else
-                      "#5bc0de", font=("", 12, "bold"))
+        slot = self.tapping()
+        c.create_text(260, 160, text="MULTITAP %s" % slot if slot else "PORT %d" % (self.port.get() + 1),
+                      fill="#5cb85c" if slot else "#f0ad4e" if self.port.get() else "#5bc0de", font=("", 12, "bold"))
         bits = self.bits()
         for name, bit, keys, (shape, x, y, w, h), label in BUTTONS:
             if kind == "negcon" and name not in NEGCON:

@@ -70,6 +70,15 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     and L1 are I, II and L. An analog controller (L3/R3 pressed, or a stick moved) turns a Digital pad into a
     DualShock by itself, unless Controller was chosen by hand. **Map buttons...** asks for each PS1 button in turn, then the sticks, on the controller
     (Skip keeps one as it was), and remembers the mapping for that controller; **Default mapping** goes back to it.
+    **Multitap** (firmware 1.1, its code engine): a game reading a multitap gets a controller in any of its slots,
+    1A-1D on port 1 and 2A-2D on port 2, a retail game booted from its disc too (no remote controller option needed).
+    **Find the multitap** reads the RAM and finds the game's multitap buffer (shown for each port, or given by hand),
+    and what is in each slot. Each slot is a **Real controller** (left alone) or a controller emulated there (digital
+    pad, DualShock, analog joystick, NeGcon, GunCon; not the mouse): **Drive** chooses the slot the page's controls
+    (the pad drawing, keyboard, USB controller, recordings) drive, the other emulated slots are controllers with
+    nothing pressed (players that joined). The console writes the slots over the game's buffer at every interrupt,
+    together with the Cheats page's cheats (216 codes in all, 4 per slot). A real multitap must be plugged in (the
+    game asks for the multitap's reply); disconnecting gives the slots back.
     **Run the control tester** starts the PS1 DEV CART control tester on the console (`ps1transfer -padtest`) and
     connects: it shows both ports as a program sees them (device, buttons, sticks, NeGcon values, the mouse pointer and
     the GunCon sight, shots marked), to try each controller without a game of your own.
@@ -81,6 +90,47 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     bytes), and a double click on a value writes a new one (`ps1transfer -memlive`, which also shows the program's
     printf and serves its files meanwhile). **Peek / Poke / Files**: peek, poke, upload and download, addresses in
     hexadecimal or as a symbol (`@player`, `@table+0x10`); while watching, peek and poke go through the same link.
+  - **Cheats**: finds a value in the RAM of the running game, a retail game booted from its disc too (Start + Select
+    on the menu), like a cheat cartridge. **New search** reads the whole RAM (`ps1transfer -memlive` "dump", about
+    4 seconds while a game runs) and keeps the addresses of the chosen type (8/16/32-bit, signed or not) equal to a
+    value, or any value when it isn't known (a life bar); **Next search** keeps the ones equal, greater, less, changed,
+    unchanged, increased or decreased (by a value) since the search before. Lose a life, search again, and a few
+    rounds later the address is found; with 20 results or fewer, their values are read live. **Add to the cheats**
+    makes one of a result: **On** keeps it there (frozen, as a cheat cartridge's codes are: see the code engine below),
+    **Write once** writes it once, its value and name can be changed. A list per game, saved in the settings folder
+    (`cheats\GAME.json`); **Add codes...** takes GameShark / Action Replay codes (80XXXXXX YYYY 16-bit, 30XXXXXX 00YY
+    8-bit constant writes) and **Copy as codes** gives them back.
+    **Known cheats**: **Detect the game** reads which game was booted from its disc (the firmware keeps the disc's
+    executable, its serial number such as SLES_015.42; `ps1transfer -info` shows it as `game=`) and lists its cheats
+    from a cheat database on this computer (SQLite, in the settings folder: the Manager comes with one, `data/cheats.sqlite`,
+    copied there at the first start, about 13,000 cheats for 1,400 games from the POPStarter cheat files, Xploder /
+    Xplorer and GameShark collections); **or find one** searches it by title or serial. The cheats switched on (both tabs) are applied
+    by the console itself, at every interrupt: the firmware's **code engine** (a table of up to 216 GameShark codes in
+    the kernel hook: 80/30 writes, D0-D3/E0-E3 tests, 50 slides, C0) that the page writes when they change. They stay
+    on until the console is reset or they're switched off, even with the Manager closed. With an older firmware the
+    page writes them itself 10 times a second (writes and tests only). **Import cheat files...** adds a folder of game
+    lists (`SERIAL**TITLE` lines, the region from the file name: PAL, NTSCU, NTSCJ), GameShark CD images (`.img`/`.bin`:
+    their code lists, found in the audio tracks), cheat files (`.cht` of
+    POPStarter, PS1 games on a PS2: turned into PS1 GameShark codes) and Xploder / Xplorer cartridge databases
+    (`.xp.txt`: the text [xpcrypt](https://github.com/mlafeldt/xpcrypt) `-x ROM` prints, a separate GPL tool; games by
+    title, matched to the game lists' serials, marked ≈ as their codes may be for another version); also from a
+    command line:
+    `python cheatdb.py import FOLDER...`, `python cheatdb.py game SLES_015.42`.
+    **On the cartridge** (tab): the cheats kept on the cartridge itself. **Read the cartridge** shows the games it has
+    (from its flash), the bar the space used of 20 KB (about 50 games); **Add a game** (a title, Enter, choose it) or
+    **Put this game on the cartridge** (Known cheats) adds one, **Remove** takes one off (marked To add / To remove
+    until written); **Write to the cartridge** flashes the firmware ROM (the Firmware page's) with their cheats (the
+    ones the code engine applies), read back and checked. On the console, **Select + Triangle** held on the menu shows
+    the cheats of the disc in the drive, to choose before it boots.
+
+    <p align="center">
+      <img src="../screenshots/manager/cheats_cartridge.png" alt="On the cartridge: the games whose cheats the cartridge keeps, the space used, and the changes not written yet." width="100%">
+    </p>
+
+    With a firmware before 1.1: the game isn't detected (find it by its title), the cheats switched on are written by
+    this computer 10 times a second (no code engine), and **Write to the cartridge** says that it updates the firmware
+    to 1.1 (a ROM before 1.1 is refused: it has no cheat screen). With the original PS1USB firmware the page can't be
+    used (it says so).
   - **Screen Capture**: screenshots of the screen or any VRAM area, live while a program runs, with automatic refresh.
     **Screen on the TV (auto)** finds where the program shows its screen (the TIM viewer tells it, e.g. 0,208 when
     the TIMs fill VRAM, and holds a complete frame: title, panels and text) (`ps1transfer -v auto`).
@@ -178,7 +228,8 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
   - **Memory Card Tools**: backup and restore of the whole card in slot 1 or 2, and a save browser with the icons and
     titles: export (.mcs), import, copy (to an image or a card slot), delete, new blank image. It works on a card
     image file (without the cartridge) or on the card in slot 1 or 2 of the PS1: then only the sectors needed are
-    read or written, and writes are confirmed on the PS1 with the pad.
+    read or written, and writes are confirmed on the PS1 with the pad. With a multitap, the cards in its slots too:
+    1B-1D and 2B-2D (slot 1 or 2 is the multitap's slot A).
   - **Link Connection Test**: the link tester started on two consoles (two cartridges connected to this computer): serial
     cable used like a PsyQ game or like a Net Yaroze game, or the USB link through this computer (no cable: the
     relay runs until **Stop task**). **Start the relay** links two consoles already running your programs with the

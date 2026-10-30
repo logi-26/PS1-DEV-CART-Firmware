@@ -47,10 +47,18 @@ typedef struct
 	int32_t		result;
 	uint32_t	error_sector;
 	uint32_t	cmd;
-	uint32_t	slot;						// 1 or 2
+	uint32_t	slot;						// CARD_SLOT(port, multitap slot), see below
 	uint32_t	count;						// Sectors in the list
 	char		text[CARDSRV_TEXT];			// Write: what is written, shown for the confirmation
 	uint16_t	sectors[CARDSRV_SECTORS];
 } CardServerMailbox;
+
+// A memory card slot: the port (1 or 2) and the multitap slot on it (0: A, or no multitap; 1-3: B-D). Through a multitap
+// the card of slot n answers the address byte 80h + n (81h: A, as without a multitap), see ps1-tools/cardtool/cardio.h
+#define	CARD_SLOT(_port_, _tap_)	((_port_) | ((_tap_) << 4))
+#define	CARD_SLOT_PORT(_slot_)		((_slot_) & 0x0F)
+#define	CARD_SLOT_TAP(_slot_)		(((_slot_) >> 4) & 3)
+#define	CARD_SLOT_VALID(_slot_)		(((CARD_SLOT_PORT(_slot_) == 1) || (CARD_SLOT_PORT(_slot_) == 2)) && \
+									 !((_slot_) & ~0x3F))
 
 #endif

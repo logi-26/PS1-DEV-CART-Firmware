@@ -4,7 +4,11 @@
 # (antivirus programs look harder at UPX packed programs).
 from PyInstaller.utils.hooks import collect_all
 
+import os
+
 datas = [('icons', 'icons')]     # The app icon (the window's)
+if os.path.isfile('data/cheats.sqlite'):
+    datas.append(('data/cheats.sqlite', 'data'))   # The cheat database (cheatdb.py: copied to the settings at first)
 binaries = []
 hiddenimports = ['mido.backends.rtmidi']
 for package in ('ttkbootstrap',):

@@ -66,6 +66,7 @@ uint32_t	ftdi_write_data(FT_HANDLE handle, uint8_t *data, uint32_t size)
 
 #else
 #include <ftdi.h>
+#include <libusb.h>		// (libusb_get_device: libftdi 1.5's ftdi.h doesn't include it any more)
 struct ftdi_context *ftdi = NULL;
 
 #define	sleep_ms(ms)	usleep(ms * 1000)
@@ -502,6 +503,9 @@ void	USB_DetectPacketSize(void)
 // command when the menu runs (the firmware saves it in the cartridge flash when it changes)
 #define	FEATURE_DEVICE_ID		(1 << 1)
 #define	FEATURE_BOOT_DISC		(1 << 3)	// 'C' command at the menu: the CD drive unlocked and the disc booted
+#define	FEATURE_DISC_ID			(1 << 4)	// The booted disc's executable at DISC_ID_ADRS ("game=" of -info)
+#define	DISC_ID_ADRS			0x8000DEE0	// (see usb.h: DiscId)
+#define	DISC_ID_MAGIC			0x43534944
 #define	DEVICE_ID_SIZE			16
 
 // USB serial number of the opened cartridge (at least 64 bytes)
@@ -2096,6 +2100,8 @@ out:
 	return (ret);
 }
 
+static const char	*CardSlotName(int slot);
+
 bool	UploadCardData(int mode, int slot, char *filename)
 {
 	uint8_t		*block, *file = NULL;
@@ -2133,7 +2139,7 @@ bool	UploadCardData(int mode, int slot, char *filename)
 		}
 		PrintCardDirectory(block + CARD_IMAGE_OFFSET);
 		size += CARD_SIZE;
-		printf("Confirm on the PS1: Cross to write the card in slot %d, Circle to cancel.\n", slot);
+		printf("Confirm on the PS1: Cross to write the card in slot %s, Circle to cancel.\n", CardSlotName(slot));
 	}
 
 	ret = USB_Process('U', block, CARD_DATA_ADRS, size);
@@ -3012,9 +3018,44 @@ typedef struct
 	bool	have[CARDSRV_SECTORS];
 } LiveCard;
 
+// A memory card slot: "1", "2", or with a multitap's slot "1a"-"1d", "2a"-"2d" ("slot" before it for -mc...):
+// CARD_SLOT (see cardserver.h), 0 if it isn't one
+static int	CardSlotParse(const char *arg, bool slot_word)
+{
+	int	port, tap = 0;
+
+	if (slot_word)
+	{
+		if (strncmp(arg, "slot", 4))
+			return (0);
+		arg += 4;
+	}
+	if ((arg[0] != '1') && (arg[0] != '2'))
+		return (0);
+	port = arg[0] - '0';
+	if (arg[1])
+	{
+		if ((tolower((unsigned char)arg[1]) < 'a') || (tolower((unsigned char)arg[1]) > 'd') || arg[2])
+			return (0);
+		tap = tolower((unsigned char)arg[1]) - 'a';
+	}
+	return (CARD_SLOT(port, tap));
+}
+
 static int	CardSlotArg(char *arg)
 {
-	return (!strcmp(arg, "slot1") ? 1 : (!strcmp(arg, "slot2") ? 2 : 0));
+	return (CardSlotParse(arg, true));
+}
+
+// "1", "2", "1B"...: a slot as shown
+static const char	*CardSlotName(int slot)
+{
+	static char	name[4];
+
+	name[0] = '0' + CARD_SLOT_PORT(slot);
+	name[1] = CARD_SLOT_TAP(slot) ? 'A' + CARD_SLOT_TAP(slot) : 0;
+	name[2] = 0;
+	return (name);
 }
 
 static bool	CardServerRunning(void)
@@ -3083,7 +3124,8 @@ static bool	CardServerCommand(int cmd, int slot, uint16_t *sectors, int count, c
 	if (!USB_Process('U', (uint8_t *)&seq, CS_FIELD(cmd_seq), 4))
 		goto usb_error;
 	if (cmd == CARDSRV_WRITE)
-		printf("Confirm on the PS1: Cross to write %d sector(s) of the card in slot %d, Circle to cancel.\n", count, slot);
+		printf("Confirm on the PS1: Cross to write %d sector(s) of the card in slot %s, Circle to cancel.\n", count,
+			CardSlotName(slot));
 	for (start = time(NULL); done != seq; SleepMs(20))
 	{
 		if (!USB_Process('D', (uint8_t *)&done, CS_FIELD(done_seq), 4))
@@ -3100,7 +3142,7 @@ static bool	CardServerCommand(int cmd, int slot, uint16_t *sectors, int count, c
 	switch (result)
 	{
 		case CARDSRV_OK:			return (true);
-		case CARDSRV_NO_CARD:		printf("No memory card in slot %d.\n", slot); break;
+		case CARDSRV_NO_CARD:		printf("No memory card in slot %s.\n", CardSlotName(slot)); break;
 		case CARDSRV_IO_ERROR:		printf("Memory card error %s sector %u.\n", (cmd == CARDSRV_WRITE) ? "writing" : "reading",
 										error_sector); break;
 		case CARDSRV_CANCELLED:		printf("Cancelled on the PS1, the card was not modified.\n"); break;
@@ -3151,7 +3193,7 @@ static bool	LiveDirectory(LiveCard *c)
 		return (false);
 	if (memcmp(c->img, "MC", 2))
 	{
-		printf("The card in slot %d is not formatted (no \"MC\" header).\n", c->slot);
+		printf("The card in slot %s is not formatted (no \"MC\" header).\n", CardSlotName(c->slot));
 		return (false);
 	}
 	return (true);
@@ -3268,7 +3310,7 @@ static int	CardLiveCommand(int argc, char **argv, int i, char *argv0, bool start
 		for (b = 1; b < 16; b++)	// Title frame and icon frames of each save
 			if ((McFrame(c->img, b)[0] == MC_STATE_FIRST) && !LiveRead(c, b * CARD_BLOCK_SECTORS, 4))
 				goto out;
-		printf("Memory card in slot %d:\n", c->slot);
+		printf("Memory card in slot %s:\n", CardSlotName(c->slot));
 		McList(c->img, icons);
 		ret = EXIT_SUCCESS;
 	}
@@ -3288,7 +3330,7 @@ static int	CardLiveCommand(int argc, char **argv, int i, char *argv0, bool start
 			snprintf(text, sizeof(text), "IMPORT %s", name);
 			if (LiveWriteChanges(c, text))
 			{
-				printf("Save written to the card in slot %d.\n", c->slot);
+				printf("Save written to the card in slot %s.\n", CardSlotName(c->slot));
 				ret = EXIT_SUCCESS;
 			}
 		}
@@ -3371,6 +3413,17 @@ static void	PrintInfo(void)
 	printf("monitor=%d\n", (have_state && *(uint32_t *)(state + 4)) ? 1 : 0);
 	printf("monitor_version=%d\n", have_state ? state[14] : 0);
 	printf("escaped_answers=%d\n", (USB_EscapedAnswers() > 0) ? 1 : 0);
+	// The game booted from its disc: its executable (the disc's serial number, e.g. SLES_015.42)
+	if (params[0] && (params[3] & FEATURE_DISC_ID))
+	{
+		uint8_t	id[32];
+
+		if (USB_Process('D', id, DISC_ID_ADRS, sizeof(id)) && (*(uint32_t *)id == DISC_ID_MAGIC))
+		{
+			id[sizeof(id) - 1] = 0;
+			printf("game=%s\n", (char *)id + 4);
+		}
+	}
 }
 
 /****************************************/
@@ -4091,11 +4144,11 @@ int main(int argc, char *argv[])
 						symfile = argv[++i];
 						break;
 					}
-					if (!strcmp(argv[i], "-slot"))	// Memory card slot (1 or 2) for -mcbackup/-mcrestore
+					if (!strcmp(argv[i], "-slot"))	// Memory card slot for -mcbackup/-mcrestore: 1, 2, 1a-1d, 2a-2d
 					{
-						if ((i + 1 >= argc) || ((card_slot = atoi(argv[i + 1])) < 1) || (card_slot > 2))
+						if ((i + 1 >= argc) || !(card_slot = CardSlotParse(argv[i + 1], false)))
 						{
-							printf("Slot 1 or 2 needed following -slot\n");
+							printf("Slot 1 or 2 (or a multitap's slot: 1a-1d, 2a-2d) needed following -slot\n");
 							goto usage;
 						}
 						i++;
@@ -4885,6 +4938,7 @@ usage:
 	printf("\t   -mclist card.mcd [-icons dir]   saves with titles (and icons as PNG)\n");
 	printf("\t   -mcexport card.mcd SAVE out.mcs   -mcimport card.mcd in.mcs   -mcdelete card.mcd SAVE\n");
 	printf("\t   slot1 or slot2 instead of card.mcd: on the card itself, only the sectors needed are read/written\n");
+	printf("\t   (with a multitap: slot1a-slot1d, slot2a-slot2d; slot1 is slot1a; -slot 1b... for -mcbackup/-mcrestore)\n");
 	printf("\t   (writes confirmed on the PS1), e.g. -mclist slot1, -mcexport slot1 SAVE out.mcs, -mccopy slot1 SAVE slot2\n");
 	printf("\t   -mccopy src.mcd SAVE dst.mcd   -mcformat new.mcd   (SAVE: file name or block number)\n");
 	printf("\nData are secured using CRC8.\n");

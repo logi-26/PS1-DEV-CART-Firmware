@@ -11,11 +11,11 @@ AR = ar
 LD = g++
 WINDRES = windres
 
-INC =  -I/usr/include/libftdi1/
+INC =  -I/usr/include/libftdi1/ -I/usr/include/libusb-1.0/
 CFLAGS =  -Wall
 RESINC = 
 LIBDIR = 
-LIB =  -lftdi1 -lpthread
+LIB =  -lftdi1 -lusb-1.0 -lpthread
 LDFLAGS = 
 
 INC_DEBUG =  $(INC)
