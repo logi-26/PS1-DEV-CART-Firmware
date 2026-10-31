@@ -301,7 +301,9 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
   "nocash unlock", as in Unirom), so burned and import discs boot without a modchip or disc swapping. Not on Japanese
   consoles, whose drive can't be unlocked (licensed discs still boot). The unlock stays when the lid is opened. The
   game runs with the kernel hook: reset, memory access and screenshots from the computer, and its serial number is
-  kept for the Manager's cheats (`ps1transfer -info`: `game=`).
+  kept for the Manager's cheats (`ps1transfer -info`: `game=`). A game that loads another program from the disc
+  through the BIOS (`Load`, `LoadExec`, e.g. Fighting Force after its loading screen) has it loaded by the cartridge's
+  debug monitor, since the BIOS CD driver isn't there after the cartridge's boot.
 - **Code engine**: cheats applied by the console at every interrupt while a game runs, like a cheat cartridge: up to
   216 PS1 GameShark codes (writes, tests, slides) set from the Manager's Cheats page. They stay on until the console
   is reset, without the computer.

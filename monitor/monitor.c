@@ -1483,6 +1483,108 @@ static uint32_t	ReadDCIC(void)
 }
 
 // COP0 debug registers set by the computer (hardware breakpoint/watchpoint), DCIC last
+/****************************************/
+// Disc booted by the firmware (MON_REASON_CD_SETUP, see monitor.h): Load and LoadExec of "cdrom:" files read with polled
+// drive commands as the firmware boots the disc (cdread.h), the BIOS CD driver not being there. Called by the game,
+// through the A0 table: its stack holds the sector buffer.
+
+#define	CD_REG(_n_)			(*((volatile uint8_t *)(0x1F801800 + (_n_))))
+#define	IRQ_STAT			I_STAT
+#define	A0_TABLE			A0Table()
+
+// The BIOS A0 function table (RAM 0x200), its address through a register (GCC takes a constant address for an array of
+// size 0)
+static void	**A0Table(void)
+{
+	void	**t;
+
+	__asm__("li %0, 0x200" : "=r"(t));
+	return (t);
+}
+
+// A busy wait (the root counters may be the game's): about 8 loops a microsecond, a little longer than asked
+static void	CdDelayUs(uint32_t us)
+{
+	volatile uint32_t	i;
+
+	for (i = us * 8; i; i--)
+		;
+}
+
+// Interrupts off (COP0 SR IEc, no syscall), and back as they were: the game may call with them off already
+static uint32_t	CdIrqOff(void)
+{
+	uint32_t	sr;
+
+	__asm__ volatile("mfc0 %0, $12" : "=r"(sr));
+	__asm__ volatile("mtc0 %0, $12\nnop\nnop" : : "r"(sr & ~1u));
+	return (sr);
+}
+
+static void	CdIrqRestore(uint32_t sr)
+{
+	__asm__ volatile("mtc0 %0, $12\nnop\nnop" : : "r"(sr));
+}
+
+#define	CD_DELAY_US(_us_)		CdDelayUs(_us_)
+#define	CD_CRITICAL_ENTER()		uint32_t cd_sr = CdIrqOff()
+#define	CD_CRITICAL_EXIT()		CdIrqRestore(cd_sr)
+#include "../cdread.h"
+
+// The PS-X EXE header from offset 0x10 (the BIOS Load's header buffer, Exec's argument)
+typedef struct
+{
+	uint32_t	pc0, gp0, t_addr, t_size, d_addr, d_size, b_addr, b_size, s_addr, s_size, sp, fp, gp, ret, base;
+} MonExe;
+
+// A(42h) Load(filename, headerbuf): 1 when loaded, 0 if not
+int	CdLoad(const char *name, MonExe *hdr)
+{
+	static const char	magic[] = "PS-X EXE";
+	uint8_t				sec[CD_SECTOR];
+	uint32_t			size, n;
+	int					lba, i;
+
+	if (!CD_DevicePrefix(name))		// Another device: the BIOS Load
+		return (mon_state.pad_orig ? ((int (*)(const char *, MonExe *))mon_state.pad_orig)(name, hdr) : 0);
+	if (((lba = CD_FindFile(name, &size, sec)) <= 0) || (size <= CD_SECTOR) || !CD_ReadSectors(lba, sec, CD_SECTOR))
+		return (0);
+	for (i = 0; i < 8; i++)
+		if (sec[i] != magic[i])
+			return (0);
+	for (i = 0; i < (int)sizeof(MonExe); i++)
+		((uint8_t *)hdr)[i] = sec[0x10 + i];
+	n = hdr->t_size;
+	if (n > size - CD_SECTOR)		// (a header bigger than the file)
+		n = size - CD_SECTOR;
+	if (!CD_ReadSectors(lba + 1, (uint8_t *)hdr->t_addr, n))
+		return (0);
+	FlushCache();
+	return (1);
+}
+
+// A(51h) LoadExec(filename, stackbase, stackoffset): as the BIOS one, Load then Exec(header, 1, 0) with that stack
+void	CdLoadExec(const char *name, uint32_t stack_base, uint32_t stack_offset)
+{
+	MonExe	hdr;
+
+	if (!CdLoad(name, &hdr))
+		return;
+	hdr.s_addr = stack_base;
+	hdr.s_size = stack_offset;
+	CdIrqOff();
+	FlushCache();
+	((int (*)(MonExe *, int, const char **))A0_TABLE[0x43])(&hdr, 1, 0);	// A(43h) Exec
+}
+
+static void	CdSetup(void)
+{
+	if (A0_TABLE[0x42] != (void *)CdLoad)
+		mon_state.pad_orig = (uint32_t)A0_TABLE[0x42];
+	A0_TABLE[0x42] = (void *)CdLoad;
+	A0_TABLE[0x51] = (void *)CdLoadExec;
+}
+
 static void	SetCop0Debug(void)
 {
 	__asm__ volatile(
@@ -1508,6 +1610,11 @@ void	MonitorEntry(int reason, uint32_t *regs)
 	if (reason == MON_REASON_PAD_SETUP)
 	{
 		PadSetup();
+		return;
+	}
+	if (reason == MON_REASON_CD_SETUP)
+	{
+		CdSetup();
 		return;
 	}
 	if (reason == MON_REASON_SIO_UPDATE)	// (at each exception with "-c sio" or "-c link")

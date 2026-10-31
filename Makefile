@@ -34,7 +34,7 @@ CFLAGS += -DFW_LOAD_ADDR=$(TLOAD_ADDR)
 
 all: $(TARGET).ps-exe monitor_rom.bin
 
-$(TARGET).o: $(TARGET).c display.h usb.h tfs.h psyq_compat.h monitor/monitor.h FORCE
+$(TARGET).o: $(TARGET).c display.h usb.h tfs.h psyq_compat.h cdread.h monitor/monitor.h FORCE
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # PSn00bSDK linker script with the program loaded at TLOAD_ADDR (top of RAM, under the stack)

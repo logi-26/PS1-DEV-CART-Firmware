@@ -30,6 +30,7 @@
 #define	MON_REASON_PAD_SETUP	7	// Remote pad (EXEC_PAD): called by the firmware before it executes the program
 #define	MON_REASON_SIO_SETUP	8	// Serial port / USB link tty driver ("-c sio", "-c link"; regs = 1: USB link) installed
 #define	MON_REASON_SIO_UPDATE	9	// Its work at each exception (kernel_hook/siotty.h: the driver is in the monitor)
+#define	MON_REASON_CD_SETUP	10	// Disc booted by the firmware: Load and LoadExec of "cdrom:" files by the monitor (see below)
 
 // Execute command param (tty mode byte): debug session, the hook installs the exception vectors
 #define	EXEC_DEBUG			0x80
@@ -67,8 +68,17 @@
 // 9 = remote pad: player 2 too (MonitorState.pad_buf2, the active port in pad_port, both reusing profiler fields:
 // see the remote pad comment below); 10 = SPU RAM and registers read (MON_CMD_SPU_READ: the SPU RAM viewer);
 // 11 = remote pad devices: mouse, NeGcon, analog pads, GunCon (PadDevice); 12 = the USB link exchange also while the
-// program is stopped (MON_CMD_EXCHANGE: the relay of a debug session, ps1transfer -gdb -relay)
-#define	MONITOR_VERSION		12
+// program is stopped (MON_CMD_EXCHANGE: the relay of a debug session, ps1transfer -gdb -relay); 13 = Load and LoadExec
+// of "cdrom:" files for a disc the firmware booted (MON_REASON_CD_SETUP, see below)
+#define	MONITOR_VERSION		13
+
+// Disc booted by the firmware (MON_REASON_CD_SETUP, before it executes the game): the BIOS CD driver isn't there
+// (PSn00bSDK removes it, and the firmware reads the disc with polled drive commands, see cdread.h), so a game loading
+// another executable through the BIOS (Load A(42h), LoadExec A(51h), e.g. Fighting Force after its loading screen)
+// got garbage. The monitor points both A0 table entries to its own code (in flash): a "cdrom:" file is read the
+// firmware's way, then LoadExec goes on to the BIOS Exec; another device goes to the BIOS Load, kept in
+// MonitorState.pad_orig (the remote pad's: only set up for an executable the computer runs, never for a disc). The
+// hooks stay for the executables that follow.
 
 // Profiler ("ps1transfer -prof"). A root counter not used by the program interrupts it (rate set by the computer):
 // the exception vector goes to the monitor's sampler (copied to RAM), which sends a sample to the computer at each tick, without waiting (dropped if the USB FIFO is full), between
@@ -175,7 +185,7 @@ typedef struct
 	uint32_t	prof_gpustat;	// GPUSTAT at the last SPU voices packet (monitor version 7, 0: not known)
 	// Remote pad (monitor version 8, EXEC_PAD)
 	uint32_t	pad_buf;		// Pad buffer of port 1 given to InitPAD by the program, 0: not called yet
-	uint32_t	pad_orig;		// The BIOS InitPAD
+	uint32_t	pad_orig;		// The BIOS InitPAD; for a disc booted by the firmware: the BIOS Load (MON_REASON_CD_SETUP)
 } MonitorState;
 
 // Remote pad device (monitor version 11): in MonitorState.ram_lo... (the profiler's RAM scan, unused meanwhile)

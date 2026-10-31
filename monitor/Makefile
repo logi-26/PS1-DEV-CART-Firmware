@@ -23,10 +23,10 @@ CFLAGS += -I$(PSXDIR)/thirdparty/nugget
 
 all: ../monitor_rom.bin ../monitor_ram.bin
 
-monitor_rom.elf: monitor.c monitor.h monitor.ld font8x8.bin ../kernel_hook/kernel_hook.elf
+monitor_rom.elf: monitor.c monitor.h monitor.ld font8x8.bin ../cdread.h ../kernel_hook/kernel_hook.elf
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--defsym=MONITOR_ADDR=0x1F019000 -Wl,-Map=monitor_rom.map -o $@ monitor.c
 
-monitor_ram.elf: monitor.c monitor.h monitor.ld font8x8.bin ../kernel_hook/kernel_hook.elf
+monitor_ram.elf: monitor.c monitor.h monitor.ld font8x8.bin ../cdread.h ../kernel_hook/kernel_hook.elf
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--defsym=MONITOR_ADDR=0x801C0000 -Wl,-Map=monitor_ram.map -o $@ monitor.c
 
 ../monitor_%.bin: monitor_%.elf
