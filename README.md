@@ -218,6 +218,12 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/manager/cheats.png" alt="The game in the drive detected, and its cheats from the cheat database, switched on while it runs." width="100%">
 </p>
 
+**Cheats on the cartridge**: The games whose cheats the cartridge keeps, the space used, and the changes not written yet.
+
+<p align="center">
+  <img src="screenshots/manager/cheats_cartridge.png" alt="On the cartridge: the games whose cheats the cartridge keeps, the space used, and the changes not written yet." width="100%">
+</p>
+
 **Firmware**: The cartridge's information, and the ROM ready to flash.
 
 <p align="center">
