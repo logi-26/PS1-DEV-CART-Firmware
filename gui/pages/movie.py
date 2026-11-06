@@ -4,7 +4,7 @@ PS1 DEV CART GUI: Movie Tools page: STR movies (MDEC video, XA sound) made and t
   the sound of a file or none, made into an STR at the resolution, frame rate, drive speed and quality chosen;
 - Inspect & preview: any STR movie (2336, 2352 or 2048-byte sectors): its sectors, frames, sound, problems, the frames
   as the MDEC decodes them, played here with the sound;
-- Test on the PS1: the PS1 DEV CART VIDEO TESTER plays it on the console (the file server gives it the movie: loaded
+- Test on the PS1: the PS1 DEV CART MOVIE TESTER plays it on the console (the file server gives it the movie: loaded
   in RAM, or read as it plays), controlled from here.
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -583,11 +583,12 @@ class MoviePage(Page):
     def _test_tab(self, s):
         tab = tb.Frame(self.tabs, padding=6)
         self.tabs.add(tab, text="Test on the PS1")
-        tb.Label(tab, text="The PS1 DEV CART VIDEO TESTER plays the movie as a game plays it from the CD (the "
+        tb.Label(tab, text="The PS1 DEV CART MOVIE TESTER plays the movie as a game plays it from the CD (the "
                            "sectors at the drive's pace, the sound with the pictures), its file from this computer "
                            "(the file server). RAM: the movie loaded first (up to 1 MB: about 3 s at 2x, 6 s at 1x), "
-                           "then played exactly; Stream: read while it plays (about 400 KB/s, the console busy "
-                           "meanwhile: 1x movies at their pace, 2x ones slower: stalls). Auto: RAM if it fits.",
+                           "then played exactly; Stream: read while it plays (the console's CPU does the reading, "
+                           "which a CD drive doesn't: 1x movies play smoothly, 2x ones keep the sound and their pace "
+                           "but drop the pictures not decoded in time). Auto: RAM if it fits.",
                  wraplength=1000, justify="left", bootstyle="secondary").pack(anchor="w", pady=(0, 8))
         self.test_file = FileField(tab, self.app, "movie.test", "STR movie", filetypes=STR_TYPES)
         self.test_file.pack(fill="x", pady=2)
@@ -713,12 +714,16 @@ class MoviePage(Page):
             self._sound_text = "   sound underruns %s" % parts[2] if parts[2] != "0" else ""
         elif what == "pos" and len(parts) >= 11:
             f, total, dec, size, q, stalls, late, dropped, buf = parts[2:11]
+            ram = "RAM" in getattr(self, "_open_text", "")
+            # (stream mode: the reads from this computer, KB a second and the console's time spent in them)
+            reads = "\nReading %s KB/s from this computer (the console busy %s%% of the time)" % (
+                parts[11], parts[12]) if len(parts) >= 13 and not ram else ""
             self.test_status.configure(text="%s\n%s\nFrame %s / %s   decode %d ms   %s bytes   quantization %s\n"
-                                            "Late %s   dropped %s   stalls %s   %s %s%%%s" % (
+                                            "Late %s   dropped %s   stalls %s   %s %s%%%s%s" % (
                                                 getattr(self, "_open_text", ""), getattr(self, "_info_text", ""), f,
                                                 total, int(dec) // 1000, size, q, late, dropped, stalls,
-                                                "RAM" if "RAM" in getattr(self, "_open_text", "") else "buffer", buf,
-                                                getattr(self, "_sound_text", "")))
+                                                "RAM" if ram else "buffer", buf, getattr(self, "_sound_text", ""),
+                                                reads))
         elif what == "end":
             pass
         elif what == "error":

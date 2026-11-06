@@ -9,7 +9,7 @@ PS1 DEV CART GUI: PlayStation movies (STR): MDEC video frames, XA ADPCM sound, t
   The DCT, the quantization and the block order follow the MDEC image example of PSn00bSDK (encode_image.py, (C) 2022
   spicyjpeg, MPL licensed); the BS v2 writer is this project's (it was the video streamer's).
 - Sound: XA ADPCM, 4 bits (37800 or 18900 Hz, mono or stereo): sound groups of 128 bytes (8 sound units of 28 samples,
-  each with its filter and shift), 18 groups per sector. The CD-ROM controller plays it; the PS1 DEV CART VIDEO TESTER
+  each with its filter and shift), 18 groups per sector. The CD-ROM controller plays it; the PS1 DEV CART MOVIE TESTER
   turns the units into SPU ADPCM blocks (the same filters and shifts).
 - STR file: CD sectors of 2336 bytes (subheader + user data + EDC/ECC: what disc image tools such as mkpsxiso take for
   an "str" file), video sectors (Mode 2 Form 1: a 32-byte STR header + 2016 bytes of the frame) and XA audio sectors

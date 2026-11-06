@@ -1,12 +1,13 @@
 /*
-* PS1 DEV CART VIDEO TESTER: plays an STR movie (MDEC video, XA sound) from the computer's files, as a game plays it
+* PS1 DEV CART MOVIE TESTER: plays an STR movie (MDEC video, XA sound) from the computer's files, as a game plays it
 * from the CD: the sectors at the drive's pace (1x: 75 a second, 2x: 150), each frame decoded once its sectors are in,
 * the sound heard with it.
 *
 * The movie is read through the PS1 DEV CART file server (PCDRV: "ps1transfer -e -f videotest.ps-exe -c -p FOLDER"):
 * - RAM: the whole movie loaded first (when it fits: about 1 MB, 3 seconds at 2x), then played at the exact pace;
-* - stream: read while it plays (the file server gives about 400 KB/s, the CPU busy meanwhile: 1x movies play at their
-*   pace, 2x ones too fast for it: the clock waits, "stalls" are counted).
+* - stream: read while it plays (the file server gives about 500 KB/s, the CPU busy meanwhile: 1x movies play at their
+*   pace; 2x ones need most of the CPU for the reads, which come first: the sound and the pace are kept, the frames
+*   not decoded in time dropped).
 * Sectors of 2336 bytes (Mode 2: subheader + data, as made for disc images), 2352 (raw CD sectors, also after a RIFF
 * CDXA header) or 2048 (video only). Frames: BS versions 1, 2 and 3 (psxpress DecDCTvlc), up to 640 pixels wide
 * (wider than 320: drawn at half width), decoded by the MDEC in 15 bits (the picture drawn on the screen, scaled or not,
@@ -53,8 +54,11 @@
 
 // Sectors in RAM: the whole movie (RAM mode) or a ring read ahead (stream mode), whole chunks
 #define	RING_BYTES		(1024 * 1024)
-#define	CHUNK			4							// Sectors per read (about 23 ms: shorter than a sound half)
+#define	READ_BYTES		16384						// Bytes per read at most: one packet of the file server (usb.h
+													// HOOK_PACKET_SIZE: each read, each packet waits for the computer)
 static uint8_t		ring[RING_BYTES] __attribute__((aligned(4)));
+static uint32_t		chunk = 4;					// Sectors per read (7 of 2336 bytes: about 35 ms, shorter than a sound half)
+static uint32_t		read_bytes, read_lines;		// Stream mode: read since the last report, and the time it took (lines)
 
 // Frames: the payloads of a frame's sectors put together (2 buffers: one waiting, one being received)
 #define	FRAME_MAX		(64 * 1024)
@@ -542,6 +546,14 @@ static void	DecodeService(void)
 			}
 			return;
 		}
+		// 24 bits: the frame goes straight into the screen not shown; smaller than the screen, the rest of it (still the
+		// 15-bit screens and textures of before: garbage in 24 bits) is made black first
+		if (depth24 && ((decode_w < SCREEN_W) || (decode_h < SCREEN_H)))
+		{
+			setRECT(&rect, 0, SlotY(decode_tex), SCREEN_W * 3 / 2, SCREEN_H);
+			DrawSync(0);
+			ClearImage(&rect, 0, 0, 0);
+		}
 		for (x = 0; x < decode_w; x += 16)
 		{
 			if (depth24)	// (straight to the screen not shown: 24 halfwords a strip)
@@ -568,6 +580,15 @@ static void	DecodeService(void)
 	}
 }
 
+// Stream mode: the sectors read less than half a second ahead of the sound's. The reads come first then (the CPU does
+// both: decoding then would stall the clock, the sound running dry), the frames not decoded in time are dropped; a
+// frame is still decoded every quarter of a second (a movie too big for the file server: some pictures all the same)
+static int	ReadsBehind(void)
+{
+	return (!ram_mode && playing && !paused && (loaded < total) && (loaded - cur_a < 75 * (uint32_t)speed / 2) &&
+		(VSync(-1) - decode_vsync < (is_pal ? 12 : 15)));
+}
+
 static void	VideoService(void)
 {
 	int	r = ReadySlot();
@@ -588,7 +609,7 @@ static void	VideoService(void)
 			play_us = slot_time[r];		// (paused: the time of the frame shown)
 		step_req = 0;
 	}
-	if ((decode_state == DECODE_IDLE) && (wait_buf >= 0))
+	if ((decode_state == DECODE_IDLE) && (wait_buf >= 0) && !ReadsBehind())
 		StartDecode();
 }
 
@@ -606,12 +627,15 @@ static void	Load(int chunks)
 {
 	uint32_t	ahead = playing && !paused ? 75 * speed * 3 / 2 : ring_cap;
 
-	while (chunks-- && !ram_mode && (loaded < total) && (loaded - consumed + CHUNK <= ring_cap) &&
+	while (chunks-- && !ram_mode && (loaded < total) && (loaded - consumed + chunk <= ring_cap) &&
 		(loaded - consumed < ahead))
 	{
-		uint32_t	n = (total - loaded < CHUNK) ? total - loaded : CHUNK;
+		uint32_t	n = (total - loaded < chunk) ? total - loaded : chunk, l0 = Lines();
+		int			got = server_lost ? -1 : PCread(fd, (char *)Sector(loaded), n * fmt);
 
-		if (server_lost || (PCread(fd, (char *)Sector(loaded), n * fmt) != (int)(n * fmt)))
+		read_lines += (Lines() - l0) & 0xFFFF;
+		read_bytes += n * fmt;
+		if (got != (int)(n * fmt))
 		{
 			printf("VIDTEST error read failed at sector %u\n", (unsigned)loaded);
 			server_lost = 1;
@@ -621,6 +645,13 @@ static void	Load(int chunks)
 		}
 		loaded += n;
 	}
+}
+
+// Stream mode: 1 second of sectors read before it plays (at the start, and again when it starts over)
+static void	Preload(void)
+{
+	if (!ram_mode && (fd >= 0))
+		Load(75 * speed / chunk);
 }
 
 static void	Rewind(void)
@@ -702,7 +733,8 @@ static void	OpenMovie(const char *file, const char *mode)
 	}
 	total = (size - file_base) / fmt;
 	ram_mode = !strcmp(mode, "ram") || (strcmp(mode, "stream") && (total * fmt <= RING_BYTES));
-	ring_cap = ram_mode ? RING_BYTES / fmt : (RING_BYTES / fmt) / CHUNK * CHUNK;
+	chunk = READ_BYTES / fmt;
+	ring_cap = ram_mode ? RING_BYTES / fmt : (RING_BYTES / fmt) / chunk * chunk;
 	if (ram_mode && (total > ring_cap))
 		total = ring_cap;		// (forced RAM mode: the start of the movie)
 	printf("VIDTEST open %s %u %u %s\n", name, (unsigned)total, (unsigned)fmt, ram_mode ? "ram" : "stream");
@@ -723,8 +755,7 @@ static void	OpenMovie(const char *file, const char *mode)
 		total = loaded;
 	}
 	Rewind();
-	if (!ram_mode)
-		Load(75 * speed / CHUNK);		// (1 second of sectors before it starts)
+	Preload();
 	playing = 1;
 	paused = 0;
 	last_vsync = VSync(-1);
@@ -811,8 +842,11 @@ static void	PlayService(void)
 		{
 			int	number = d[8] | (d[9] << 8) | (d[10] << 16) | (d[11] << 24);
 
-			if ((wait_buf >= 0) && ((asm_buf < 0) || (number != asm_number)))
-				break;			// (no room for the next frame yet)
+			// No room for the next frame yet: it waits, unless the frame waiting can't be decoded before its time any
+			// more (the decoder behind: that one's dropped, the pictures keep the sound's pace)
+			if ((wait_buf >= 0) && ((asm_buf < 0) || (number != asm_number)) &&
+				(paused || (wait_time > play_us + decode_us)))
+				break;
 			VideoSector(cur_v, d);
 		}
 		cur_v++;
@@ -836,7 +870,11 @@ static void	PlayService(void)
 			printf("VIDTEST end\n");
 		ended = 1;
 		if (loop)
+		{
 			Rewind();
+			Preload();
+			last_vsync = VSync(-1);
+		}
 		else
 			StopSound();
 	}
@@ -899,7 +937,7 @@ static void	Command(char *line)
 	else if (!strcmp(cmd, "play"))		{ paused = 0; SetVolume(); }
 	else if (!strcmp(cmd, "pause"))		paused = 1;
 	else if (!strcmp(cmd, "toggle"))	paused = !paused;
-	else if (!strcmp(cmd, "restart"))	{ Rewind(); paused = 0; }
+	else if (!strcmp(cmd, "restart"))	{ Rewind(); Preload(); paused = 0; last_vsync = VSync(-1); }
 	else if (!strcmp(cmd, "step"))		{ paused = 1; step_req = 1; }
 	else if (!strcmp(cmd, "loop") && (arg = Word(&line)))		loop = (arg[0] == '1');
 	else if (!strcmp(cmd, "depth") && (arg = Word(&line)))	{ depth24 = (arg[0] == '2'); ResetSlots(); }
@@ -1020,7 +1058,7 @@ static void	Draw(int side)
 		char	line[40];
 		int		buf = !total ? 0 : (int)((loaded - consumed) * 100 / (ring_cap ? ring_cap : 1));
 
-		UiTitle("PS1 DEV CART VIDEO TESTER", !playing ? (name[0] ? "STOPPED" : "NO MOVIE") :
+		UiTitle("PS1 DEV CART MOVIE TESTER", !playing ? (name[0] ? "STOPPED" : "NO MOVIE") :
 			(paused ? "PAUSED" : (ended ? "ENDED" : (ram_mode ? "RAM" : "STREAM"))));
 		UiTextPanel(8, 152, 304, 5);
 		if (name[0])
@@ -1112,7 +1150,7 @@ int	main(void)
 		pad = PadRead(1);
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))
 		if (PRESSED(PADstart))	{ paused = !paused; if (!paused) SetVolume(); }
-		if (PRESSED(PADRdown))	{ Rewind(); paused = 0; }
+		if (PRESSED(PADRdown))	{ Rewind(); Preload(); paused = 0; last_vsync = VSync(-1); }
 		if (PRESSED(PADRright))	loop = !loop;
 		if (PRESSED(PADRleft))	scale_mode = (scale_mode + 1) % 3;
 		if (PRESSED(PADRup))	{ depth24 = !depth24; ResetSlots(); }
@@ -1126,13 +1164,18 @@ int	main(void)
 
 		if (playing && (frame - report >= 30))
 		{
+			uint32_t	ms = (frame - report) * VsyncUs() / 1000;
+
 			report = frame;
 			printf("VIDTEST info %d %d %d %d\n", vid_w, vid_h, (coding == 0xFF) ? 0 : ((coding & 4) ? 18900 : 37800),
 				(coding == 0xFF) ? 0 : (coding & 1));
 			printf("VIDTEST sound %d %d %d\n", underruns, restarts, (int)FifoBlocks(0));
-			printf("VIDTEST pos %d %d %u %d %d %u %d %d %d\n", last_frame, frames_total, (unsigned)decode_us,
+			// (then the stream's reads: KB a second, and the share of the time the CPU spent in them)
+			printf("VIDTEST pos %d %d %u %d %d %u %d %d %d %u %u\n", last_frame, frames_total, (unsigned)decode_us,
 				last_bytes, last_scale, (unsigned)stalls, frames_late, frames_dropped, (int)(ram_mode ? 100 :
-				(loaded - consumed) * 100 / (ring_cap ? ring_cap : 1)));
+				(loaded - consumed) * 100 / (ring_cap ? ring_cap : 1)), (unsigned)(read_bytes * 1000 / 1024 / ms),
+				(unsigned)(read_lines * 64 / 10 / ms));
+			read_bytes = read_lines = 0;
 		}
 		side ^= 1;
 		Draw(side);
