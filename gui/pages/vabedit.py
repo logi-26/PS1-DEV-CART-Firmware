@@ -136,7 +136,7 @@ class VabEditor(tb.Frame):
         self._slider(box, "Highest key", "tone.max", 0, 127, lambda v: self.set_tone("max", v),
                      lambda v: "%s (%d)" % (note_name(v), v))
         self._slider(box, "Bend range", "tone.pbmax", 0, 24, lambda v: self.set_tone("pbmax", v),
-                     lambda v: "%d st" % v)
+                     lambda v: "%d st" % v if v else "none")
         self._slider(box, "VAG", "tone.vag", 1, 255, lambda v: self.set_tone("vag", v))
 
         box = self.page.section("Envelope (ADSR) of the tone", col2)
@@ -462,6 +462,8 @@ class VabEditor(tb.Frame):
                 self.vab.set_tone(self.prog, self.tone_n, "min", v)
             if name == "vag":
                 v = max(1, min(self.vab.vs, v))
+            if name == "pbmax":     # (the range both ways: pbmin down, pbmax up, as the console plays them)
+                self._changed(self.vab.set_tone(self.prog, self.tone_n, "pbmin", v))
             self._changed(self.vab.set_tone(self.prog, self.tone_n, name, v))
             a = self.vab.tone(self.prog, self.tone_n)
             self.tone_tree.item(str(self.tone_n), values=(

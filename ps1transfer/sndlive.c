@@ -14,6 +14,7 @@
 *	release
 *	seq 0/1			SEQ music stopped / started
 *	sep N			the SEQ N (0...) of a SEP (several SEQs in one file)
+*	repeat 0/1		at the end of the music: stopped (0: played once, as a game plays a jingle) or played again (1)
 *	stop			all sounds stopped (Start)
 *	vabwrite OFFSET HEX	VAB editor: the bytes written in the VH the tester plays (OFFSET in the VH, decimal; HEX:
 *					the bytes), applied at once to the notes sounding too: "SNDWROTE OFFSET SIZE"
@@ -79,6 +80,7 @@
 #define	SYNC_REQ_SEP		120		// SEP: the SEQ asked for, then sep_count, sep_index
 #define	SYNC_SEP_COUNT		122
 #define	SYNC_SEP_INDEX		124
+#define	SYNC_REQ_REPEAT		126		// At the end of the music: 1 played again, 0 stopped
 #define	SYNC_SIZE			128
 #define	MAX_HEX_BYTES		0x11000	// vabwrite, vabread: a whole VH (128 programs: 68128 bytes)
 
@@ -350,6 +352,8 @@ int	SndLive(void)
 			VabRead();
 		else if (!strcmp(cmd, "sep"))
 			Request(SYNC_REQ_SEP, Arg(0));
+		else if (!strcmp(cmd, "repeat"))
+			Request(SYNC_REQ_REPEAT, Arg(1) ? 1 : 0);
 		else if (!strcmp(cmd, "fx"))
 			Fx();
 		else if (!strcmp(cmd, "spuregs"))

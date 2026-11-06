@@ -32,6 +32,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <psxgpu.h>
 #include <psxetc.h>
@@ -93,6 +94,7 @@ typedef struct
 	int16_t		req_sep;			// SEQ of a SEP (multi-track file) played: its index, -1: nothing
 	int16_t		sep_count;			// SEQs in the music file (1: a SEQ, more: a SEP)
 	int16_t		sep_index;			// The one chosen
+	int16_t		req_repeat;			// At the end of the music: 1 played again (default), 0 stopped; -1: nothing asked
 } SoundSync;
 
 // (offsets used by ps1transfer/sndlive.c: SYNC_)
@@ -101,6 +103,7 @@ SYNC_CHECK(fx, __builtin_offsetof(SoundSync, req_fx) == 76);
 SYNC_CHECK(chprog, __builtin_offsetof(SoundSync, ch_prog) == 98);
 SYNC_CHECK(version, __builtin_offsetof(SoundSync, fx_version) == 114);
 SYNC_CHECK(sep, __builtin_offsetof(SoundSync, req_sep) == 120);
+SYNC_CHECK(repeat, __builtin_offsetof(SoundSync, req_repeat) == 126);
 SYNC_CHECK(size, sizeof(SoundSync) == 128);	// (the data block header's free end: 0x80 bytes)
 
 enum
@@ -209,6 +212,8 @@ static const struct
 };
 
 // Effects (asked by the computer, see SoundSync)
+static int		seq_repeat = 1;		// At the end of the music: played again (1) or stopped (0)
+static int		start_clear = 3;	// Frames before the reverb work area is cleared at the start
 static int		fx_reverb, fx_depth = 64, fx_rev_voices, fx_transpose, fx_tempo = 100, fx_mono;
 static uint16_t	fx_mute;
 static int		rev_active;				// Reverb type in use, -1: not enough SPU RAM
@@ -290,12 +295,57 @@ static uint32_t	VhSize(VabHdr *vh)
 	return (sizeof(VabHdr) + 128 * sizeof(ProgAtr) + vh->ps * 16 * sizeof(VagAtr) + 256 * 2);
 }
 
+// SPU RAM written by hand, as the debug monitor writes it (monitor.c SpuWrite, reliable): PSn00bSDK's DMA (SpuWrite) lost
+// about half of a bank's samples after a restart (measured on the console: the old data stayed), and the reverb work
+// area wasn't cleared. Transfer stopped, the address set once per 1KB, then 32 halfwords at a time through the transfer
+// FIFO, each manual transfer awaited; the control register put back as it was (an SPU left in another state hung the
+// monitor's SPU RAM read). data NULL: zeros.
+#define	SPU_CNT_REG		SPU_REG(0x1F801DAA)
+#define	SPU_STAT_REG	SPU_REG(0x1F801DAE)
+
+static void	SpuWriteRam(uint32_t adrs, const uint8_t *data, uint32_t size)
+{
+	uint16_t	cnt = SPU_CNT_REG;
+	uint32_t	n, i;
+	int			t;
+
+	for (t = 1000000; (*((volatile uint32_t *)0x1F8010C8) & (1 << 24)) && t; t--)	// (an SPU DMA going on: ended)
+		;
+	size = (size + 1) & ~1;
+	while (size)
+	{
+		n = (size > 1024) ? 1024 : size;
+		SPU_CNT_REG = cnt & ~0x30;				// Transfer mode: stop
+		for (t = 100000; (SPU_STAT_REG & 0x30) && t; t--)
+			;
+		SPU_REG(0x1F801DA6) = adrs >> 3;
+		for (i = 0; i < n; i += 2)
+		{
+			SPU_REG(0x1F801DA8) = data ? (data[i] | (data[i + 1] << 8)) : 0;
+			if (((i & 63) == 62) || (i + 2 >= n))	// FIFO full (32 halfwords) or the end: a manual write
+			{
+				// Started, then ended: the busy flag isn't up at once, and waiting only for it to be down stopped the
+				// transfer before it began (measured: 12% of the samples written). The monitor never saw it: it
+				// writes as the USB bytes come, slowly.
+				SPU_CNT_REG = (cnt & ~0x30) | 0x10;
+				for (t = 2000; !(SPU_STAT_REG & (1 << 10)) && t; t--)
+					;
+				for (t = 100000; (SPU_STAT_REG & (1 << 10)) && t; t--)
+					;
+				SPU_CNT_REG = cnt & ~0x30;
+			}
+		}
+		adrs += n;
+		if (data)
+			data += n;
+		size -= n;
+	}
+	SPU_CNT_REG = cnt;
+}
+
 static void	SpuUpload(uint32_t adrs, uint8_t *data, uint32_t size)
 {
-	SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
-	SpuSetTransferStartAddr(adrs);
-	SpuWrite((const uint32_t *)data, (size + 63) & ~63);
-	SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
+	SpuWriteRam(adrs, data, size);
 }
 
 static int	LoadVab(uint8_t *vh, uint8_t *vb)
@@ -400,12 +450,14 @@ static int	PlayedNote(int channel, int note)
 	return ((channel >= 0) ? Clamp(note + fx_transpose, 0, 127) : note);
 }
 
-// Pitch: 44100 Hz at the tone's center note, its fine tune, pitch bend (tone range, 2 semitones if none)
+// Pitch: 44100 Hz at the tone's center note, its fine tune, pitch bend: the tone's range in semitones, pbmin down and
+// pbmax up; 0: no bend (as the games' libsnd: a default of 2 semitones put notes out of tune, commercial SEQs leave a
+// channel's bend off-centre on tones with no range, e.g. PoPoLoCrois and Legend of Legaia)
 static void	VoicePitch(int v)
 {
 	Voice	*vo = &voices[v];
 	int		bend = (vo->channel >= 0) ? channels[vo->channel].bend : 0;
-	int		range = vo->tone->pbmax ? vo->tone->pbmax : 2;
+	int		range = (bend < 0) ? vo->tone->pbmin : vo->tone->pbmax;
 	int		cents = (PlayedNote(vo->channel, vo->note) - vo->tone->center) * 100 + vo->tone->shift * 100 / 128 +
 					bend * range * 100 / 8192;
 
@@ -422,27 +474,38 @@ static void	VoiceReverb(int v, int bank_reverb)
 	SPU_REG(0x1F801D9A) = eon >> 16;
 }
 
+#define	REVERB_AREA_MAX		0x18040	// The biggest work area (chaos echo, delay)
+
+// The SPU RAM a reverb work area can be in zeroed: from the biggest one's start (or the end of the samples, if they go
+// further) to the end. Only the new type's area was zeroed: what an earlier, bigger type (or the program before the
+// tester: a game, the tester run before with another type) had left below it stayed, and the reverb unit, whose
+// position isn't reset when mBASE changes, went on through it (old echoes heard on the first notes)
+// Written with PSn00bSDK's DMA, as the samples are; each block twice (a DMA block was lost now and then). (Written by
+// hand, through the SPU's transfer FIFO, the SPU was left in a state where the debug monitor's SPU RAM read, waiting for
+// the SPU without a time limit, hung: the USB link with it, until a reset.)
+static void	ReverbClear(void)
+{
+	uint32_t	start = (0x80000 - REVERB_AREA_MAX) & ~1023;
+
+	if (start < samples_end)
+		start = (samples_end + 1023) & ~1023;
+	SpuWriteRam(start, NULL, 0x80000 - start);
+}
+
 // Reverb type: the work area at the top of SPU RAM (zeroed: no old data heard), above the samples, else none (-1)
 static int	ReverbSet(int type)
 {
-	static const uint32_t	zero[256];
-	uint32_t				base, adrs;
-	int						i;
+	uint32_t	base;
+	int			i;
 
 	SPU_REG(0x1F801DAA) &= ~(1 << 7);	// Reverb master off (also while its work area is cleared)
 	SPU_REG(0x1F801D84) = SPU_REG(0x1F801D86) = 0;
+	ReverbClear();
 	if ((type <= 0) || (type >= REVERB_TYPES))
 		return (0);
 	base = (0x80000 - reverb_types[type].size) & ~1023;	// (zeroed in whole DMA blocks)
 	if (base < samples_end)
 		return (-1);
-	SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
-	for (adrs = base; adrs < 0x80000; adrs += sizeof(zero))
-	{
-		SpuSetTransferStartAddr(adrs);
-		SpuWrite(zero, sizeof(zero));
-		SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
-	}
 	for (i = 0; i < 32; i++)
 		SPU_REG(0x1F801DC0 + i * 2) = reverb_types[type].regs[i];
 	SPU_REG(0x1F801DA2) = base / 8;		// Work area address
@@ -779,8 +842,14 @@ static void	SeqUpdate(void)
 		{
 			if (!SeqEvent())
 			{
-				// Loop (played until stopped, as SSPLAY_INFINITY)
+				// The end: played again (until stopped, as SSPLAY_INFINITY), or stopped (once, as a game plays a
+				// jingle: its code decides; the loops inside the music are played either way)
 				SeqStop();
+				if (!seq_repeat)
+				{
+					seq_playing = 0;
+					return;
+				}
 				SeqStart();
 				seq_playing = 1;
 				seq_loops++;
@@ -980,6 +1049,7 @@ static void	SyncInit(SoundSync *live)
 	live->req_prog = live->req_note = live->req_volume = live->req_seq = live->req_stop = live->req_refresh = -1;
 	live->req_fx = -1;
 	live->req_sep = -1;
+	live->req_repeat = -1;
 	live->fx_depth = fx_depth;
 	live->fx_tempo = fx_tempo;
 	live->ch_used = seq_channels;
@@ -1080,12 +1150,22 @@ int	main(void)
 	SPU_REG(0x1F801D82) = 0x3FFF;
 	if (td->magic == TESTER_MAGIC)
 		LoadSounds(td);
+	// No reverb until one is asked for: the one the program before left (on, its registers, its work area's echoes)
+	// isn't heard on the first notes; no voice sends to it
+	SPU_REG(0x1F801D98) = SPU_REG(0x1F801D9A) = 0;
+	eon = 0;
+	SPU_REG(0x1F801DAA) &= ~(1 << 7);
+	SPU_REG(0x1F801D84) = SPU_REG(0x1F801D86) = 0;
 	SyncInit(live);
 
 	SetDispMask(1);
 
 	while (1)
 	{
+		// The reverb work area cleared at the start (the previous program's echoes), unless a reverb was chosen
+		if (start_clear && !--start_clear && !fx_reverb)
+			rev_active = ReverbSet(0);
+
 		// Changes asked by the computer (before the controller: a note set then played from there is this note)
 		if ((live->req_prog >= 0) && (live->req_prog < n_programs))
 			prog_index = live->req_prog;
@@ -1106,7 +1186,9 @@ int	main(void)
 			ApplyFx(live);
 		if (live->req_sep >= 0)
 			SeqSelect(live->req_sep);
-		live->req_fx = live->req_sep = -1;
+		if (live->req_repeat >= 0)
+			seq_repeat = live->req_repeat ? 1 : 0;
+		live->req_fx = live->req_sep = live->req_repeat = -1;
 		live->req_prog = live->req_note = live->req_volume = live->req_seq = live->req_stop = live->req_refresh = -1;
 
 		pad = (PadRead(1) & 0xFFFF) | *((volatile uint32_t *)REMOTE_PAD_ADRS);
@@ -1177,7 +1259,8 @@ int	main(void)
 				FntPrint(fnt_data, "SEQ  %d/%d ", seq_index + 1, seq_count);
 			else
 				FntPrint(fnt_data, "SEQ  ");
-			FntPrint(fnt_data, "%s", !seq_data ? "NONE\n" : (seq_playing ? "PLAYING" : "STOPPED\n"));
+			FntPrint(fnt_data, "%s%s", !seq_data ? "NONE\n" : (seq_playing ? "PLAYING" : "STOPPED"),
+					 !seq_data ? "" : (seq_repeat ? (seq_playing ? "" : "\n") : (seq_playing ? " ONCE" : " ONCE\n")));
 			if (seq_data && seq_playing)
 				FntPrint(fnt_data, "  BAR %d  LOOP %d\n", (int)(seq_ticks / (seq_resolution * 4)) + 1, (int)seq_loops);
 			FntPrint(fnt_data, "PROGRAM  %d  (%d/%d)", n_programs ? programs[prog_index] : -1, prog_index + 1, n_programs);

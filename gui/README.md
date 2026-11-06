@@ -200,7 +200,8 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     24 voices lit while they sound. A change made with the controller shows on the page, and the other way round, so
     sounds can be tested without a controller. The instrument (a program of the bank) is the one the keyboard plays;
     the SEQ plays each of its 16 channels with the program its own events choose: each channel shows its program and
-    lights while it sounds, with mute (M) and solo (S). Effects: SPU reverb (libspu's types: room, studio small/medium/
+    lights while it sounds, with mute (M) and solo (S); **Repeat at the end** (off: a SEQ without loop markers plays
+    once and stops, as a game plays a jingle; the loops inside the music play either way). Effects: SPU reverb (libspu's types: room, studio small/medium/
     large, hall, half echo, space echo, chaos echo, delay), its depth and the notes it is on (the tones with reverb in
     the bank, all or none; the work area at the end of SPU RAM, refused when the samples use that space), SEQ
     transpose and tempo, and mono. The effects are kept in the settings.

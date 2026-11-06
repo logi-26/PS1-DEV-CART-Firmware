@@ -118,6 +118,11 @@ class SoundPage(Page):
         b = tb.Button(row, text="Unmute all", bootstyle="secondary-outline", command=self.unmute_all)
         b.pack(side="right")
         self.controls.append(b)
+        # At the end of the music: played again, or once (as a game plays a jingle: its code decides; the loops
+        # inside the music are played either way)
+        self.repeat = tk.BooleanVar(value=self.app.settings.get("sound.repeat", True) is not False)
+        tb.Checkbutton(box, text="Repeat at the end (off: a SEQ without loop markers plays once and stops)",
+                       variable=self.repeat, command=self.repeat_changed).pack(anchor="w", pady=(4, 0))
         self.sep_row = tb.Frame(box)         # (a SEP: several SEQs in the file, one played)
         tb.Label(self.sep_row, text="SEP: play SEQ").pack(side="left")
         self.sep_choice = tb.Combobox(self.sep_row, state="readonly", width=12)
@@ -355,6 +360,7 @@ class SoundPage(Page):
             self.enable(self.live)
             if self.fx_version:
                 self.send_fx()          # (the effects chosen here, also for a tester just started)
+                self.send("repeat %d" % self.repeat.get())
             else:
                 self.reverb_label.configure(text="Effects: this soundtest.ps-exe is too old (rebuild it).")
         elif line.startswith("SNDCHAN") and len(fields) >= 4 + SEQ_CHANNELS:
@@ -513,6 +519,10 @@ class SoundPage(Page):
                 self.fx_job = self.after(VOLUME_SEND_MS, self.send_fx)
         else:
             self.send_fx()
+
+    def repeat_changed(self):
+        self.app.settings.set("sound.repeat", bool(self.repeat.get()))
+        self.send("repeat %d" % self.repeat.get())
 
     def send_fx(self):
         self.fx_job = None
