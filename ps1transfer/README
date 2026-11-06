@@ -42,9 +42,16 @@ Parameters:
    pcdrv=close fd=N name="..." read=R written=W, pcdrv=error op=... mode=... name="..." reason="..."
 -z Set device id (only relevant if you have multiple PS1 DEV CART devices connected to the PC) - the id follows the USB enumeration order and may change
 -n Open the PS1 DEV CART device with the specified USB serial number (stable when using multiple PS1 DEV CART devices)
--l List the connected USB devices with their device id and serial number
+-l List the connected USB devices with their device id and serial number, then the serial ports of the other USB devices
+   ("-com COM8  -n NAME  description", -n - when the device has no serial number)
    (PS1 DEV CART firmware: the serial number is also shown on the cartridge menu as "Device ID", sent by ps1transfer
    when it connects to the menu and remembered in the cartridge flash)
+-com COM7 or -com NAME (Windows) The cartridge on a serial port instead of FTDI's D2XX driver: a USB device that isn't
+   an FTDI chip (e.g. a Raspberry Pi Pico showing a USB CDC serial port), or an FTDI chip on its virtual COM port
+   (VCP). -n NAME also opens such a device when no FTDI chip has that serial number. Everything works the same
+   except -rename (an FTDI chip's EEPROM needs D2XX), but an FTDI chip on its COM port keeps its 16ms default
+   latency timer (measured with an FT245R cartridge: 1MB download 2.4s instead of 1.7s, a live 320x240 screenshot
+   4.3s instead of 1.0s): set it to 1ms in Device Manager (the port's Properties > Port Settings > Advanced).
 -m Display a TMD model with the model viewer (tmdviewer.ps-exe, built from the "tmdviewer" folder, must be next to ps1transfer)
 -t TIM texture for the model viewer, can be used several times (up to 8)
 -tod TOD animation for the model viewer (Sony's format, e.g. from rsdlink/Animator), up to 16

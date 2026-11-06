@@ -41,18 +41,20 @@ def run_quick(exe, args, timeout=20):
 
 # "-z 0  -n A10PUCVT     FT245R USB FIFO (in use)". A cartridge another program has open can come without its name
 # ("-z 0  -n               (in use)"): left out, it can't be used.
-DEVICE_LINE = re.compile(r"^-z\s+(\d+)\s+-n\s+(?!\()(\S+)\s*(.*?)(\s+\(in use\))?\s*$")
+# Then the serial ports of the USB devices that aren't FTDI chips (e.g. a Raspberry Pi Pico), opened by -n as well:
+# "-com COM8   -n E66138935F2B4A2C USB Serial Device (COM8)" (-n - : no serial number, left out)
+DEVICE_LINE = re.compile(r"^(?:-z\s+(\d+)|-com\s+(\S+))\s+-n\s+(?!\()(\S+)\s*(.*?)(\s+\(in use\))?\s*$")
 
 
 def list_devices(exe):
-    """Connected cartridges: list of dicts (index, serial, desc, in_use)."""
+    """Connected cartridges: list of dicts (index (None on a serial port), port, serial, desc, in_use)."""
     code, out = run_quick(exe, ["-l"], timeout=5)  # (it answers at once: longer means a driver problem)
     devices = []
     for line in out.splitlines():
         m = DEVICE_LINE.match(line.strip())
-        if m:
-            devices.append({"index": int(m.group(1)), "serial": m.group(2), "desc": m.group(3),
-                            "in_use": bool(m.group(4))})
+        if m and (m.group(3) != "-"):
+            devices.append({"index": int(m.group(1)) if m.group(1) else None, "port": m.group(2),
+                            "serial": m.group(3), "desc": m.group(4), "in_use": bool(m.group(5))})
     return devices
 
 

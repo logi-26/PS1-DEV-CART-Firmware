@@ -41,27 +41,68 @@
 
 #ifdef _WIN32
 #include "ftd2xx.h"
-FT_HANDLE	ftdi;
+#include "serialport.h"
 
-#define	ftdi_tcioflush	FT_ResetDevice
-#define	ftdi_free		FT_Close
+// The cartridge: an FTDI chip through FTDI's D2XX driver, or a serial port (com: a USB device that isn't an FTDI chip,
+// e.g. a Raspberry Pi Pico, or an FTDI chip through its virtual COM port with -com, see serialport.c)
+typedef struct
+{
+	FT_HANDLE	ft;
+	HANDLE		com;
+	char		serial[64];	// (com: the USB serial number of the port's device, "" if it has none)
+} UsbDevice;
 
-uint32_t	ftdi_read_data(FT_HANDLE handle, uint8_t *data, uint32_t size)
+UsbDevice	*ftdi;
+const char	*com_name;		// -com: the port ("COM7") or the USB serial number of the device on it
+
+uint32_t	ftdi_read_data(UsbDevice *dev, void *data, uint32_t size)
 {
 	DWORD	rbyte;
 
-	if (FT_Read(handle, data, size, &rbyte) == FT_OK)
+	if (dev->com)
+		return (SerialRead(dev->com, (uint8_t *)data, size));
+	if (FT_Read(dev->ft, data, size, &rbyte) == FT_OK)
 		return (rbyte);
 	return (0);
 }
 
-uint32_t	ftdi_write_data(FT_HANDLE handle, uint8_t *data, uint32_t size)
+uint32_t	ftdi_write_data(UsbDevice *dev, uint8_t *data, uint32_t size)
 {
 	DWORD	rbyte;
 
-	if (FT_Write(handle, data, size, &rbyte) == FT_OK)
+	if (dev->com)
+		return (SerialWrite(dev->com, data, size));
+	if (FT_Write(dev->ft, data, size, &rbyte) == FT_OK)
 		return (rbyte);
 	return (0);
+}
+
+// Old data (e.g. printf text of a program after a "ps1transfer -c" was stopped) would be read as the answer to a command
+static void	USB_Purge(UsbDevice *dev)
+{
+	if (dev->com)
+		SerialPurge(dev->com);
+	else
+		FT_Purge(dev->ft, FT_PURGE_RX | FT_PURGE_TX);
+}
+
+static void	ftdi_tcioflush(UsbDevice *dev)
+{
+	if (dev->com)
+		SerialPurge(dev->com);
+	else
+		FT_ResetDevice(dev->ft);
+}
+
+static void	ftdi_free(UsbDevice *dev)
+{
+	if (!dev)
+		return;
+	if (dev->com)
+		SerialClose(dev->com);
+	else
+		FT_Close(dev->ft);
+	free(dev);
 }
 
 #else
@@ -127,7 +168,7 @@ static bool	PcdrvPathAllowed(const char *name)
 }
 
 // "@input": a file of the lines given to ps1transfer's standard input (e.g. by the PS1 Dev Cart Manager), which the
-// program reads to get commands while the file server runs (the PS1 DEV CART VIDEO TESTER): a read returns what has
+// program reads to get commands while the file server runs (the PS1 DEV CART MOVIE TESTER): a read returns what has
 // arrived, at once (0 bytes if nothing). A thread reads the input into a ring (one writer, one reader).
 #define	INPUT_RING	8192
 static uint8_t				input_ring[INPUT_RING];
@@ -340,33 +381,63 @@ uint32_t	atohex(char *str)
 // when its latency timer expires, so a short latency is what makes transfers fast
 void	USB_SetLatency(void)
 {
-	FT_SetLatencyTimer(ftdi, USB_LATENCY_MS);
-	FT_SetTimeouts(ftdi, USB_READ_POLL_MS, USB_READ_TIMEOUT * 1000);	// Default is no timeout: a missing answer froze ps1transfer
+	if (ftdi->com)	// (an FTDI chip's latency timer is the VCP driver's setting, see serialport.c)
+	{
+		SerialSetTimeouts(ftdi->com, USB_READ_POLL_MS, USB_READ_TIMEOUT * 1000);
+		return;
+	}
+	FT_SetLatencyTimer(ftdi->ft, USB_LATENCY_MS);
+	FT_SetTimeouts(ftdi->ft, USB_READ_POLL_MS, USB_READ_TIMEOUT * 1000);	// Default is no timeout: a missing answer froze ps1transfer
 }
 
+// -com NAME: that serial port. Else the FTDI chip (by serial number or index), or the serial port of a USB device with
+// this serial number (not an FTDI chip, e.g. a Raspberry Pi Pico)
 bool	USB_OpenDevice(int deviceid, char *serial)
 {
-	if (serial)
-		return (FT_OpenEx(serial, FT_OPEN_BY_SERIAL_NUMBER, &ftdi) == FT_OK);
-	return (FT_Open(deviceid, &ftdi) == FT_OK);
+	UsbDevice	*dev = calloc(1, sizeof(UsbDevice));
+	const char	*name = com_name ? com_name : serial;
+	bool		ok = false;
+
+	if (!dev)
+		return (false);
+	if (!com_name)
+		ok = serial ? (FT_OpenEx(serial, FT_OPEN_BY_SERIAL_NUMBER, &dev->ft) == FT_OK) :
+			(FT_Open(deviceid, &dev->ft) == FT_OK);
+	if (!ok && name)
+	{
+		HANDLE	h = SerialOpen(name, NULL, dev->serial);
+
+		if (h != INVALID_HANDLE_VALUE)
+		{
+			dev->com = h;
+			ok = true;
+		}
+	}
+	if (!ok)
+	{
+		free(dev);
+		return (false);
+	}
+	ftdi = dev;
+	return (true);
 }
 
+// The FTDI chips (D2XX), then the serial ports of the other USB devices
 void	USB_ListDevices(void)
 {
 	DWORD		i, n = 0, flags, type, id, loc;
 	char		serial[16], desc[64];
 	FT_HANDLE	handle;
 
-	if ((FT_CreateDeviceInfoList(&n) != FT_OK) || !n)
-	{
-		printf("No USB device found.\n");
-		return;
-	}
+	if (FT_CreateDeviceInfoList(&n) != FT_OK)
+		n = 0;
 	for (i = 0; i < n; i++)
 	{
 		if (FT_GetDeviceInfoDetail(i, &flags, &type, &id, &loc, serial, desc, &handle) == FT_OK)
 			printf("-z %lu  -n %-12s %s%s\n", i, serial, desc, (flags & FT_FLAGS_OPENED) ? " (in use)" : "");
 	}
+	if (!SerialList(true) && !n)
+		printf("No USB device found.\n");
 }
 #else
 // The PS1 answers each 2KB packet with a single CRC byte, which the FTDI chip only sends to the computer
@@ -447,12 +518,16 @@ void	*USB_OpenOther(char *serial)
 	void	*current = (void *)ftdi, *handle = NULL;
 
 #ifdef _WIN32
+	const char	*com = com_name;
+
+	com_name = NULL;	// (the other cartridge: by its own serial number)
 	if (USB_OpenDevice(0, serial))
 	{
-		FT_Purge(ftdi, FT_PURGE_RX | FT_PURGE_TX);
+		USB_Purge(ftdi);
 		USB_SetLatency();
 		handle = (void *)ftdi;
 	}
+	com_name = com;
 #else
 	if ((ftdi = ftdi_new()))
 	{
@@ -474,7 +549,7 @@ void	USB_CloseOther(void *handle)
 	if (!handle)
 		return;
 #ifdef _WIN32
-	FT_Close((FT_HANDLE)handle);
+	ftdi_free((UsbDevice *)handle);
 #else
 	ftdi_usb_close((struct ftdi_context *)handle);
 	ftdi_free((struct ftdi_context *)handle);
@@ -518,7 +593,9 @@ bool	USB_GetSerial(char *serial)
 		DWORD		id;
 		char		desc[64];
 
-		if (FT_GetDeviceInfo(ftdi, &type, &id, serial, desc, NULL) != FT_OK)
+		if (ftdi->com)
+			memcpy(serial, ftdi->serial, 64);
+		else if (FT_GetDeviceInfo(ftdi->ft, &type, &id, serial, desc, NULL) != FT_OK)
 			return (false);
 	}
 #else
@@ -570,7 +647,7 @@ static bool	USB_ReadFrom(void *handle, uint8_t *data, uint32_t size)
 	while (size)
 	{
 #ifdef _WIN32
-		n = ftdi_read_data((FT_HANDLE)handle, data, size);
+		n = ftdi_read_data((UsbDevice *)handle, data, size);
 #else
 		n = ftdi_read_data((struct ftdi_context *)handle, data, size);
 #endif
@@ -591,7 +668,7 @@ static bool	USB_ReadFrom(void *handle, uint8_t *data, uint32_t size)
 static bool	USB_WriteTo(void *handle, uint8_t *data, uint32_t size)
 {
 #ifdef _WIN32
-	return (ftdi_write_data((FT_HANDLE)handle, data, size) == size);
+	return (ftdi_write_data((UsbDevice *)handle, data, size) == size);
 #else
 	return (ftdi_write_data((struct ftdi_context *)handle, data, size) == (int)size);
 #endif
@@ -1002,7 +1079,11 @@ bool	USB_ReadByteNoWait(uint8_t *c)
 #ifdef _WIN32
 	DWORD	queued = 0;
 
-	if ((FT_GetQueueStatus(ftdi, &queued) != FT_OK) || !queued)
+	if (ftdi->com)
+		queued = SerialQueued(ftdi->com);
+	else if (FT_GetQueueStatus(ftdi->ft, &queued) != FT_OK)
+		queued = 0;
+	if (!queued)
 		return (false);
 #endif
 	return (ftdi_read_data(ftdi, c, 1) == 1);
@@ -2967,7 +3048,7 @@ static bool	FlashRom(char *rom_file, uint8_t *rom, char *argv0)
 	USB_Process('R', NULL, 0, 0);
 	SleepMs(5000);
 #ifdef _WIN32
-	FT_Purge(ftdi, FT_PURGE_RX | FT_PURGE_TX);
+	USB_Purge(ftdi);
 #endif
 	ps1_program_running = true;
 	USB_DetectPacketSize();
@@ -3775,6 +3856,21 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'c':	// TTY Console mode
+				if (!strcmp(argv[i], "-com"))	// The cartridge on a serial port: "COM7", or its USB serial number
+				{
+					if (i + 1 >= argc)
+					{
+						printf("Port (COM7) or serial number needed following -com\n");
+						goto usage;
+					}
+#ifdef _WIN32
+					com_name = argv[++i];
+#else
+					printf("-com: serial ports are only supported on Windows for now\n");
+					return EXIT_FAILURE;
+#endif
+					break;
+				}
 				if (!strcmp(argv[i], "-csv"))	// -prof: one line per second in a CSV file
 				{
 					if (i + 1 >= argc)
@@ -4236,7 +4332,7 @@ int main(int argc, char *argv[])
 	ftdi_tcioflush(ftdi);
 #ifdef _WIN32
 	// Old data (e.g. printf text of a program after a "ps1transfer -c" was stopped) would be read as the answer to a command
-	FT_Purge(ftdi, FT_PURGE_RX | FT_PURGE_TX);
+	USB_Purge(ftdi);
 #endif
 	USB_SetLatency();	// After the reset/flush, which may restore the default value
 	
@@ -4889,7 +4985,10 @@ usage:
 	printf("\t-pcdrvlog File server activity as pcdrv=... lines (open, create, close with bytes read/written, errors)\n");
 	printf("\t-z deviceid (only relevant when multiple PS1 DEV CART devices are connected via USB)\n");
 	printf("\t-n serial (open the PS1 DEV CART device with this USB serial number, stable unlike -z)\n");
-	printf("\t-l List connected USB devices with their index and serial number\n");
+	printf("\t   A USB serial port with this serial number if no FTDI chip has it (e.g. a Raspberry Pi Pico)\n");
+	printf("\t-com COM7 or -com serial: the cartridge on a serial port (Windows), not through FTDI's D2XX driver\n");
+	printf("\t   (an FTDI chip on its virtual COM port: set its latency timer to 1 ms in Device Manager)\n");
+	printf("\t-l List connected USB devices with their index and serial number (then the USB serial ports)\n");
 	printf("\t-flash rom.rom Flash a cartridge ROM (ar_flash.ps-exe next to ps1transfer), then read it back to check\n");
 	printf("\t-bootcd Boot the disc in the drive (the CD drive unlocked first: burned and import discs, no modchip)\n");
 	printf("\t   Same as START + SELECT on the menu. Not on Japanese consoles (licensed discs still boot).\n");

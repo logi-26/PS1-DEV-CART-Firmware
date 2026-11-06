@@ -36,6 +36,8 @@
 			<Add option="-m32" />
 			<Add library="ftd2xx" />
 			<Add library="ws2_32" />
+			<Add library="setupapi" />
+			<Add library="cfgmgr32" />
 			<Add directory="." />
 		</Linker>
 		<Unit filename="crc.h" />
@@ -58,6 +60,10 @@
 			<Option compilerVar="CC" />
 		</Unit>
 		<Unit filename="profiler.h" />
+		<Unit filename="serialport.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="serialport.h" />
 		<Unit filename="memlive.c">
 			<Option compilerVar="CC" />
 		</Unit>
