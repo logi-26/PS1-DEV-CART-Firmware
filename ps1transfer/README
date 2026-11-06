@@ -15,6 +15,15 @@ v1.4 update: New software reset feature and kernel_hook contributed by david4599
 Parameters:
 -u Command to Upload a specified file from your computer to a specified address in the Playstation 1 memory.
 -d Command to Download a file from a specified address and size in the Playstation 1 memory to your computer in the specified file.
+-disc [COMMAND] Disc reader (discread.ps-exe next to ps1transfer, started if it isn't running): the files of the
+   disc in the drive, only the sectors needed read. Commands: init (the disc identified), toc (its tracks), ls (its
+   files with their XA attributes), get \DIR\FILE.EXT OUT (XA and STR files: whole 2336-byte sectors; getdata,
+   getxa: either one), track N SECONDS OUT.WAV (CD audio: played by the drive and recorded through the SPU's capture
+   buffers as it plays, the track's own length; SECONDS 0: the whole track), speed 1/2, stop. No command: commands on the input, one per
+   line, until quit (PS1 Dev Cart Manager's Asset Extractor page; answers start with DISC, see disclive.c)
+-snapshot DIR [PARTS] RAM (ram.bin, 2 MB), VRAM (vram.bin 1024x512 16-bit pixels, vram.png) and SPU RAM with its
+   registers (spu.bin, as -spu) of the running program, a game booted from its disc too, written to DIR. PARTS: only
+   some of them, comma separated (ram,vram or spu)
 -spu file Write the SPU RAM (512KB) then the SPU registers (512 bytes, 0x1F801C00-0x1F801DFF) of the running program
    to file (read by the debug monitor, version 10: PS1 Dev Cart Manager's SPU RAM Viewer)
 -v Command to Download the Video RAM content of the Playstation 1 to a PNG image on your computer using the following parameters: x_position y_position width height
@@ -279,6 +288,7 @@ Hot reload (PS1 DEV CART firmware with the debug monitor, version 1):
 Send textures, sounds or data to the running program, without restarting it:
 ps1transfer -hot car.tim                      VRAM, at the position stored in the TIM (image and CLUT)
 ps1transfer -hot car.tim@512,0                image at another VRAM position (the CLUT stays at its position)
+ps1transfer -hot car.tim@512,0,96,505         image at 512,0 and its CLUT at 96,505 (a texture of the program replaced)
 ps1transfer -hot engine.vag@0x1010            SPU RAM address (the 48 bytes VAG header is skipped)
 ps1transfer -hot bank.vb@0x1010               VAB body, or any data, in SPU RAM (address < 0x80000)
 ps1transfer -hot level.bin@0x80100000         RAM (address 0x80000000...)

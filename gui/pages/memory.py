@@ -64,6 +64,9 @@ class MemoryPage(Page):
                  wraplength=930, justify="left", bootstyle="secondary").pack(anchor="w", pady=(0, 6))
         row = tb.Frame(self)
         row.pack(fill="x")
+        # (empty each time the Manager starts, as the watch list: no variables listed from another session's program;
+        # the recent symbol files stay in its list)
+        self.app.settings.set_field("mem.sym", "")
         self.sym = FileField(row, self.app, "mem.sym", "Symbol file", filetypes=SYMBOL_TYPES,
                              on_change=lambda: self.after_idle(self.load_symbols))
         self.sym.pack(side="left", fill="x", expand=True)
@@ -295,9 +298,9 @@ class MemoryPage(Page):
     # ---------------------------------------------------------------- watch list
 
     def watch_load(self):
-        for w in self.app.settings.field("mem.watch", []):
-            if isinstance(w, dict) and "name" in w:
-                self.watch_add(w["name"], w.get("adrs"), w.get("type", "s32"), save=False)
+        """The watch list starts empty each time the Manager starts (the variables of another session's program: not
+        kept); the list of an earlier version's settings is cleared."""
+        self.app.settings.set_field("mem.watch", [])
 
     def watch_save(self):
         self.app.settings.set_field("mem.watch", [{"name": w["name"], "adrs": w["adrs"], "type": w["type"]}

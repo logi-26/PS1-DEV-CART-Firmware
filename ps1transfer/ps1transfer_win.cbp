@@ -64,6 +64,9 @@
 			<Option compilerVar="CC" />
 		</Unit>
 		<Unit filename="serialport.h" />
+		<Unit filename="disclive.c">
+			<Option compilerVar="CC" />
+		</Unit>
 		<Unit filename="memlive.c">
 			<Option compilerVar="CC" />
 		</Unit>

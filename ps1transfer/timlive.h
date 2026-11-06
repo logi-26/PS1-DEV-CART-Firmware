@@ -47,4 +47,10 @@ bool	RemotePadPort(char *arg);
 int		RemotePadDevice(const char *cmd, const char *err);	// padtype, padaxes, padmove (-1: another command)
 void	RemotePadState(void);
 
+// The disc reader (ps1-tools/discread, disclive.c): running, started (at the menu), its commands (count words, or none:
+// commands on the standard input). DiscLive returns the exit code.
+bool	DiscServerRunning(void);
+bool	DiscServerStart(char *argv0);
+int		DiscLive(int count, char **words);
+
 #endif

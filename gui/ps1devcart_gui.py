@@ -66,7 +66,8 @@ STATE_STYLES = {"menu": "info", "running": "success", "stopped": "warning", "cra
 OLD_PAGE_NAMES = {"Run Yaroze": "Run Net Yaroze", "Console": "Console & File Server", "Memory": "Memory Peek/Poke",
                   "Hot reload": "Hot Reload", "Screen": "Screen Capture", "Debug": "Debug Server",
                   "Model viewer": "Model & Animation Viewer", "TIM / VRAM": "VRAM Viewer", "Sound": "Sound Tools",
-                  "Memory card": "Memory Card Tools", "Link test": "Link Connection Test"}
+                  "Memory card": "Memory Card Tools", "Link test": "Link Connection Test",
+                  "Game Data": "Asset Extractor"}
 
 
 class App(tb.Window):
@@ -496,7 +497,10 @@ class App(tb.Window):
 
     def dark_theme(self):
         try:
-            return self.style.theme.type == "dark"
+            theme = self.style.theme
+            # ("mode" in ttkbootstrap 2.x; "type", deprecated there, in the earlier versions)
+            mode = theme.mode if hasattr(type(theme), "mode") or "mode" in vars(theme) else theme.type
+            return mode == "dark"
         except Exception:  # noqa: BLE001
             return True
 

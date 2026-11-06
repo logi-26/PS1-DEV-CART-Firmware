@@ -295,7 +295,9 @@ enum
 	CMD_NET,
 	CMD_PROF,
 	CMD_SPU,
-	CMD_BOOT_DISC
+	CMD_BOOT_DISC,
+	CMD_DISC,
+	CMD_SNAPSHOT
 };
 
 /****************************************/
@@ -611,6 +613,12 @@ void	USB_SendDeviceId(void)
 
 	if (USB_GetSerial(serial))
 		USB_Process('I', (uint8_t *)serial, 0, DEVICE_ID_SIZE);
+}
+
+// One byte sent as it is (no command: the disc reader's stream reads it, see disclive.c)
+bool	USB_SendRawByte(uint8_t c)
+{
+	return (ftdi_write_data(ftdi, &c, 1) == 1);
 }
 
 // Read exactly "size" bytes (reads may return less data than requested), fails after USB_READ_TIMEOUT seconds without data
@@ -1663,6 +1671,171 @@ char	*GetToolPath(char *argv0, char *name)
 		sep = sep2;
 	strncpy(sep ? sep + 1 : path, name, TOOL_NAME_MAX - 1);
 	return (path);
+}
+
+/****************************************/
+// -snapshot DIR: what the running program has loaded, for the PS1 Dev Cart Manager's Game Data page (asset scanner):
+// ram.bin (the 2 MB of main RAM, read by the kernel hook while the program runs), vram.bin (1024x512, 16-bit pixels,
+// read from the GPU) with vram.png, spu.bin (the 512KB of SPU RAM and the 512 bytes of SPU registers, as "-spu",
+// debug monitor version 10). Works with a game booted from its disc too. Lines "SNAPSHOT PART FILE" (PART: ram, vram,
+// spu), "SNAPSHOT done DIR" at the end; a part that can't be read is skipped ("SNAPSHOT skipped PART why").
+
+#ifdef _WIN32
+#include <direct.h>
+#define	MAKE_DIR(_d_)	_mkdir(_d_)
+#else
+#include <sys/stat.h>
+#define	MAKE_DIR(_d_)	mkdir((_d_), 0755)
+#endif
+
+static bool	VramToPng(const char *filename, const uint16_t *vram, int w, int h);
+
+static bool	SnapshotWrite(const char *dir, const char *name, const uint8_t *data, uint32_t size)
+{
+	char	path[1024];
+	FILE	*f;
+
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	if (!(f = fopen(path, "wb")) || (fwrite(data, 1, size, f) != size) || fclose(f))
+	{
+		printf("Can't write %s\n", path);
+		return (false);
+	}
+	return (true);
+}
+
+// The SPU RAM read by DMA (debug monitor) has glitches: now and then a halfword reads wrong, mostly as 0xFFxx (about
+// 80 halfwords in 512KB, not the same ones twice). Three reads merged: where they differ, a halfword whose high byte isn't
+// 0xFF, the one most reads agree on (a whole sound bank compared with its file: 1 byte left in 480KB).
+static void	SpuMerge(uint16_t *a, const uint16_t *b, const uint16_t *c, uint32_t count)
+{
+	uint32_t	i;
+	int			k, j, best, votes, n;
+
+	for (i = 0; i < count; i++)
+	{
+		uint16_t	v[3] = {a[i], b[i], c[i]};
+		bool		good[3];
+
+		if ((v[0] == v[1]) && (v[0] == v[2]))
+			continue;
+		for (k = n = 0; k < 3; k++)
+			n += (good[k] = ((v[k] >> 8) != 0xFF));
+		for (best = -1, votes = 0, k = 0; k < 3; k++)
+		{
+			int	same = 0;
+
+			if (n && !good[k])
+				continue;
+			for (j = 0; j < 3; j++)
+				same += (v[j] == v[k]) && (!n || good[j]);
+			if (same > votes)
+			{
+				votes = same;
+				best = k;
+			}
+		}
+		a[i] = v[best];
+	}
+}
+
+// A part named in PARTS (comma separated: ram, vram, spu; NULL: all of them)
+static bool	SnapshotPart(const char *parts, const char *name)
+{
+	size_t		n = strlen(name);
+	const char	*p = parts;
+
+	if (!parts)
+		return (true);
+	while (p && *p)
+	{
+		if (!strncmp(p, name, n) && ((p[n] == ',') || !p[n]))
+			return (true);
+		if ((p = strchr(p, ',')))
+			p++;
+	}
+	return (false);
+}
+
+static bool	Snapshot(const char *dir, const char *parts)
+{
+	bool	want_ram = SnapshotPart(parts, "ram"), want_vram = SnapshotPart(parts, "vram");
+	bool	want_spu = SnapshotPart(parts, "spu");
+
+	MonitorState	ms;
+	uint8_t			*ram = malloc(0x200000), *vram = malloc(1024 * 512 * (sizeof(uint16_t) + 3));
+	uint8_t			*spu = malloc(MON_SPU_RAM_SIZE + MON_SPU_REGS_SIZE), *spu2 = malloc(MON_SPU_RAM_SIZE * 2);
+	char			png[1024];
+	int				r;
+	bool			monitor, stopped, ok = false, got;
+
+	if (!ram || !vram || !spu || !spu2)
+		goto out;
+	if (!ps1_program_running)
+	{
+		printf("No program runs: start a program or boot a game first\n");
+		goto out;
+	}
+	MAKE_DIR(dir);
+	monitor = USB_Process('D', (uint8_t *)&ms, MONITOR_STATE_ADRS, 16) && (ms.magic == MONITOR_MAGIC);
+	stopped = monitor && (ms.reason != MON_REASON_NONE);
+
+	if (want_ram)
+	{
+		printf("Reading the RAM (2 MB)...\n");
+		if (!USB_Process('D', ram, 0x80000000, 0x200000))
+			goto out;
+		if (!SnapshotWrite(dir, "ram.bin", ram, 0x200000))
+			goto out;
+		printf("SNAPSHOT ram ram.bin\n");
+	}
+
+	if (want_vram)
+		printf("Reading the VRAM (1024x512)...\n");
+	got = want_vram && ((monitor && (ms.version >= 2) && !stopped) ? HotService('V', vram, 0, (1024 << 16) | 512) :
+		USB_Process('V', vram, 0, (1024 << 16) | 512));
+	if (!want_vram)
+		;
+	else if (got && SnapshotWrite(dir, "vram.bin", vram, 1024 * 512 * 2))
+	{
+		snprintf(png, sizeof(png), "%s/vram.png", dir);
+		VramToPng(png, (uint16_t *)vram, 1024, 512);
+		printf("SNAPSHOT vram vram.bin\n");
+	}
+	else
+		printf("SNAPSHOT skipped vram (USB error)\n");
+
+	if (!want_spu)
+		;
+	else if (!monitor || (ms.version < 10))
+		printf("SNAPSHOT skipped spu (the firmware's debug monitor is too old to read the SPU RAM)\n");
+	else
+	{
+		printf("Reading the SPU registers and RAM (512KB, 3 times: see SpuMerge)...\n");
+		got = stopped ? USB_Process(MON_CMD_SPU_READ, spu + MON_SPU_RAM_SIZE, MON_SPU_REGS, MON_SPU_REGS_SIZE) :
+			HotService(MON_CMD_SPU_READ, spu + MON_SPU_RAM_SIZE, MON_SPU_REGS, MON_SPU_REGS_SIZE);
+		for (r = 0; got && (r < 3); r++)
+		{
+			uint8_t	*dst = r ? spu2 + (r - 1) * MON_SPU_RAM_SIZE : spu;
+
+			got = stopped ? USB_Process(MON_CMD_SPU_READ, dst, 0, MON_SPU_RAM_SIZE) :
+				HotService(MON_CMD_SPU_READ, dst, 0, MON_SPU_RAM_SIZE);
+		}
+		if (got)
+			SpuMerge((uint16_t *)spu, (uint16_t *)spu2, (uint16_t *)(spu2 + MON_SPU_RAM_SIZE), MON_SPU_RAM_SIZE / 2);
+		if (got && SnapshotWrite(dir, "spu.bin", spu, MON_SPU_RAM_SIZE + MON_SPU_REGS_SIZE))
+			printf("SNAPSHOT spu spu.bin\n");
+		else
+			printf("SNAPSHOT skipped spu (USB error)\n");
+	}
+	printf("SNAPSHOT done %s\n", dir);
+	ok = true;
+out:
+	free(ram);
+	free(vram);
+	free(spu);
+	free(spu2);
+	return (ok);
 }
 
 /****************************************/
@@ -3599,9 +3772,20 @@ static bool	HotReloadFile(HotFile *hot)
 				ok = false;
 				break;
 			}
-			// Image block (the last one) at another position with file.tim@x,y
+			// Image block (the last one) at another position with file.tim@x,y; the CLUT block (the first one, flag 8)
+			// too with file.tim@x,y,cx,cy (a texture replaced where the program has it: its CLUT where it has its own)
 			if (has_target && (!(flags & 8) || (p != data + 8)))
 				sscanf(at, "%u,%u", &x, &y);
+			else if (has_target)
+			{
+				uint32_t	ix, iy, cx, cy;
+
+				if (sscanf(at, "%u,%u,%u,%u", &ix, &iy, &cx, &cy) == 4)
+				{
+					x = cx;
+					y = cy;
+				}
+			}
 			ok = HotService(MON_CMD_VRAM_WRITE, p + 12, (x << 16) | y, (w << 16) | h);
 			sent += w * h * 2;
 			p += block;
@@ -3748,7 +3932,12 @@ int main(int argc, char *argv[])
 	char		*flash_rom = NULL;				// -flash: cartridge ROM to flash
 	uint8_t		*flash_data = NULL;
 	bool		synth_start = true;			// -synth: the synth must be started
-	int			card_live_arg = 0;				// Memory card command on a card slot (argv index)
+	int			card_live_arg = 0;
+	bool		disc_start = false;				// -disc: the disc reader started (not running yet)
+	int			disc_count = 0;					// -disc: the words of the command
+	char		**disc_words = NULL;
+	char		*snapshot_dir = NULL;			// -snapshot: the folder
+	char		*snapshot_parts = NULL;			// -snapshot: the parts (NULL: all)				// Memory card command on a card slot (argv index)
 	bool		card_start = true;				// The card tool must be started (server mode)
 	char		*relay_serial = NULL;			// -relay: the other cartridge of the USB link
 	char		*rename_arg = NULL;			// -rename NAME, -renamerestore FILE (rename.c)
@@ -3774,6 +3963,16 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'd':	// Download file from specified address and size
+					if (!strcmp(argv[i], "-disc"))	// Disc reader: the files of the disc in the drive (disclive.c)
+					{
+						cmd = CMD_DISC;
+						// The words after it up to the next option: one command, or none: commands on the input (the GUI
+						// adds -progress after it; disc paths start with "\" or a letter, never "-")
+						disc_words = argv + i + 1;
+						for (disc_count = 0; (i + 1 < argc) && (argv[i + 1][0] != '-'); i++)
+							disc_count++;
+						break;
+					}
 					cmd = CMD_DOWNLOAD;
 				break;
 
@@ -4214,6 +4413,19 @@ int main(int argc, char *argv[])
 				break;
 
 				case 's':	// size (size of download in decimal)
+					if (!strcmp(argv[i], "-snapshot"))	// RAM, VRAM and SPU RAM of the running program to a folder
+					{
+						if (i + 1 >= argc)
+						{
+							printf("-snapshot needs the folder to write\n");
+							goto usage;
+						}
+						snapshot_dir = argv[++i];
+						if ((i + 1 < argc) && (argv[i + 1][0] != '-'))	// Parts: ram, vram, spu ("ram,vram")
+							snapshot_parts = argv[++i];
+						cmd = CMD_SNAPSHOT;
+						break;
+					}
 					if (!strcmp(argv[i], "-spu"))	// SPU RAM and registers of the running program to a file
 					{
 						if (i + 1 >= argc)
@@ -4416,7 +4628,7 @@ int main(int argc, char *argv[])
 		(cmd != CMD_MEMLIVE) &&
 		(cmd != CMD_INFO) && (cmd != CMD_FLASH_ROM) && (cmd != CMD_SYNTH) &&
 		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_SPU) &&
-		(cmd != CMD_BOOT_DISC))
+		(cmd != CMD_BOOT_DISC) && (cmd != CMD_DISC) && (cmd != CMD_SNAPSHOT))
 	{
 		printf("No file specified.\n");
 		goto usage;
@@ -4474,6 +4686,18 @@ int main(int argc, char *argv[])
 		if (!reset)
 			card_start = !ps1_program_running || !CardServerRunning();
 		reset = card_start && ps1_program_running;
+	}
+	// -disc: the disc reader is kept if it already runs (unless -r), otherwise started (after a reset if another
+	// program runs)
+	if (cmd == CMD_DISC)
+	{
+		ps1_program_running = true;
+		USB_DetectPacketSize();
+		if (!reset)
+			disc_start = !ps1_program_running || !DiscServerRunning();
+		else
+			disc_start = true;
+		reset = disc_start && ps1_program_running;
 	}
 
 	if (reset)
@@ -4807,6 +5031,18 @@ int main(int argc, char *argv[])
 				goto failed;
 		break;
 
+		case CMD_DISC:
+			if (disc_start && !DiscServerStart(argv[0]))
+				goto failed;
+			if (DiscLive(disc_count, disc_words))
+				goto failed;
+		break;
+
+		case CMD_SNAPSHOT:
+			if (!Snapshot(snapshot_dir, snapshot_parts))
+				goto failed;
+		break;
+
 		case CMD_RELAY:
 			if (!ps1_program_running)
 			{
@@ -5011,6 +5247,10 @@ usage:
 	printf("\t-pad With -e: a controller port can be driven from the computer (-memlive \"pad\"/\"padport\" commands), for programs using the BIOS pad functions; port 2 needs the debug monitor version 9\n");
 	printf("\t-frame -f game.exe Frame capture (PS1 Dev Cart Manager): the program runs in a debug session, \"capture\" on the input reads the GPU packets of a frame\n");
 	printf("\t-snd file (play VH+VB/VAB banks, SEQ music, VAG samples with the sound tester, up to %d files)\n", TESTER_MAX_FILES);
+	printf("\t-disc [COMMAND] Disc reader: the files of the disc in the drive (ls, get PATH OUT, track N OUT.WAV, toc;\n"
+		"\t\tno command: commands on the input, see disclive.c)\n");
+	printf("\t-snapshot DIR [PARTS] RAM, VRAM and SPU RAM of the running program (a game booted from its disc too) to DIR\n"
+		"\t\t(PARTS: some of them, e.g. ram,vram or spu)\n");
 	printf("\t-sndlive With -snd: commands on the input for the PS1 Dev Cart Manager (program, note, volume, play, SEQ; state lines)\n");
 	printf("\t-tim file.tim (TIM and VRAM viewer: VRAM map, overlaps, CLUTs, up to %d files)\n", TIMVIEW_MAX_FILES);
 	printf("\t-timlive With -tim -c: commands on the input for the PS1 Dev Cart Manager (live palette, VRAM read)\n");

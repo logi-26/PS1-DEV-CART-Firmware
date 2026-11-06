@@ -41,6 +41,12 @@ if not %errorlevel% equ 0 (
 	set clean_failed=1
 )
 
+make -C "%build_dir%\ps1-tools\discread" %target%
+if not %errorlevel% equ 0 (
+	if not "%target%" == "clean" goto build_error
+	set clean_failed=1
+)
+
 make -C "%build_dir%\ps1-tools\synth" %target%
 if not %errorlevel% equ 0 (
 	if not "%target%" == "clean" goto build_error

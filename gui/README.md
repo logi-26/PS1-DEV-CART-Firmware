@@ -97,7 +97,8 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
   - **Memory Peek/Poke**: the variables of the running program, with its symbol file (ELF, Net Yaroze executable,
     `.map` or `nm` output): **Watch variables** lists them (search, sizes), adds them to a watch list whose values are
     read live (1 to 10 times a second, changes highlighted) as the type chosen (8/16/32-bit, signed or not, float,
-    bytes), and a double click on a value writes a new one (`ps1transfer -memlive`, which also shows the program's
+    bytes; the list starts empty each time the Manager starts), and a double click on a value writes a new one
+    (`ps1transfer -memlive`, which also shows the program's
     printf and serves its files meanwhile). **Peek / Poke / Files**: peek, poke, upload and download, addresses in
     hexadecimal or as a symbol (`@player`, `@table+0x10`); while watching, peek and poke go through the same link.
   - **Cheats**: finds a value in the RAM of the running game, a retail game booted from its disc too (Start + Select
@@ -153,9 +154,15 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     them: every primitive is listed (polygons, sprites, tiles, lines, fills, draw modes; colors, vertices, texture
     page, CLUT, semi-transparency, the raw words) and outlined on the frame it drew (read from VRAM). A click on the
     frame selects the primitive drawn there (the one on top); a filter shows one kind.
-  - **Hot Reload**: a table of files and where they go (TIM: its VRAM position or `x,y`; sounds: SPU RAM
-    address; data: RAM address). **Send now**, or **Watch** to send a file again each time it is saved (the
-    printf of the program is shown meanwhile).
+  - **Hot Reload**: a table of files and where they go (TIM: its VRAM position, `x,y`, or `x,y,cx,cy` with its
+    CLUT; sounds: SPU RAM address; data: RAM address). **Send now**, or **Watch** to send a file again each time it
+    is saved (the printf of the program is shown meanwhile). **On the console**, under the table, picks the target of
+    the selected file (**Read the console**, then **Use for the selected file** or a double click) from what
+    the running program has, instead of typing it: for a TIM, the textures it draws (read from its GPU packets in
+    RAM and its VRAM, `ps1transfer -snapshot DIR ram,vram`), previewed, the ones of the same size and colors first;
+    the TIM then goes where that texture is, its CLUT where the texture's CLUT is. For a VAG or VB, the samples in
+    its SPU RAM (`-snapshot DIR spu`: address, size, the voices playing them), the ones of the same size first. A
+    file bigger than what it replaces is pointed out (it overwrites what comes after).
   - **Model & Animation Viewer**: the TMD model viewer with up to 8 textures and up to 16 TOD animations (`ps1transfer -m ...
     -tod ... -mdllive`). While it runs, its controls are on the page too, linked live with the console's controller:
     the TOD played (list, previous/next), first/previous/next/last frame, play/pause, a frame slider, loop, speed
@@ -256,6 +263,45 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
       again when the synth starts with empty slots.
     - `.syx`: a slot saved as SysEx messages (for a sequencer or SysEx librarian to send), or a `.syx` file opened.
     - `python vag.py in.wav out.vag [--rate 22050] [--loop]` converts a WAV file from the command line.
+  - **Asset Extractor**: what a disc or a running game holds, without dumping the whole disc (`assetscan.py`):
+    - **Disc**: **Read the disc** starts the disc reader on the console (`ps1transfer -disc`, commands on its input,
+      see `ps1transfer/disclive.c`): the disc identified (licensed or not, region, volume name), its tracks and its
+      files listed with their type (the extension and the XA attributes of the directory: Form 2 sectors are XA audio
+      or STR movies). Only the directories are read. **Save selected** copies the files chosen (a folder: its files):
+      XA and STR files with their whole 2336-byte sectors (what the Convert tab and the Movie Tools read), the others
+      as their 2048-byte data; **XA audio: also as WAV** converts each XA channel. **Save and scan for assets** copies
+      the file and looks inside it for the formats below (games often keep them in archive files). **Scan the whole disc** copies every data file (XA, STR and CD
+      audio left out) into the settings folder (`gamedata/disc/VOLUME`) and scans each one, the assets of all of them
+      in Assets found (named after their file; a NAME.VH with its NAME.VB: the whole bank). **Stop** drops the
+      files waiting and stops the one being copied or the track being recorded (nothing is written for it; a file
+      stops between its reads of about 900 KB). About 100 KB/s.
+      CD audio tracks are saved as WAV files (44100 Hz stereo). The drive gives no CD audio sectors to a read, so
+      the disc reader plays the track and records it from the SPU's capture buffers (what the SPU receives from the
+      drive, 512 samples a channel, each half copied while the SPU writes the other one) and sends each half to the
+      computer at once: a track takes its own length (a 2-minute song: a little over 2 minutes). The drive's position,
+      asked while it plays, places the track's first sample. The console resamples CD audio slightly on its way to the
+      SPU: a clean digital recording of what the console plays, not a bit-exact copy of the disc. If the stream isn't
+      whole (a half buffer missed), the track is recorded again in 5-second parts joined where they overlap (about
+      twice its length); a scratched or dirty disc: a part where the drive loses its place is recorded again (3
+      times), then kept with a warning.
+    - **Snapshot**: **1. Boot the game from its disc** (`ps1transfer -bootcd`, or from the PS1 DEV CART menu), play
+      to the part you want, then **2. Take a snapshot**: the RAM (2 MB), VRAM and SPU RAM of the game are read
+      (`ps1transfer -snapshot FOLDER`: about 15 s; the SPU RAM read 3 times and merged, its DMA read has glitches)
+      into the settings folder (`gamedata/snapshots`, named after the game). A snapshot of the disc reader or of
+      another program (no game booted) is pointed out. The textures the game draws are found from its GPU packets
+      in RAM (the ordering table's lists: each textured polygon or sprite has its texture page, CLUT and UV area; the
+      areas of the same page and CLUT that touch are merged) and outlined on its VRAM: click one to see it with its
+      own colors, **Save PNG**/**Save TIM** (4/8-bit TIMs with their CLUT), **All textures...** (TIM and PNG each),
+      or the whole VRAM as PNG. **SPU RAM Viewer** opens the snapshot's SPU RAM there.
+    - **Assets found**: the textures in use, and what the scanner found in the snapshot (RAM and SPU RAM) or the
+      disc file (**Show**: all, textures and images, sound banks and music, samples, models), checked beyond
+      their headers: TIM images (previewed), VAB banks (a VH alone in RAM: its samples found in SPU RAM, the VAG
+      sizes of the VH one after the other each ending on an end flag, and put together as VH + VB; the sound
+      library's values in the VH reset as in the files), SEQ and SEP music, VAG samples, TMD models, and the SPU RAM
+      samples as VAGs. **Save selected**/**Save all**, or **Open in the tools**: TIMs in the VRAM Viewer, a bank,
+      music and samples in Sound Tools, a TMD in the Model Viewer. Compressed data isn't found: only the formats as
+      they are stored. `python assetscan.py FILE_OR_SNAPSHOT_FOLDER [OUT_FOLDER]` does the same from the command
+      line.
   - **Memory Card Tools**: backup and restore of the whole card in slot 1 or 2, and a save browser with the icons and
     titles: export (.mcs), import, copy (to an image or a card slot), delete, new blank image. It works on a card
     image file (without the cartridge) or on the card in slot 1 or 2 of the PS1: then only the sectors needed are
