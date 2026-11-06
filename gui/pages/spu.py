@@ -134,11 +134,13 @@ class SpuPage(Page):
         self.vtree.tag_configure("dim", foreground="#868e96")
         self.vtree.bind("<<TreeviewSelect>>", self.voice_select)
 
-        if os.path.isfile(self.dump):
-            self.load(self.dump, quiet=True)
-        else:
-            self.draw_map()
-            self.draw_wave()
+        # Each launch starts empty: the last read (kept only while the app runs) is not shown again
+        try:
+            os.remove(self.dump)
+        except OSError:
+            pass
+        self.draw_map()
+        self.draw_wave()
 
     def _tree(self, parent, cols):
         frame = tb.Frame(parent)
