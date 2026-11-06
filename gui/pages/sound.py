@@ -7,6 +7,7 @@ SEQ chosen here are used at once by the console, and the ones changed with the c
 with the Play button or the keyboard (held: as Cross held on the controller), the voices sounding light up. So sounds
 can be tested without a controller.
 The VAB Editor tab tunes the bank live (pages/vabedit.py): each change is written in the bank the tester plays.
+The Convert tab makes audio files and MIDI into VAG, VAB, SEQ and XA (pages/audioconvert.py, audioconv.py).
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 If a copy of the MPL was not distributed with this file,
@@ -19,12 +20,14 @@ import tkinter as tk
 import ttkbootstrap as tb
 
 from pages.base import Page
+from pages.audioconvert import ConvertTab
 from pages.vabedit import VabEditor
-from widgets import FileList
+from widgets import FileList, ScrollFrame
 
-SOUND_TYPES = [("Sound files", "*.vh *.vb *.vab *.seq *.vag"), ("All files", "*.*")]
+SOUND_TYPES = [("Sound files", "*.vh *.vb *.vab *.seq *.sep *.vag"), ("All files", "*.*")]
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-PROTOCOL = ("SNDLIVE", "SNDINFO", "SNDPROGS", "SNDSTATE", "SNDVAB", "SNDWROTE", "SNDVH", "SNDSPU")   # Answers of
+PROTOCOL = ("SNDLIVE", "SNDINFO", "SNDPROGS", "SNDSTATE", "SNDVAB", "SNDWROTE", "SNDVH", "SNDSPU", "SNDFX",
+            "SNDCHAN")                                              # Answers of
                                                                     # ps1transfer -sndlive (not in the log)
 VOICES = 24
 QUIET = 0.6             # s: a control changed here is not set back by the console's state meanwhile
@@ -35,6 +38,14 @@ WHITE_OF = (0, 2, 4, 5, 7, 9, 11)   # Semitones of the white keys in an octave
 BLACK_OF = ((1, 0), (3, 1), (6, 3), (8, 4), (10, 5))   # Black key semitone, white key on its left
 KEY_COLORS = {"white": "#f4f4f4", "black": "#202020", "note": "#4fc1ff", "held": "#2b9348", "outline": "#606060"}
 LIGHT_ON, LIGHT_OFF = "#3fb950", "#2c3a2f"
+SEQ_CHANNELS = 16
+# SPU reverb types (soundtest.c reverb_types: libspu's modes), work area at the top of SPU RAM (bytes)
+REVERBS = [("Off", 0), ("Room", 0x26C0), ("Studio small", 0x1F40), ("Studio medium", 0x4840),
+           ("Studio large", 0x6FE0), ("Hall", 0xADE0), ("Half echo", 0x3C00), ("Space echo", 0xF6C0),
+           ("Chaos echo", 0x18040), ("Delay", 0x18040)]
+REVERB_VOICES = ["Notes of tones with reverb", "All notes", "No notes"]   # VAB tone mode 4: reverb (as libsnd)
+FX_DEFAULTS = dict(reverb=0, depth=64, voices=0, transpose=0, tempo=100, mono=False)
+SPU_RAM = 0x80000
 
 
 def note_name(n):
@@ -76,10 +87,14 @@ class SoundPage(Page):
 
         self.tabs = tb.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
-        tester = tb.Frame(self.tabs, padding=6)
-        self.tabs.add(tester, text="Tester")
+        scroll = ScrollFrame(self.tabs)     # (taller than the page: the SEQ channels and the effects)
+        self.tabs.add(scroll, text="Tester")
+        tester = tb.Frame(scroll.inner, padding=6)
+        tester.pack(fill="both", expand=True)
         self.editor = VabEditor(self.tabs, self)
         self.tabs.add(self.editor, text="VAB Editor")
+        self.convert = ConvertTab(self.tabs, self)
+        self.tabs.add(self.convert, text="Convert")
         self.tabs.bind("<<NotebookTabChanged>>", lambda e: self.editor.load()
                        if self.tabs.select() == str(self.editor) else None)
         body = tb.Frame(tester)
@@ -90,12 +105,63 @@ class SoundPage(Page):
         right.pack(side="left", fill="y", anchor="n")
         self.controls = []          # Enabled while the tester is linked
 
-        # Program (VAB) and SEQ music
-        box = self.section("Sound bank and music", left)
+        # SEQ music: start/stop, its 16 MIDI channels (each with its own program, set by the music), muted or solo
+        box = self.section("SEQ music", left)
         box.pack(fill="x", pady=(0, 8))
         row = tb.Frame(box)
         row.pack(fill="x")
-        tb.Label(row, text="Program", width=9).pack(side="left")
+        self.seq_button = tb.Button(row, text="Start", bootstyle="success-outline", width=10, command=self.toggle_seq)
+        self.seq_button.pack(side="left")
+        self.controls.append(self.seq_button)
+        self.seq_label = tb.Label(row, text="", bootstyle="secondary")
+        self.seq_label.pack(side="left", padx=10)
+        b = tb.Button(row, text="Unmute all", bootstyle="secondary-outline", command=self.unmute_all)
+        b.pack(side="right")
+        self.controls.append(b)
+        self.sep_row = tb.Frame(box)         # (a SEP: several SEQs in the file, one played)
+        tb.Label(self.sep_row, text="SEP: play SEQ").pack(side="left")
+        self.sep_choice = tb.Combobox(self.sep_row, state="readonly", width=12)
+        self.sep_choice.pack(side="left", padx=6)
+        self.sep_choice.bind("<<ComboboxSelected>>", lambda e: self.send("sep %d" % self.sep_choice.current()))
+        tb.Label(self.sep_row, text="(Select on the controller: the next one)", bootstyle="secondary").pack(
+            side="left")
+        self.sep_count = 0
+        self.info = tb.Label(box, text="", bootstyle="secondary")
+        self.info.pack(anchor="w", pady=(6, 0))
+        tb.Label(box, text="Channels: the music plays each channel with the program its events choose. M mutes a "
+                           "channel, S plays only the solo channels.",
+                 bootstyle="secondary", wraplength=720, justify="left").pack(anchor="w", pady=(4, 4))
+        grid = tb.Frame(box)
+        grid.pack(anchor="w")
+        self.mute_vars, self.solo_vars, self.ch_cells = [], [], []
+        for ch in range(SEQ_CHANNELS):
+            cell = tb.Frame(grid, padding=(4, 2))
+            cell.grid(row=ch // 8, column=ch % 8, padx=2, pady=2, sticky="w")
+            light = tk.Canvas(cell, width=10, height=10, highlightthickness=0, background="#202020")
+            light.grid(row=0, column=0, padx=(0, 4))
+            name = tb.Label(cell, text="Ch %d" % (ch + 1), width=5)
+            name.grid(row=0, column=1, columnspan=2, sticky="w")
+            prog = tb.Label(cell, text="", bootstyle="secondary", font=("", 8))
+            prog.grid(row=1, column=0, columnspan=3, sticky="w")
+            mute, solo = tk.BooleanVar(), tk.BooleanVar()
+            mb = tb.Checkbutton(cell, text="M", variable=mute, bootstyle="danger-outline-toolbutton", width=2,
+                                command=self.mutes_changed)
+            mb.grid(row=2, column=1, padx=(0, 2), pady=(2, 0))
+            sb = tb.Checkbutton(cell, text="S", variable=solo, bootstyle="warning-outline-toolbutton", width=2,
+                                command=self.mutes_changed)
+            sb.grid(row=2, column=2, pady=(2, 0))
+            self.mute_vars.append(mute)
+            self.solo_vars.append(solo)
+            self.ch_cells.append(dict(light=light, name=name, prog=prog, buttons=(mb, sb)))
+        self.ch_used = 0            # SEQ channels with notes (SNDCHAN), the others greyed
+
+        # Instrument and note: name, buttons (as the controller: Left/Right, Up/Down, L1/R1), keyboard
+        box = self.section("Instrument and note  (click and hold a key, or Play, to play it: as Cross held on the "
+                           "controller)", left)
+        box.pack(fill="x", pady=(0, 8))
+        row = tb.Frame(box)
+        row.pack(fill="x", pady=(0, 6))
+        tb.Label(row, text="Instrument", width=10).pack(side="left")
         b = tb.Button(row, text="◀", bootstyle="secondary-outline", width=3, command=lambda: self.step_program(-1))
         b.pack(side="left")
         self.controls.append(b)
@@ -106,18 +172,8 @@ class SoundPage(Page):
         b = tb.Button(row, text="▶", bootstyle="secondary-outline", width=3, command=lambda: self.step_program(1))
         b.pack(side="left")
         self.controls.append(b)
-        tb.Label(row, text="SEQ music").pack(side="left", padx=(24, 6))
-        self.seq_button = tb.Button(row, text="Start", bootstyle="success-outline", width=10, command=self.toggle_seq)
-        self.seq_button.pack(side="left")
-        self.controls.append(self.seq_button)
-        self.seq_label = tb.Label(row, text="", bootstyle="secondary")
-        self.seq_label.pack(side="left", padx=10)
-        self.info = tb.Label(box, text="", bootstyle="secondary")
-        self.info.pack(anchor="w", pady=(6, 0))
-
-        # Note: name, buttons (as the controller: Up/Down, L1/R1), keyboard
-        box = self.section("Note  (click and hold a key, or Play, to play it: as Cross held on the controller)", left)
-        box.pack(fill="x", pady=(0, 8))
+        tb.Label(row, text="A program of the bank, played with the keys here (not the SEQ: it chooses its own).",
+                 bootstyle="secondary").pack(side="left", padx=10)
         row = tb.Frame(box)
         row.pack(fill="x")
         self.note_label = tb.Label(row, text="C4", font=("", 20, "bold"), width=5)
@@ -140,6 +196,64 @@ class SoundPage(Page):
         self.keys.bind("<ButtonPress-1>", self.key_press)
         self.keys.bind("<B1-Motion>", self.key_drag)
         self.keys.bind("<ButtonRelease-1>", lambda e: self.release())
+
+        # Effects (kept in the settings, sent to the tester each time it starts)
+        fx = dict(FX_DEFAULTS, **(self.app.settings.get("sound.fx") or {}))
+        box = self.section("Effects", left)
+        box.pack(fill="x", pady=(0, 8))
+        self.fx_controls = []
+        grid = tb.Frame(box)
+        grid.pack(fill="x")
+        tb.Label(grid, text="Reverb", width=10).grid(row=0, column=0, sticky="w")
+        self.reverb_choice = tb.Combobox(grid, state="readonly", width=16, values=[r[0] for r in REVERBS])
+        self.reverb_choice.current(max(0, min(len(REVERBS) - 1, fx["reverb"])))
+        self.reverb_choice.grid(row=0, column=1, sticky="w")
+        self.reverb_choice.bind("<<ComboboxSelected>>", lambda e: self.fx_changed())
+        tb.Label(grid, text="Depth").grid(row=0, column=2, sticky="w", padx=(16, 6))
+        self.depth = tk.IntVar(value=fx["depth"])
+        self.depth_scale = tb.Scale(grid, from_=0, to=127, variable=self.depth, length=160,
+                                    command=lambda v: self.fx_changed(slider=True))
+        self.depth_scale.grid(row=0, column=3, sticky="w")
+        self.depth_label = tb.Label(grid, text=str(fx["depth"]), width=4, anchor="e")
+        self.depth_label.grid(row=0, column=4, sticky="w")
+        tb.Label(grid, text="On").grid(row=0, column=5, sticky="w", padx=(16, 6))
+        self.rev_voices_choice = tb.Combobox(grid, state="readonly", width=24, values=REVERB_VOICES)
+        self.rev_voices_choice.current(max(0, min(len(REVERB_VOICES) - 1, fx["voices"])))
+        self.rev_voices_choice.grid(row=0, column=6, sticky="w")
+        self.rev_voices_choice.bind("<<ComboboxSelected>>", lambda e: self.fx_changed())
+        self.reverb_label = tb.Label(box, text="", bootstyle="secondary")
+        self.reverb_label.pack(anchor="w", pady=(4, 6))
+
+        grid = tb.Frame(box)
+        grid.pack(fill="x")
+        tb.Label(grid, text="Transpose", width=10).grid(row=0, column=0, sticky="w")
+        self.transpose = tk.IntVar(value=fx["transpose"])
+        self.transpose_spin = tb.Spinbox(grid, from_=-24, to=24, textvariable=self.transpose, width=5,
+                                         command=self.fx_changed)
+        self.transpose_spin.grid(row=0, column=1, sticky="w")
+        self.transpose_spin.bind("<Return>", lambda e: self.fx_changed())
+        self.transpose_spin.bind("<FocusOut>", lambda e: self.fx_changed())
+        tb.Label(grid, text="semitones (SEQ)").grid(row=0, column=2, sticky="w", padx=(4, 0))
+        tb.Label(grid, text="Tempo").grid(row=0, column=3, sticky="w", padx=(16, 6))
+        self.tempo = tk.IntVar(value=fx["tempo"])
+        self.tempo_spin = tb.Spinbox(grid, from_=25, to=400, increment=5, textvariable=self.tempo, width=5,
+                                     command=self.fx_changed)
+        self.tempo_spin.grid(row=0, column=4, sticky="w")
+        self.tempo_spin.bind("<Return>", lambda e: self.fx_changed())
+        self.tempo_spin.bind("<FocusOut>", lambda e: self.fx_changed())
+        tb.Label(grid, text="% (SEQ)").grid(row=0, column=5, sticky="w", padx=(4, 0))
+        self.mono = tk.BooleanVar(value=fx["mono"])
+        self.mono_check = tb.Checkbutton(grid, text="Mono", variable=self.mono, bootstyle="round-toggle",
+                                         command=self.fx_changed)
+        self.mono_check.grid(row=0, column=6, sticky="w", padx=(16, 0))
+        b = tb.Button(grid, text="Reset effects", bootstyle="secondary-outline", command=self.reset_fx)
+        b.grid(row=0, column=7, sticky="w", padx=(16, 0))
+        self.fx_controls = [self.reverb_choice, self.depth_scale, self.rev_voices_choice, self.transpose_spin,
+                            self.tempo_spin, self.mono_check, b]
+        self.fx_job = None
+        self.fx_version = 0         # SNDFX: 0 an older tester (no effects)
+        self.samples_end = 0
+        self.show_reverb(None)
 
         # Volume, stop, voices
         box = self.section("Volume", right)
@@ -187,6 +301,9 @@ class SoundPage(Page):
             return self.app.error("Add the sound files.")
         self.live = False
         self.disconnected = False
+        self.fx_version = 0
+        for v in self.mute_vars + self.solo_vars:     # (new music: every channel heard)
+            v.set(False)
         self.editor.load()
         self.status.configure(text="Starting the console's sound tester...")
         self.app.run(self.args(), "Sound tester", long_running=True, stdin=True, cwd=os.path.dirname(files[0]),
@@ -203,6 +320,9 @@ class SoundPage(Page):
         self.draw_lights(0)
         self.draw_keys()
         self.editor.stopped()
+        self.show_reverb(None)
+        self.show_channels(0, 0, [])
+        self.show_sep(0, 0)
 
     def send(self, line):
         return self.live and self.app.runner.send(line)
@@ -229,6 +349,24 @@ class SoundPage(Page):
             self.console_state(fields[1:])
         elif line.startswith("SNDVAB") and len(fields) >= 3:
             self.editor.console(int(fields[1], 16), int(fields[2]))
+        elif line.startswith("SNDFX") and len(fields) >= 3:
+            self.fx_version = int(fields[1])
+            self.samples_end = int(fields[2], 16)
+            self.enable(self.live)
+            if self.fx_version:
+                self.send_fx()          # (the effects chosen here, also for a tester just started)
+            else:
+                self.reverb_label.configure(text="Effects: this soundtest.ps-exe is too old (rebuild it).")
+        elif line.startswith("SNDCHAN") and len(fields) >= 4 + SEQ_CHANNELS:
+            try:
+                rev, used, active = int(fields[1]), int(fields[2], 16), int(fields[3], 16)
+                progs = [int(v) for v in fields[4:4 + SEQ_CHANNELS]]
+            except ValueError:
+                return
+            self.show_reverb(rev)
+            self.show_channels(used, active, progs)
+            if len(fields) >= 6 + SEQ_CHANNELS:
+                self.show_sep(int(fields[4 + SEQ_CHANNELS]), int(fields[5 + SEQ_CHANNELS]))
         elif line.startswith("SNDERR"):
             self.status.configure(text=line[7:])
 
@@ -271,6 +409,15 @@ class SoundPage(Page):
                 pass
         if on and self.kind != 1:
             self.program_choice.configure(state="disabled")
+        fx_on = on and self.fx_version > 0
+        for w in self.fx_controls:
+            try:
+                w.configure(state=("readonly" if isinstance(w, tb.Combobox) else "normal") if fx_on else "disabled")
+            except tk.TclError:
+                pass
+        for ch, cell in enumerate(self.ch_cells):
+            for b in cell["buttons"]:
+                b.configure(state="normal" if fx_on and self.ch_used >> ch & 1 else "disabled")
 
     # ---------------------------------------------------------------- controls
 
@@ -338,6 +485,104 @@ class SoundPage(Page):
 
     def toggle_seq(self):
         self.send("seq %d" % (0 if self.state.get("seq") == 2 else 1))
+
+    # ---------------------------------------------------------------- effects and SEQ channels
+
+    def fx_values(self):
+        def number(var, default, low, high):
+            try:
+                return max(low, min(high, int(var.get())))
+            except (tk.TclError, ValueError):
+                return default
+        return dict(reverb=max(0, self.reverb_choice.current()), depth=self.depth.get(),
+                    voices=max(0, self.rev_voices_choice.current()), transpose=number(self.transpose, 0, -24, 24),
+                    tempo=number(self.tempo, 100, 25, 400), mono=bool(self.mono.get()))
+
+    def mute_mask(self):
+        """Channels muted: the M ones, and while some are solo every channel that isn't."""
+        muted = sum(1 << ch for ch, v in enumerate(self.mute_vars) if v.get())
+        solo = sum(1 << ch for ch, v in enumerate(self.solo_vars) if v.get())
+        return muted | ((~solo & 0xFFFF) if solo else 0)
+
+    def fx_changed(self, slider=False):
+        fx = self.fx_values()
+        self.depth_label.configure(text=str(fx["depth"]))
+        self.app.settings.set("sound.fx", fx)
+        if slider:          # (the slider sends many changes: sent together)
+            if self.fx_job is None:
+                self.fx_job = self.after(VOLUME_SEND_MS, self.send_fx)
+        else:
+            self.send_fx()
+
+    def send_fx(self):
+        self.fx_job = None
+        if not self.fx_version:
+            return
+        fx = self.fx_values()
+        self.send("fx %d %d %d %d %d %d %d" % (fx["reverb"], fx["depth"], fx["voices"], fx["transpose"], fx["tempo"],
+                                               1 if fx["mono"] else 0, self.mute_mask()))
+
+    def reset_fx(self):
+        self.reverb_choice.current(FX_DEFAULTS["reverb"])
+        self.depth.set(FX_DEFAULTS["depth"])
+        self.rev_voices_choice.current(FX_DEFAULTS["voices"])
+        self.transpose.set(FX_DEFAULTS["transpose"])
+        self.tempo.set(FX_DEFAULTS["tempo"])
+        self.mono.set(FX_DEFAULTS["mono"])
+        self.fx_changed()
+
+    def mutes_changed(self):
+        self.send_fx()
+
+    def unmute_all(self):
+        for v in self.mute_vars + self.solo_vars:
+            v.set(False)
+        self.send_fx()
+
+    def show_reverb(self, active):
+        """The reverb the console uses (SNDCHAN): its work area, or why there's none."""
+        chosen = max(0, self.reverb_choice.current())
+        name, size = REVERBS[chosen]
+        if active is None:
+            text = "The tester applies the effects once it runs." if chosen else ""
+        elif active < 0:
+            text = ("Not enough SPU RAM for %s: it needs %d KB at the end, the samples use up to 0x%05X (a smaller "
+                    "reverb fits up to %d KB)." % (name, size // 1024, self.samples_end,
+                                                   max(0, SPU_RAM - self.samples_end) // 1024))
+        elif active == 0:
+            text = "Reverb off."
+        else:
+            base = (SPU_RAM - REVERBS[active][1]) & ~1023
+            text = "%s: work area of %d KB at 0x%05X, the end of SPU RAM (%d KB left after the samples)." % (
+                REVERBS[active][0], (SPU_RAM - base) // 1024, base, max(0, base - self.samples_end) // 1024)
+        self.reverb_label.configure(text=text, bootstyle="warning" if active is not None and active < 0 else
+                                    "secondary")
+
+    def show_sep(self, index, count):
+        """A SEP's SEQs (the row shown only for a SEP), the one played."""
+        if count != self.sep_count:
+            self.sep_count = count
+            if count > 1:
+                self.sep_choice.configure(values=["SEQ %d of %d" % (i + 1, count) for i in range(count)])
+                self.sep_row.pack(anchor="w", pady=(6, 0), before=self.info)
+            else:
+                self.sep_row.pack_forget()
+        if count > 1 and 0 <= index < count and self.sep_choice.current() != index:
+            self.sep_choice.current(index)
+
+    def show_channels(self, used, active, progs):
+        changed = used != self.ch_used
+        self.ch_used = used
+        for ch, cell in enumerate(self.ch_cells):
+            on = used >> ch & 1
+            cell["light"].delete("all")
+            cell["light"].create_rectangle(0, 0, 10, 10, outline="",
+                                           fill=LIGHT_ON if active >> ch & 1 else LIGHT_OFF)
+            cell["name"].configure(bootstyle="default" if on else "secondary")
+            cell["prog"].configure(text=("Program %d" % progs[ch]) if on and ch < len(progs) else
+                                   "(no notes)" if self.live and self.fx_version else "")
+        if changed:
+            self.enable(self.live)
 
     def stop_sounds(self):
         self.held = None

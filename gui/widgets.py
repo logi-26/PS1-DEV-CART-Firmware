@@ -163,6 +163,13 @@ class FileList(tb.Frame):
             self.listbox.insert("end", path)
         self._save()
 
+    def set_files(self, paths):
+        """The list replaced by these files (e.g. files just made by a converter)."""
+        self.listbox.delete(0, "end")
+        for path in paths[:self.max_files] if self.max_files else paths:
+            self.listbox.insert("end", os.path.normpath(path))
+        self._save()
+
     def remove(self):
         for i in reversed(self.listbox.curselection()):
             self.listbox.delete(i)

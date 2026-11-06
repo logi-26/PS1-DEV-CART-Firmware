@@ -1685,7 +1685,7 @@ enum
 	SOUND_VAG
 };
 
-// Type from the file header ("pBAV" VH/VAB, "pQES" SEQ, "VAGp" VAG), VB files have no header: ".vb" extension
+// Type from the file header ("pBAV" VH/VAB, "pQES"/"SEQp" SEQ or SEP, "VAGp" VAG), VB files have no header: ".vb" extension
 int	SoundFileType(char *name, uint8_t *data, int size)
 {
 	char	*ext = strrchr(name, '.');
@@ -1697,8 +1697,8 @@ int	SoundFileType(char *name, uint8_t *data, int size)
 
 		return ((size > vh_size) ? SOUND_VAB : SOUND_VH);
 	}
-	if ((size >= 4) && !memcmp(data, "pQES", 4))
-		return (SOUND_SEQ);
+	if ((size >= 4) && (!memcmp(data, "pQES", 4) || !memcmp(data, "SEQp", 4)))	// (SEQ or SEP: the same ID either
+		return (SOUND_SEQ);															// way round)
 	if ((size >= 48) && !memcmp(data, "VAGp", 4))
 		return (SOUND_VAG);
 	if (ext && ((!strcmp(ext, ".vb")) || (!strcmp(ext, ".VB")) || (!strcmp(ext, ".Vb"))))

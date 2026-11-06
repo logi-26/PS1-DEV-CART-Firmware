@@ -13,17 +13,26 @@
 *	play [N]		note N (or the current one) played until "release" (Cross held)
 *	release
 *	seq 0/1			SEQ music stopped / started
+*	sep N			the SEQ N (0...) of a SEP (several SEQs in one file)
 *	stop			all sounds stopped (Start)
 *	vabwrite OFFSET HEX	VAB editor: the bytes written in the VH the tester plays (OFFSET in the VH, decimal; HEX:
 *					the bytes), applied at once to the notes sounding too: "SNDWROTE OFFSET SIZE"
 *	vabread			the VH as the tester has it: "SNDVH HEX"
+*	fx REVERB DEPTH VOICES TRANSPOSE TEMPO MONO MUTE	effects: reverb type (0 off, 1 room, 2-4 studio small/
+*					medium/large, 5 hall, 6 half echo, 7 space echo, 8 chaos echo, 9 delay), depth 0-127, notes with
+*					reverb (0 as the bank's tones, 1 all, 2 none), SEQ transpose (semitones), SEQ tempo (percent),
+*					mono 0/1, SEQ channels muted (bit n: channel n)
 *	spuregs			the SPU registers (0x1F801C00-0x1F801DFF, read by the debug monitor version 10): "SNDSPU HEX"
 *	quit
 * Answers (start with "SND"): at the start "SNDLIVE ready", "SNDINFO KIND PROGRAMS VAB_PS VAB_TS VAB_VS VAG_RATE" (KIND 0:
 * no sound data, 1: VAB, 2: VAG), "SNDPROGS P0 P1 ..." (program numbers, in index order), "SNDVAB ADDR SIZE" (the VH in
 * RAM, VAB editor; 0 0: not editable, an older tester); then
 * "SNDSTATE PROG_INDEX PROGRAM NOTE VOLUME PLAYING SEQ BAR LOOP VOICES" each time it changes (SEQ 0: none, 1: stopped,
-* 2: playing; VOICES: hexadecimal, bit n = voice n sounding). "SNDLIVE disconnected" (then the end) when the cartridge
+* 2: playing; VOICES: hexadecimal, bit n = voice n sounding). "SNDFX VERSION SAMPLES_END" at the start (VERSION 0: an
+* older tester, no effects; SAMPLES_END: SPU RAM used by the samples, hexadecimal), then
+* "SNDCHAN REVERB CH_USED CH_ACTIVE P0 ... P15" each time it changes (REVERB: type in use, -1 not enough SPU RAM;
+* CH_USED/CH_ACTIVE: hexadecimal, bit n = SEQ channel n with notes / sounding; Pn: program of channel n), then
+* SEP_INDEX SEP_COUNT (the SEQ played, the SEQs in the music file: 1 for a SEQ, 0 for none). "SNDLIVE disconnected" (then the end) when the cartridge
 * stops answering. Errors: "SNDERR text". The tester's printf text goes on meanwhile.
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -59,7 +68,18 @@
 #define	SYNC_REQ_REFRESH	66
 #define	SYNC_VH_ADRS		68		// VH in RAM, its size (VAB editor)
 #define	SYNC_VH_SIZE		72
-#define	SYNC_SIZE			76
+#define	SYNC_REQ_FX			76		// Effects (fx_ values from 78, 7 int16)
+#define	SYNC_FX				78
+#define	SYNC_REV_ACTIVE		92		// rev_active, ch_used, ch_active, ch_prog[16]
+#define	SYNC_CH_USED		94
+#define	SYNC_CH_ACTIVE		96
+#define	SYNC_CH_PROG		98
+#define	SYNC_FX_VERSION		114
+#define	SYNC_SAMPLES_END	116
+#define	SYNC_REQ_SEP		120		// SEP: the SEQ asked for, then sep_count, sep_index
+#define	SYNC_SEP_COUNT		122
+#define	SYNC_SEP_INDEX		124
+#define	SYNC_SIZE			128
 #define	MAX_HEX_BYTES		0x11000	// vabwrite, vabread: a whole VH (128 programs: 68128 bytes)
 
 #define	POLL_MS				50		// The state read (and printed when it changes) 20 times a second
@@ -159,6 +179,20 @@ static void	VabWrite(void)
 	printf("SNDWROTE %u %u\n", offset, size);
 }
 
+// fx REVERB DEPTH VOICES TRANSPOSE TEMPO MONO MUTE: the values, then req_fx (the tester takes them at its next frame)
+static void	Fx(void)
+{
+	int16_t	v[7];
+	int		i;
+
+	for (i = 0; i < 7; i++)
+		v[i] = Arg((i == 1) ? 64 : ((i == 4) ? 100 : 0));
+	if (!Usb('U', (uint8_t *)v, TESTER_SYNC_ADRS + SYNC_FX, sizeof(v)))
+		printf("SNDERR USB error\n");
+	else
+		Request(SYNC_REQ_FX, 1);
+}
+
 // A block of the console printed in hexadecimal after a prefix
 static void	PrintHex(const char *prefix, const uint8_t *data, uint32_t size)
 {
@@ -216,6 +250,21 @@ static void	State(bool force)
 		strcpy(last, text);
 		printf("SNDSTATE%s\n", text);
 	}
+	if (Get16(sync + SYNC_FX_VERSION) >= 1)
+	{
+		static char	last_ch[128];
+
+		sprintf(text, " %d %04X %04X", Get16(sync + SYNC_REV_ACTIVE), Get16(sync + SYNC_CH_USED) & 0xFFFF,
+			Get16(sync + SYNC_CH_ACTIVE) & 0xFFFF);
+		for (i = 0; i < 16; i++)
+			sprintf(text + strlen(text), " %d", sync[SYNC_CH_PROG + i]);
+		sprintf(text + strlen(text), " %d %d", Get16(sync + SYNC_SEP_INDEX), Get16(sync + SYNC_SEP_COUNT));
+		if (force || strcmp(text, last_ch))
+		{
+			strcpy(last_ch, text);
+			printf("SNDCHAN%s\n", text);
+		}
+	}
 }
 
 int	SndLive(void)
@@ -255,6 +304,7 @@ int	SndLive(void)
 	if ((vh_adrs < 0x80000000) || (vh_adrs >= 0x80200000) || (vh_size > MAX_HEX_BYTES))
 		vh_adrs = vh_size = 0;
 	printf("SNDVAB %08X %u\n", vh_adrs, vh_size);
+	printf("SNDFX %d %05X\n", Get16(sync + SYNC_FX_VERSION), Get32(sync + SYNC_SAMPLES_END));
 	State(true);
 
 	while (!eof)
@@ -298,6 +348,10 @@ int	SndLive(void)
 			VabWrite();
 		else if (!strcmp(cmd, "vabread"))
 			VabRead();
+		else if (!strcmp(cmd, "sep"))
+			Request(SYNC_REQ_SEP, Arg(0));
+		else if (!strcmp(cmd, "fx"))
+			Fx();
 		else if (!strcmp(cmd, "spuregs"))
 			SpuRegs();
 		else if (!strcmp(cmd, "quit"))

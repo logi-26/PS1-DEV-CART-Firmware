@@ -189,9 +189,30 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
   - **Sound Tools**: up to 8 sound files (VH, VB, VAB, SEQ, VAG) played by the sound tester (`ps1transfer -snd ...
     -sndlive`). While it runs, its controls are on the page too, linked live with the console's controller: program,
     note (buttons as Up/Down and L1/R1, a two-octave keyboard that follows the note: click and hold a key to play it,
-    as Cross held), volume (also for the notes sounding), SEQ start/stop with its bar and loop, stop all sounds, and the
+    as Cross held), volume (also for the notes sounding), SEQ start/stop with its bar and loop (a SEP: the SEQ played chosen), stop all sounds, and the
     24 voices lit while they sound. A change made with the controller shows on the page, and the other way round, so
-    sounds can be tested without a controller.
+    sounds can be tested without a controller. The instrument (a program of the bank) is the one the keyboard plays;
+    the SEQ plays each of its 16 channels with the program its own events choose: each channel shows its program and
+    lights while it sounds, with mute (M) and solo (S). Effects: SPU reverb (libspu's types: room, studio small/medium/
+    large, hall, half echo, space echo, chaos echo, delay), its depth and the notes it is on (the tones with reverb in
+    the bank, all or none; the work area at the end of SPU RAM, refused when the samples use that space), SEQ
+    transpose and tempo, and mono. The effects are kept in the settings.
+    The **Convert** tab makes common audio files (WAV, and MP3, OGG, FLAC, M4A... with FFmpeg, as the Movie Tools
+    page) and MIDI files into the PS1's formats (`audioconv.py`, also a command line tool), each then played by the
+    tester with one click:
+    - **Audio → VAG**: a sample at a chosen rate, trimmed, its volume or normalized, looping from a point.
+    - **Samples → VAB bank**: several samples as a VH + VB (or one VAB): each a tone of a program (instrument), with
+      its root note, key range, fine tune, volume, pan, envelope, reverb and loop; samples of one program are its key
+      splits (a drum kit). The SPU RAM the bank uses is shown (and what's left for the reverb).
+    - **MIDI → SEQ**: a MIDI file (type 0 or 1, the tracks merged) as SEQ music: tempo changes, a loop (the file's
+      loopStart/loopEnd markers or CC 111, the whole music, or from a tick), the GM drums' channel 10 on a chosen
+      program; its channels, programs and most notes at once are shown. Played with a bank chosen there.
+    - **Audio → XA**: streamed CD music (37800 or 18900 Hz, mono or stereo, for 1x or 2x), several songs in one file
+      (one per channel, as games do), 2336-byte sectors for a disc image (mkpsxiso's `xa` files).
+    Each converter also works the other way ("From the PS1"), the results opened with the computer's programs: VAG →
+    WAV/MP3/OGG/FLAC (the WAV keeps the loop, or the loop is played again), VAB → its samples in a folder (WAVs with
+    their root note and loop) and a list of its programs and tones, SEQ → MIDI (the loop as loopStart/loopEnd
+    markers, or written again), XA (or an STR movie's sound) → one audio file per channel.
     The **VAB Editor** tab tunes the bank (the VAB, or VH + VB, of the sound files) on the console, like Sony's
     SoundDelicatessen: bank volume; program volume, pan and priority; for each tone its volume, pan, center note, fine
     tune, key range (drawn on a keyboard strip with the note played), pitch bend range, VAG, and its ADSR envelope
@@ -215,7 +236,7 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
       frames (sector, sectors, bytes, quantization, BS version, size), sound (rate, channels, interleave), drive
       speed, problems (incomplete frames...), each frame as the MDEC decodes it (BS version 2), played here with its
       sound; a frame saved as PNG, the sound as WAV.
-    - **Test on the PS1**: the PS1 DEV CART VIDEO TESTER plays it (`ps1transfer -e -f videotest.ps-exe -c -p
+    - **Test on the PS1**: the PS1 DEV CART MOVIE TESTER plays it (`ps1transfer -e -f videotest.ps-exe -c -p
       FOLDER`, the movie read through the file server, the commands through its `@input`): RAM (the movie loaded
       first, up to 1 MB: 3 s at 2x, 6 s at 1x, then played at the exact pace) or stream (read as it plays: about
       400 KB/s with the console busy meanwhile, so 1x movies keep their pace with the picture about a frame late
