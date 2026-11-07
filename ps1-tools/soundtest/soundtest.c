@@ -212,6 +212,7 @@ static const struct
 };
 
 // Effects (asked by the computer, see SoundSync)
+static uint32_t	seq_notes;			// Notes the music has played since its start
 static int		seq_repeat = 1;		// At the end of the music: played again (1) or stopped (0)
 static int		start_clear = 3;	// Frames before the reverb work area is cleared at the start
 static int		fx_reverb, fx_depth = 64, fx_rev_voices, fx_transpose, fx_tempo = 100, fx_mono;
@@ -418,6 +419,7 @@ typedef struct
 typedef struct
 {
 	int		prog, volume, pan, bend, sustain;
+	int		expression;	// Controller 11 (0-127), on top of the volume (e.g. LSD: Dream Emulator's swells)
 } Channel;
 
 static Voice	voices[VOICES];
@@ -435,6 +437,7 @@ static void	VoiceVolume(int v)
 	// libsnd's key on), then the pan: full volume on both sides at the center
 	vol = vol * vo->velocity / 127;
 	vol = vol * (c ? c->volume : 127) / 127;
+	vol = vol * (c ? c->expression : 127) / 127;
 	vol = vol * vo->tone->vol / 127;
 	vol = vol * prog_atr[vo->prog].mvol / 127;
 	vol = vol * vab->mvol / 127;
@@ -668,6 +671,7 @@ static void	SeqStart(void)
 	{
 		channels[i].prog = 0;
 		channels[i].volume = 127;
+		channels[i].expression = 127;
 		channels[i].pan = 64;
 		channels[i].bend = 0;
 		channels[i].sustain = 0;
@@ -686,6 +690,7 @@ static void	SeqStart(void)
 	seq_status = 0;
 	seq_acc = 0;
 	seq_ticks = 0;			// (bars counted from the start of the music, at each loop too)
+	seq_notes = 0;
 	seq_wait = SeqVarLen();
 }
 
@@ -743,6 +748,7 @@ static int	SeqEvent(void)
 			d2 = *seq_ptr++;
 			if (d2)
 			{
+				seq_notes++;
 				NoteOff(c, d1);
 				if (!(fx_mute & (1 << c)))	// (muted channel: its notes not played)
 					NoteOn(c, channels[c].prog, d1, d2);
@@ -752,10 +758,12 @@ static int	SeqEvent(void)
 			break;
 		case 0xB0:	// Controller
 			d2 = *seq_ptr++;
-			if ((d1 == 7) || (d1 == 10))
+			if ((d1 == 7) || (d1 == 10) || (d1 == 11))	// Volume, pan, expression: heard at once
 			{
 				if (d1 == 7)
 					channels[c].volume = d2;
+				else if (d1 == 11)
+					channels[c].expression = d2;
 				else
 					channels[c].pan = d2;
 				for (v = 0; v < VOICES - 1; v++)
@@ -845,7 +853,7 @@ static void	SeqUpdate(void)
 				// The end: played again (until stopped, as SSPLAY_INFINITY), or stopped (once, as a game plays a
 				// jingle: its code decides; the loops inside the music are played either way)
 				SeqStop();
-				if (!seq_repeat)
+				if (!seq_repeat || !seq_notes)	// (a SEQ with no notes: not started again at every frame)
 				{
 					seq_playing = 0;
 					return;
