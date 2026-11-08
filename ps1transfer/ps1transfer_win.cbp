@@ -67,6 +67,9 @@
 		<Unit filename="disclive.c">
 			<Option compilerVar="CC" />
 		</Unit>
+		<Unit filename="timingtest.c">
+			<Option compilerVar="CC" />
+		</Unit>
 		<Unit filename="memlive.c">
 			<Option compilerVar="CC" />
 		</Unit>

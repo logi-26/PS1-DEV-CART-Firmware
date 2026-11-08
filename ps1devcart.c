@@ -48,8 +48,8 @@ static uint32_t	*p_ReturnFromExceptionOld = (uint32_t *)0x8000DF7C;
 // Menu screen images stored in the ROM file system (cartrom/tim.tfs), missing ones are skipped
 static char	*tim_files[] = {"logo.tim", "font.tim"};
 
-#define	FIRMWARE_VERSION	"1.1"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
-#define	FIRMWARE_VERSION_BCD	0x11	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
+#define	FIRMWARE_VERSION	"1.2"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
+#define	FIRMWARE_VERSION_BCD	0x12	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
 // In the ROM as text: the Manager's Firmware page reads the version of a ROM file from it (used by the menu: kept)
 static const char	firmware_tag[] = "Firmware: " FIRMWARE_VERSION;
 
@@ -575,6 +575,12 @@ int main(void)
 	// the Execute command of the previous firmware): the hook would read the same commands on every interrupt
 	kernel_hook_params->is_enabled = false;
 	ExitCriticalSection();
+#if USB_SEND_TIMING
+	// Bus timing of the writes to the USB chip on BIOS 4.x consoles (SCPH-7002/7502, see USB_SEND_TIMING in usb.h),
+	// for the kernel hook too: programs and discs started from the menu keep it.
+	// After the hook is installed: its startup clears its space, the word for the hook included
+	USB_SendTimingSetup();
+#endif
 	kernel_hook_params->usb_packet_log2 = USB_BIG_PACKET_LOG2;	// Tells ps1transfer that big packets can be used
 	// Memory/VRAM access while a program runs, device ID, big packets also while a program runs
 	kernel_hook_params->features = FEATURE_LIVE_ACCESS | FEATURE_DEVICE_ID | FEATURE_HOOK_BIG_PACKETS | FEATURE_BOOT_DISC |

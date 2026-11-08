@@ -284,6 +284,13 @@ Quick test from the cartridge menu, each download checked against its upload (3 
 
 These are timed on the whole `ps1transfer` command, so they include starting it: small files look slower than they are.
 
+**SCPH-7002 / SCPH-7502 (BIOS 4.x):** on these consoles one data line of the cartridge port isn't settled in time
+with the BIOS bus timing when the console writes to the USB chip, so some data sent to the computer failed every
+retry ("retry...", then the link lost; the original firmware has the same problem there). Since firmware 1.2 the
+menu detects BIOS 4.x and gives those writes a longer hold period. Downloads at the menu are then about 25% slower
+on those consoles (about 3% while a program runs); earlier consoles keep the full speed. `ps1transfer -timingtest`
+checks the link on any console and writes a report.
+
 
 The memory card tool reads and writes the card through the controller port registers itself, one 128-byte sector at
 a time, with the BIOS driver as a fallback. Measured on an official 128KB card (1024 sectors):

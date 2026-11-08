@@ -297,7 +297,8 @@ enum
 	CMD_SPU,
 	CMD_BOOT_DISC,
 	CMD_DISC,
-	CMD_SNAPSHOT
+	CMD_SNAPSHOT,
+	CMD_TIMING_TEST
 };
 
 /****************************************/
@@ -607,6 +608,34 @@ bool	USB_GetSerial(char *serial)
 	return (serial[0] != 0);
 }
 
+// The USB chip of the cartridge and its driver, as text (bus timing test report)
+void	USB_ChipText(char *out, int size)
+{
+#ifdef _WIN32
+	FT_DEVICE	type;
+	DWORD		id, drv = 0, lib = 0;
+	char		serial[64], desc[64];
+
+	if (ftdi->com)
+	{
+		snprintf(out, size, "serial port %s (USB serial number \"%s\")", com_name ? com_name : "?", ftdi->serial);
+		return;
+	}
+	if (FT_GetDeviceInfo(ftdi->ft, &type, &id, serial, desc, NULL) != FT_OK)
+	{
+		snprintf(out, size, "FTDI chip (no information)");
+		return;
+	}
+	FT_GetDriverVersion(ftdi->ft, &drv);
+	FT_GetLibraryVersion(&lib);
+	snprintf(out, size, "FTDI type %u, id %04X:%04X, \"%s\", driver %X.%02X.%02X, D2XX library %X.%02X.%02X", (unsigned)type,
+			 (unsigned)(id >> 16), (unsigned)(id & 0xFFFF), desc, (unsigned)(drv >> 16) & 0xFF, (unsigned)(drv >> 8) & 0xFF,
+			 (unsigned)drv & 0xFF, (unsigned)(lib >> 16) & 0xFF, (unsigned)(lib >> 8) & 0xFF, (unsigned)lib & 0xFF);
+#else
+	snprintf(out, size, "FTDI chip through libftdi, type %d", (int)ftdi->type);
+#endif
+}
+
 void	USB_SendDeviceId(void)
 {
 	char	serial[64];
@@ -835,6 +864,11 @@ static uint32_t	NowMs(void)
 #endif
 }
 
+uint32_t	USB_NowMs(void)
+{
+	return (NowMs());
+}
+
 // After an upload (its progress line ended): its transfer rate and time
 static void	PrintUploadTime(uint32_t bytes, uint32_t start_ms)
 {
@@ -894,9 +928,98 @@ void	ShowProgress(uint32_t remaining, uint32_t total)
 	fflush(stdout);
 }
 
+// Bus timing test (-timingtest, timingtest.c): each packet that fails is looked at (what arrived: bytes damaged, one
+// too many, one missing) instead of only being asked again, and counted
+bool		usb_test_mode;
+uint32_t	usb_retry_count;	// Packets asked again (all transfers)
+void		(*usb_test_packet)(char cmd, uint32_t offset, const uint8_t *got, uint32_t got_n, uint32_t want_n,
+							   uint32_t extra);
+
+void	USB_PurgeNow(void)
+{
+	USB_Purge(ftdi);
+}
+
+// A download packet and its CRC byte, test mode: 1 good (in data), 0 bad (the PS1 is asked again), -1 USB error.
+// What arrived is kept whatever it is: fewer bytes than sent (a byte missing: the CRC never comes), more (a byte
+// written twice: the CRC read is a data byte, the real one comes after).
+static int	USB_TestPacket(char cmd, uint8_t *data, uint32_t lsize, uint32_t offset)
+{
+	static uint8_t	*buf;
+	static uint32_t	buf_size;
+	uint32_t		n = 0, extra = 0, last;
+	uint8_t			c;
+	int				r;
+
+	if (buf_size < lsize + 4096)
+	{
+		free(buf);
+		buf_size = lsize + 4096;
+		if (!(buf = malloc(buf_size)))
+		{
+			buf_size = 0;
+			return (-1);
+		}
+	}
+	for (last = NowMs(); n < lsize + 1; )
+	{
+		r = ftdi_read_data(ftdi, buf + n, lsize + 1 - n);
+		if (r < 0)
+			return (-1);
+		if (r > 0)
+		{
+			n += r;
+			last = NowMs();
+		}
+		else if (NowMs() - last > 400)
+			break;
+	}
+	// Test of the test: TIMINGTEST_INJECT=N, every Nth packet damaged as the bus could (a bit, a byte written twice,
+	// a byte missing, the CRC byte), the console asked again as for a real error
+	{
+		static int	inject = -1, count;
+
+		if (inject < 0)
+			inject = getenv("TIMINGTEST_INJECT") ? atoi(getenv("TIMINGTEST_INJECT")) : 0;
+		if ((inject > 0) && (n == lsize + 1) && (lsize > 400) && !(++count % inject))
+		{
+			switch ((count / inject) & 3)
+			{
+				case 0:	buf[100] ^= 0x08; break;
+				case 1:	memmove(buf + 201, buf + 200, n - 200); buf[200] = buf[199]; n++; break;
+				case 2:	memmove(buf + 300, buf + 301, n - 301); n--; break;
+				case 3:	buf[lsize] ^= 0xFF; break;
+			}
+			if (n > lsize + 1)
+				extra = n - (lsize + 1);
+			usb_retry_count++;
+			if (usb_test_packet)
+				usb_test_packet(cmd, offset, buf, n, lsize + 1, extra);
+			return (0);
+		}
+	}
+	if ((n == lsize + 1) && (buf[lsize] == CRC8_Compute(buf, lsize)))
+	{
+		memcpy(data, buf, lsize);
+		return (1);
+	}
+	// Bytes after it (a byte too many: they were sent with the packet)
+#ifdef _WIN32
+	Sleep(30);
+#else
+	usleep(30000);
+#endif
+	while ((n + extra < buf_size) && USB_ReadByteNoWait(&c))
+		buf[n + extra++] = c;
+	usb_retry_count++;
+	if (usb_test_packet)
+		usb_test_packet(cmd, offset, buf, n + extra, lsize + 1, extra);
+	return (0);
+}
+
 bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 {
-	uint8_t		retry, ack, crc8, *odata;
+	uint8_t		retry, ack, crc8, *odata, *start = data;
 	uint32_t	lsize, usize, packet_size = MAX_PACKET_SIZE, header_size = size, total;
 	bool		ack_ok;
 	int			skipped;
@@ -958,7 +1081,7 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 	if (cmd == 'R')		// Asked again after the reset (e.g. a RAM test firmware replaced by the one in flash)
 		*EscState() = 0;
 
-	retry = 3;
+	retry = usb_test_mode ? 12 : 3;
 
 	// Get Ack Packet. Before it: text the program printed on its USB tty (e.g. a link game run with the default tty,
 	// writing every frame), skipped; while profiling, the profiler packets (DLE + type, see profiler.c); "DLE q"
@@ -995,6 +1118,28 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 						ShowProgress(size, total);
 					lsize = (size > packet_size) ? packet_size : size;
 					odata = data;
+					if (usb_test_mode && ((cmd == 'D') || (cmd == 'd')))
+					{
+						int	got = USB_TestPacket(cmd, data, lsize, data - start);
+
+						if (got < 0)
+							return (false);
+						if (got)
+						{
+							ack = 'N';
+							size -= lsize;
+							data += lsize;
+						}
+						else
+						{
+							ack = 'A';
+							if (!--retry)
+								return (false);
+						}
+						if (ftdi_write_data(ftdi, &ack, 1) != 1)
+							return (false);
+						continue;
+					}
 					// Get packet by blocks of USB_READ_SIZE
 					while (lsize)
 					{
@@ -1015,7 +1160,11 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 						}
 						else
 						{
-							printf("\nretry...\n");
+							usb_retry_count++;
+							if (!usb_test_mode)
+								printf("\nretry...\n");
+							else if (usb_test_packet)
+								usb_test_packet(cmd, odata - start, NULL, 0, lsize, 0);
 							ack = 'A';	// again
 							//ftdi_tcioflush(ftdi);
 							data = odata;
@@ -1058,7 +1207,11 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 						}
 						else
 						{
-							printf("\nretry...\n");
+							usb_retry_count++;
+							if (!usb_test_mode)
+								printf("\nretry...\n");
+							else if (usb_test_packet)
+								usb_test_packet(cmd, odata - start, NULL, 0, lsize, 0);
 							ack = 'A';	// again
 							//ftdi_tcioflush(ftdi);
 							data = odata;
@@ -3633,18 +3786,25 @@ out:
 /****************************************/
 // "-info" prints the cartridge state as key=value lines (for the GUI and scripts)
 
+void	PrintInfoTo(FILE *out);
+
 static void	PrintInfo(void)
+{
+	PrintInfoTo(stdout);
+}
+
+void	PrintInfoTo(FILE *out)
 {
 	uint8_t		params[4], state[16];
 	char		serial[64];
 	bool		have_state;
 	const char	*status;
 
-	printf("device=%s\n", USB_GetSerial(serial) ? serial : "");
+	fprintf(out, "device=%s\n", USB_GetSerial(serial) ? serial : "");
 	if (!USB_Process('D', params, KERNEL_HOOK_PARAMS_ADRS, sizeof(params)))
 	{
 		// Original firmware while a program runs, or nothing answers
-		printf("state=unknown\n");
+		fprintf(out, "state=unknown\n");
 		return;
 	}
 	have_state = params[3] && USB_Process('D', state, MONITOR_STATE_ADRS, sizeof(state)) &&
@@ -3657,16 +3817,16 @@ static void	PrintInfo(void)
 		status = "stopped";
 	else
 		status = "running";
-	printf("state=%s\n", status);
-	printf("firmware=%s\n", params[3] ? "devcart" : "original");
+	fprintf(out, "state=%s\n", status);
+	fprintf(out, "firmware=%s\n", params[3] ? "devcart" : "original");
 	if (have_state && state[15])
-		printf("firmware_version=%d.%d\n", state[15] >> 4, state[15] & 15);
-	printf("features=0x%02X\n", params[3]);
-	printf("tty_mode=%d\n", params[1] & ~EXEC_DEBUG);
-	printf("debug_session=%d\n", (params[1] & EXEC_DEBUG) ? 1 : 0);
-	printf("monitor=%d\n", (have_state && *(uint32_t *)(state + 4)) ? 1 : 0);
-	printf("monitor_version=%d\n", have_state ? state[14] : 0);
-	printf("escaped_answers=%d\n", (USB_EscapedAnswers() > 0) ? 1 : 0);
+		fprintf(out, "firmware_version=%d.%d\n", state[15] >> 4, state[15] & 15);
+	fprintf(out, "features=0x%02X\n", params[3]);
+	fprintf(out, "tty_mode=%d\n", params[1] & ~EXEC_DEBUG);
+	fprintf(out, "debug_session=%d\n", (params[1] & EXEC_DEBUG) ? 1 : 0);
+	fprintf(out, "monitor=%d\n", (have_state && *(uint32_t *)(state + 4)) ? 1 : 0);
+	fprintf(out, "monitor_version=%d\n", have_state ? state[14] : 0);
+	fprintf(out, "escaped_answers=%d\n", (USB_EscapedAnswers() > 0) ? 1 : 0);
 	// The game booted from its disc: its executable (the disc's serial number, e.g. SLES_015.42)
 	if (params[0] && (params[3] & FEATURE_DISC_ID))
 	{
@@ -3675,7 +3835,7 @@ static void	PrintInfo(void)
 		if (USB_Process('D', id, DISC_ID_ADRS, sizeof(id)) && (*(uint32_t *)id == DISC_ID_MAGIC))
 		{
 			id[sizeof(id) - 1] = 0;
-			printf("game=%s\n", (char *)id + 4);
+			fprintf(out, "game=%s\n", (char *)id + 4);
 		}
 	}
 }
@@ -3937,6 +4097,7 @@ int main(int argc, char *argv[])
 	int			disc_count = 0;					// -disc: the words of the command
 	char		**disc_words = NULL;
 	char		*snapshot_dir = NULL;			// -snapshot: the folder
+	char		*timing_report = "timingtest-report.txt";	// -timingtest: the report
 	char		*snapshot_parts = NULL;			// -snapshot: the parts (NULL: all)				// Memory card command on a card slot (argv index)
 	bool		card_start = true;				// The card tool must be started (server mode)
 	char		*relay_serial = NULL;			// -relay: the other cartridge of the USB link
@@ -4238,6 +4399,13 @@ int main(int argc, char *argv[])
 							goto usage;
 						}
 						tod_files[tod_count++] = argv[++i];
+						break;
+					}
+					if (!strcmp(argv[i], "-timingtest"))	// Bus timing test of the cartridge port (timingtest.c)
+					{
+						cmd = CMD_TIMING_TEST;
+						if ((i + 1 < argc) && (argv[i + 1][0] != '-'))
+							timing_report = argv[++i];
 						break;
 					}
 					if (!strcmp(argv[i], "-tim"))	// TIM file for the TIM and VRAM viewer
@@ -4628,7 +4796,7 @@ int main(int argc, char *argv[])
 		(cmd != CMD_MEMLIVE) &&
 		(cmd != CMD_INFO) && (cmd != CMD_FLASH_ROM) && (cmd != CMD_SYNTH) &&
 		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_SPU) &&
-		(cmd != CMD_BOOT_DISC) && (cmd != CMD_DISC) && (cmd != CMD_SNAPSHOT))
+		(cmd != CMD_BOOT_DISC) && (cmd != CMD_DISC) && (cmd != CMD_SNAPSHOT) && (cmd != CMD_TIMING_TEST))
 	{
 		printf("No file specified.\n");
 		goto usage;
@@ -4686,6 +4854,12 @@ int main(int argc, char *argv[])
 		if (!reset)
 			card_start = !ps1_program_running || !CardServerRunning();
 		reset = card_start && ps1_program_running;
+	}
+	// -timingtest: started from the menu (after a reset if a program runs)
+	if (cmd == CMD_TIMING_TEST)
+	{
+		USB_DetectPacketSize();
+		reset = reset || ps1_program_running;
 	}
 	// -disc: the disc reader is kept if it already runs (unless -r), otherwise started (after a reset if another
 	// program runs)
@@ -5043,6 +5217,11 @@ int main(int argc, char *argv[])
 				goto failed;
 		break;
 
+		case CMD_TIMING_TEST:
+			if (TimingTest(argv[0], timing_report))
+				goto failed;
+		break;
+
 		case CMD_RELAY:
 			if (!ps1_program_running)
 			{
@@ -5251,6 +5430,8 @@ usage:
 		"\t\tno command: commands on the input, see disclive.c)\n");
 	printf("\t-snapshot DIR [PARTS] RAM, VRAM and SPU RAM of the running program (a game booted from its disc too) to DIR\n"
 		"\t\t(PARTS: some of them, e.g. ram,vram or spu)\n");
+	printf("\t-timingtest [REPORT] Test of the cartridge port's bus timings (USB errors on some consoles): a few minutes,\n"
+		"\t\tfrom the menu, writes REPORT (default timingtest-report.txt)\n");
 	printf("\t-sndlive With -snd: commands on the input for the PS1 Dev Cart Manager (program, note, volume, play, SEQ; state lines)\n");
 	printf("\t-tim file.tim (TIM and VRAM viewer: VRAM map, overlaps, CLUTs, up to %d files)\n", TIMVIEW_MAX_FILES);
 	printf("\t-timlive With -tim -c: commands on the input for the PS1 Dev Cart Manager (live palette, VRAM read)\n");

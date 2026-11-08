@@ -145,6 +145,12 @@ Parameters:
 -info Cartridge state as key=value lines: device, state (menu, running, stopped, crashed), firmware, features, monitor,
    monitor_version, escaped_answers (1: answers after a DLE, text a program prints can't be taken for them), game (the
    disc booted from the menu: its executable, e.g. SLES_015.84, firmware 1.1)
+-timingtest [REPORT] USB link test of the cartridge port's bus timing, at the menu (default report:
+   timingtest-report.txt). The BIOS is read twice and test data written and read back, then a test program
+   (timingtest.ps-exe next to ps1transfer) sets several timings one after the other, 1MB read and 512KB written with
+   each; every transfer error is classified (damaged bits, a byte written twice, a byte lost). A timing that breaks
+   the link is undone by the console after a few seconds. The report also has the console's BIOS, CPU and GPU
+   versions and the timings its BIOS set. Nothing is written to the flash; the console is reset at the end.
 -rename NAME With -n SERIAL: renames the cartridge, i.e. its USB serial number (1 to 15 letters and digits), the
    name -n, -l and the PS1 menu use. Only the cartridge's USB chip (FT245R) is written, with FTDI's own EEPROM
    programming function: its settings are saved first (%LOCALAPPDATA%\PS1-DEV-CART\eeprom-backups\SERIAL-date.txt,

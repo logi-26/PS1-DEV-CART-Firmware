@@ -53,4 +53,8 @@ bool	DiscServerRunning(void);
 bool	DiscServerStart(char *argv0);
 int		DiscLive(int count, char **words);
 
+// Bus timing test of the cartridge port (timingtest.c, ps1-tools/timingtest): the report written to report. Returns
+// the exit code.
+int		TimingTest(char *argv0, const char *report);
+
 #endif

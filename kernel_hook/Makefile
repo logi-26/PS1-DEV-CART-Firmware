@@ -8,6 +8,8 @@ CFLAGS = -Os -DHOOK
 
 # See linker script in the current folder
 LDFLAGS += -Wl,--defsym=TLOAD_ADDR=0x8000C160
+# The EXP1 bits of the USB writes set by the menu (USB_SEND_BITS_ADRS, see usb.h)
+LDFLAGS += -Wl,--defsym=usb_send_bits_hook=0x8000DEDC
 
 LDSCRIPT ?= ps-exe_noheader_kernel_hook.ld
 

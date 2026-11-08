@@ -144,6 +144,72 @@ uint8_t		CRC8_Compute(uint8_t *data, uint32_t size)
 #define	USB_EXP1_FAST_TIMING	0
 #endif
 
+// Bus timing while the console writes to the USB chip (data to the computer), on the SCPH-7002/7502 (BIOS 4.x) only.
+// There, data line D2 sometimes isn't settled when the FT245R takes the byte with the BIOS timing (ps1transfer
+// -timingtest on a SCPH-7502: only bit 2, only 0 read as 1, only the console's writes, e.g. 04 FB sent as 04 FF), the
+// same data failing at each retry ("retry...", then the link lost). The writes get the hold (COM1), recovery (COM0)
+// and pre-strobe (COM3) periods, the hold made 15 cycles (the BIOS: 2). Recovery, pre-strobe (3 and more break the
+// status reads with the BIOS read delay) and float as the BIOS set them. About 30% slower downloads at the menu (3%
+// while a program runs), so only where needed: the menu checks the BIOS version at its start (USB_SendTimingSetup).
+// BIOS 4.x is only on the 7000 series with the parallel port (the 9000 series and the PSone have none); earlier
+// consoles keep the BIOS timing as before. Checked with no errors (forced on) on SCPH-5552, DTL-H3002 and DTL-H1202.
+// COM1 stays 15 (nothing saved): only expansion 2 uses it besides (BIOS 0013243F, SPU 200931E1, CD 00020843, EXP3
+// 00003022 don't), the cartridge port only while the EXP1 bits are set:
+// - the menu: during each transfer (USB_SendData) or byte (USB_SendByteTimeout);
+// - the kernel hook (little room): during the computer's memory reads and writes and link exchanges ('D', 'U', 'X',
+//   'Z'), with the word the menu left at USB_SEND_BITS_ADRS (COM1 set there again: programs set COM_DELAY to the
+//   BIOS value at their start, e.g. CdInit). Its other answers, the program's requests (file server) and printf
+//   keep the BIOS timing.
+// USB_SEND_TIMING 0 = never, USB_SEND_TIMING_FORCE 1 = on every console (tests).
+#define	COM_DELAY_REG		*((volatile uint32_t *)0x1F801020)
+#ifndef USB_SEND_TIMING
+#define	USB_SEND_TIMING		1
+#endif
+#ifndef USB_SEND_TIMING_FORCE
+#define	USB_SEND_TIMING_FORCE	0
+#endif
+#define	USB_SEND_EXP1_BITS	0x00000B00	// EXP1 delay/size: use COM0, COM1 and COM3 (none set by the BIOS)
+#define	USB_SEND_COM1		0x000000F0	// COM_DELAY: COM1 15
+// The word for the kernel hook (0 = off), set by the menu: EXP1 |= word (COM0-COM3 used: COM2 too, the float period
+// the BIOS already uses, 0013243F) and COM_DELAY |= word >> 4 (COM1 15). The last word of the cheat table's space,
+// after the table (CheatTable: 0x6C8 bytes of 0x6E0, see CHEAT_TABLE_ADRS)
+#define	USB_SEND_HOOK_WORD	0x00000F00
+#define	USB_SEND_BITS_ADRS	0x8000DEDC
+#ifdef HOOK
+// (at USB_SEND_BITS_ADRS, defined by the hook's Makefile: loaded with two instructions, three for the address)
+extern volatile uint32_t	usb_send_bits_hook;
+#endif
+
+#if USB_SEND_TIMING && !defined(HOOK)
+static uint32_t	usb_send_bits;	// 0 or USB_SEND_EXP1_BITS (USB_SendTimingSetup)
+
+// At the menu's start: on with BIOS 4.x ("System ROM Version 4.1 12/16/97 E" at 0xBFC7FF32; BIOS 1.x has no such
+// string: off), for the menu and the kernel hook
+static void	USB_SendTimingSetup(void)
+{
+	const volatile char	*v = (const volatile char *)0xBFC7FF32;
+	const char			*s = "System ROM Version ";
+	int					i;
+
+	for (i = 0; s[i] && (v[i] == s[i]); i++)
+		;
+	usb_send_bits = (USB_SEND_TIMING_FORCE || (!s[i] && (v[i] >= '4') && (v[i] <= '9'))) ? USB_SEND_EXP1_BITS : 0;
+	*((volatile uint32_t *)USB_SEND_BITS_ADRS) = usb_send_bits ? USB_SEND_HOOK_WORD : 0;
+	if (usb_send_bits)
+		COM_DELAY_REG |= USB_SEND_COM1;
+}
+
+#define	USB_SEND_TIMING_BEGIN()		do { EXP1_DELAY_SIZE |= usb_send_bits; } while (0)
+// (USB_SendData ends with the ACK read: its last write is done then. A single byte: a read of the cartridge first,
+// the write out of the CPU's write buffer, done with this timing)
+#define	USB_SEND_TIMING_END()		do { EXP1_DELAY_SIZE &= ~USB_SEND_EXP1_BITS; } while (0)
+#define	USB_SEND_TIMING_END_BYTE()	do { (void)*((volatile uint8_t *)0x1F060000); USB_SEND_TIMING_END(); } while (0)
+#else
+#define	USB_SEND_TIMING_BEGIN()		do {} while (0)
+#define	USB_SEND_TIMING_END()		do {} while (0)
+#define	USB_SEND_TIMING_END_BYTE()	do {} while (0)
+#endif
+
 enum
 {
 	USB_STATE_NONE,
@@ -201,7 +267,19 @@ bool	USB_SendByteTimeout(uint8_t data, uint32_t timeout)
 		if (!(timeout--))
 			return (false);
 
+#if !defined(HOOK) && USB_SEND_TIMING
+	// (the menu: each byte, when on. Inside USB_SendData: already set)
+	if (!usb_send_bits || (EXP1_DELAY_SIZE & USB_SEND_EXP1_BITS))
+		USB_DATA = data;
+	else
+	{
+		USB_SEND_TIMING_BEGIN();
+		USB_DATA = data;
+		USB_SEND_TIMING_END_BYTE();
+	}
+#else
 	USB_DATA = data;
+#endif
 	return (true);
 }
 
@@ -213,6 +291,8 @@ bool	USB_SendData(volatile uint8_t *ptr, uint32_t size, uint32_t packet_size)
 {
 	uint8_t						crc, c, ack;	// (ack in memory: its address is taken, crc and c stay in registers)
 	register uint32_t			lsize, olsize;
+	bool						ok = false;
+	USB_SEND_TIMING_BEGIN();	// (the whole transfer, the CRC and ACK too: see USB_SEND_TIMING)
 
 	while (size)
 	{
@@ -226,19 +306,21 @@ bool	USB_SendData(volatile uint8_t *ptr, uint32_t size, uint32_t packet_size)
 			if (!(USB_STATUS & USB_STATUS_MASK_CAN_SEND_DATA))
 				USB_DATA = c;
 			else if (!USB_SendByteData(c))
-				return (false);
+				goto end;
 		}
 		if (!USB_SendByteData(crc))	// Send CRC of data
-			return (false);
+			goto end;
 		if (!USB_GetByte(&ack))	// Wait ACK (Next block or retry ?)
-			return (false);
+			goto end;
 		if (ack == 'N')	// Next
 			size -= olsize;
 		else			// Rewind
 			ptr -= olsize;
 	}
-
-	return (true);
+	ok = true;
+end:
+	USB_SEND_TIMING_END();
+	return (ok);
 }
 
 bool	USB_GetData(volatile uint8_t *ptr, uint32_t size, uint32_t packet_size)
@@ -560,13 +642,29 @@ int		USB_ProcessReceive(void)
 #ifdef HOOK
 	// Exchange (USB link relay, one transfer instead of two): size = write size << 16 | read size, the
 	// computer writes at the address, then reads what follows (all in one go for the program)
-	if ((USB_cmd[0] == 'X') || (USB_cmd[0] == 'Z'))	// ('Z': the same, the monitor knows it too: a debug session)
-		return ((USB_GetData(ptr, size >> 16, MAX_PACKET_SIZE) &&
-			USB_SendData(ptr + (size >> 16), size & 0xFFFF, MAX_PACKET_SIZE)) ? USB_STATE_OK : USB_STATE_TIMEOUT);
-	// Memory access while a program runs, big packets (FEATURE_HOOK_BIG_PACKETS)
-	if (USB_cmd[0] == 'D')
-		return (USB_SendData(ptr, size, HOOK_PACKET_SIZE) ? USB_STATE_OK : USB_STATE_TIMEOUT);
-	return (USB_GetData(ptr, size, HOOK_PACKET_SIZE) ? USB_STATE_OK : USB_STATE_TIMEOUT);
+	// The transfers with the bus timing of USB_SEND_TIMING: the EXP1 bits the menu chose (USB_SEND_BITS_ADRS, 0 = the
+	// BIOS timing), EXP1 set back as found after them
+	{
+		bool		ok;
+#if USB_SEND_TIMING
+		uint32_t	exp1 = EXP1_DELAY_SIZE, bits = usb_send_bits_hook;
+
+		EXP1_DELAY_SIZE = exp1 | bits;
+		COM_DELAY_REG |= bits >> 4;	// (COM1 15: the program's startup may have set the BIOS value again, e.g. CdInit)
+#endif
+		if ((USB_cmd[0] == 'X') || (USB_cmd[0] == 'Z'))	// ('Z': the same, the monitor knows it too: a debug session)
+			ok = USB_GetData(ptr, size >> 16, MAX_PACKET_SIZE) &&
+				USB_SendData(ptr + (size >> 16), size & 0xFFFF, MAX_PACKET_SIZE);
+		// Memory access while a program runs, big packets (FEATURE_HOOK_BIG_PACKETS)
+		else if (USB_cmd[0] == 'D')
+			ok = USB_SendData(ptr, size, HOOK_PACKET_SIZE);
+		else
+			ok = USB_GetData(ptr, size, HOOK_PACKET_SIZE);
+#if USB_SEND_TIMING
+		EXP1_DELAY_SIZE = exp1;	// (the transfer ended with an ACK read: its writes are done)
+#endif
+		return (USB_STATE_TIMEOUT + ok);	// (USB_STATE_OK = USB_STATE_TIMEOUT + 1: one return, the restore not copied)
+	}
 #else
 	// Lowercase download/upload are the same commands with big packets
 	packet_size = MAX_PACKET_SIZE;
