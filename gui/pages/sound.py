@@ -45,8 +45,12 @@ TIMELINE_COLORS = {"trough": "#3a3f44", "done": "#4fc1ff", "paused": "#e0a030", 
 REVERBS = [("Off", 0), ("Room", 0x26C0), ("Studio small", 0x1F40), ("Studio medium", 0x4840),
            ("Studio large", 0x6FE0), ("Hall", 0xADE0), ("Half echo", 0x3C00), ("Space echo", 0xF6C0),
            ("Chaos echo", 0x18040), ("Delay", 0x18040)]
-REVERB_VOICES = ["Notes of tones with reverb", "All notes", "No notes"]   # VAB tone mode 4: reverb (as libsnd)
-FX_DEFAULTS = dict(reverb=0, depth=64, voices=0, transpose=0, tempo=100, mono=False)
+# VAB tone mode 4: reverb (as libsnd); the SEQ channels chosen (the keyboard's notes: as their tones)
+REVERB_VOICES = ["Notes of tones with reverb", "All notes", "No notes", "SEQ channels chosen"]
+REVERB_CHANNELS = 3
+# Chaos echo and Delay (libspu's Echo and Delay modes): their delay time and feedback 0-127, libspu's defaults
+ECHO_DEFAULTS = {8: (127, 127), 9: (127, 0)}
+FX_DEFAULTS = dict(reverb=0, depth=64, voices=0, transpose=0, tempo=100, mono=False, delay=127, feedback=127)
 SPU_RAM = 0x80000
 
 
@@ -159,7 +163,7 @@ class SoundPage(Page):
                  bootstyle="secondary", wraplength=720, justify="left").pack(anchor="w", pady=(4, 4))
         grid = tb.Frame(box)
         grid.pack(anchor="w")
-        self.mute_vars, self.solo_vars, self.ch_cells = [], [], []
+        self.mute_vars, self.solo_vars, self.rev_vars, self.ch_cells = [], [], [], []
         for ch in range(SEQ_CHANNELS):
             cell = tb.Frame(grid, padding=(4, 2))
             cell.grid(row=ch // 8, column=ch % 8, padx=2, pady=2, sticky="w")
@@ -235,7 +239,7 @@ class SoundPage(Page):
         self.reverb_choice = tb.Combobox(grid, state="readonly", width=16, values=[r[0] for r in REVERBS])
         self.reverb_choice.current(max(0, min(len(REVERBS) - 1, fx["reverb"])))
         self.reverb_choice.grid(row=0, column=1, sticky="w")
-        self.reverb_choice.bind("<<ComboboxSelected>>", lambda e: self.fx_changed())
+        self.reverb_choice.bind("<<ComboboxSelected>>", lambda e: self.reverb_changed())
         tb.Label(grid, text="Depth").grid(row=0, column=2, sticky="w", padx=(16, 6))
         self.depth = tk.IntVar(value=fx["depth"])
         self.depth_scale = tb.Scale(grid, from_=0, to=127, variable=self.depth, length=160,
@@ -248,6 +252,37 @@ class SoundPage(Page):
         self.rev_voices_choice.current(max(0, min(len(REVERB_VOICES) - 1, fx["voices"])))
         self.rev_voices_choice.grid(row=0, column=6, sticky="w")
         self.rev_voices_choice.bind("<<ComboboxSelected>>", lambda e: self.fx_changed())
+        # Chaos echo and Delay: libspu's delay time and feedback (the others have neither)
+        self.echo_row = tb.Frame(box)
+        self.echo_row.pack(fill="x", pady=(4, 0))
+        tb.Label(self.echo_row, text="Delay", width=10).grid(row=0, column=0, sticky="w")
+        self.delay = tk.IntVar(value=fx["delay"])
+        self.delay_scale = tb.Scale(self.echo_row, from_=0, to=127, variable=self.delay, length=160,
+                                    command=lambda v: self.fx_changed(slider=True))
+        self.delay_scale.grid(row=0, column=1, sticky="w")
+        self.delay_label = tb.Label(self.echo_row, text=str(fx["delay"]), width=4, anchor="e")
+        self.delay_label.grid(row=0, column=2, sticky="w")
+        tb.Label(self.echo_row, text="Feedback").grid(row=0, column=3, sticky="w", padx=(16, 6))
+        self.feedback = tk.IntVar(value=fx["feedback"])
+        self.feedback_scale = tb.Scale(self.echo_row, from_=0, to=127, variable=self.feedback, length=160,
+                                       command=lambda v: self.fx_changed(slider=True))
+        self.feedback_scale.grid(row=0, column=4, sticky="w")
+        self.feedback_label = tb.Label(self.echo_row, text=str(fx["feedback"]), width=4, anchor="e")
+        self.feedback_label.grid(row=0, column=5, sticky="w")
+        self.echo_hint = tb.Label(self.echo_row, text="", bootstyle="secondary")
+        self.echo_hint.grid(row=0, column=6, sticky="w", padx=(12, 0))
+        # "On: SEQ channels chosen": the channels whose notes have reverb (shown with that choice only)
+        self.rev_row = tb.Frame(box)
+        tb.Label(self.rev_row, text="Reverb on", width=10).pack(side="left")
+        self.rev_buttons = []
+        for ch in range(SEQ_CHANNELS):
+            var = tk.BooleanVar(value=True)
+            b = tb.Checkbutton(self.rev_row, text="%d" % (ch + 1), variable=var, bootstyle="info-outline-toolbutton",
+                               width=2, command=self.mutes_changed)
+            b.pack(side="left", padx=(0, 2))
+            self.rev_vars.append(var)
+            self.rev_buttons.append(b)
+        tb.Label(self.rev_row, text="SEQ channels", bootstyle="secondary").pack(side="left", padx=(8, 0))
         self.reverb_label = tb.Label(box, text="", bootstyle="secondary")
         self.reverb_label.pack(anchor="w", pady=(4, 6))
 
@@ -329,8 +364,10 @@ class SoundPage(Page):
         self.live = False
         self.disconnected = False
         self.fx_version = 0
-        for v in self.mute_vars + self.solo_vars:     # (new music: every channel heard)
+        for v in self.mute_vars + self.solo_vars:     # (new music: every channel heard, with reverb)
             v.set(False)
+        for v in self.rev_vars:
+            v.set(True)
         self.editor.load()
         self.status.configure(text="Starting the console's sound tester...")
         self.app.run(self.args(), "Sound tester", long_running=True, stdin=True, cwd=os.path.dirname(files[0]),
@@ -460,9 +497,25 @@ class SoundPage(Page):
                 w.configure(state=("readonly" if isinstance(w, tb.Combobox) else "normal") if fx_on else "disabled")
             except tk.TclError:
                 pass
+        fx2_on = fx_on and self.fx_version >= 2
+        # (reverb off: the channel buttons disabled, they would change nothing)
+        chosen = (fx2_on and self.rev_voices_choice.current() == REVERB_CHANNELS and
+                  self.reverb_choice.current() > 0)
+        if self.rev_voices_choice.current() == REVERB_CHANNELS:
+            if not self.rev_row.winfo_manager():
+                self.rev_row.pack(fill="x", pady=(4, 0), before=self.reverb_label)
+        elif self.rev_row.winfo_manager():
+            self.rev_row.pack_forget()
         for ch, cell in enumerate(self.ch_cells):
             for b in cell["buttons"]:
                 b.configure(state="normal" if fx_on and self.ch_used >> ch & 1 else "disabled")
+            self.rev_buttons[ch].configure(state="normal" if chosen and self.ch_used >> ch & 1 else "disabled")
+        echo = fx2_on and max(0, self.reverb_choice.current()) in ECHO_DEFAULTS
+        for w in (self.delay_scale, self.feedback_scale):
+            w.configure(state="normal" if echo else "disabled")
+        self.echo_hint.configure(text="" if not fx_on else
+                                 "Chaos echo and Delay only (libspu's settings)" if fx2_on else
+                                 "Needs the new soundtest.ps-exe and ps1transfer.exe")
 
     # ---------------------------------------------------------------- controls
 
@@ -604,7 +657,12 @@ class SoundPage(Page):
                 return default
         return dict(reverb=max(0, self.reverb_choice.current()), depth=self.depth.get(),
                     voices=max(0, self.rev_voices_choice.current()), transpose=number(self.transpose, 0, -24, 24),
-                    tempo=number(self.tempo, 100, 25, 400), mono=bool(self.mono.get()))
+                    tempo=number(self.tempo, 100, 25, 400), mono=bool(self.mono.get()),
+                    delay=number(self.delay, 127, 0, 127), feedback=number(self.feedback, 127, 0, 127))
+
+    def rev_channel_mask(self):
+        """SEQ channels whose notes have reverb, with "On: SEQ channels chosen"."""
+        return sum(1 << ch for ch, v in enumerate(self.rev_vars) if v.get())
 
     def mute_mask(self):
         """Channels muted: the M ones, and while some are solo every channel that isn't."""
@@ -615,12 +673,23 @@ class SoundPage(Page):
     def fx_changed(self, slider=False):
         fx = self.fx_values()
         self.depth_label.configure(text=str(fx["depth"]))
+        self.delay_label.configure(text=str(fx["delay"]))
+        self.feedback_label.configure(text=str(fx["feedback"]))
         self.app.settings.set("sound.fx", fx)
         if slider:          # (the slider sends many changes: sent together)
             if self.fx_job is None:
                 self.fx_job = self.after(VOLUME_SEND_MS, self.send_fx)
         else:
+            self.enable(self.live)      # (R buttons, delay and feedback: for some choices only)
             self.send_fx()
+
+    def reverb_changed(self):
+        """Chaos echo or Delay chosen: libspu's delay time and feedback for it (what a game gets without its own)."""
+        echo = ECHO_DEFAULTS.get(max(0, self.reverb_choice.current()))
+        if echo:
+            self.delay.set(echo[0])
+            self.feedback.set(echo[1])
+        self.fx_changed()
 
     def repeat_changed(self):
         self.app.settings.set("sound.repeat", bool(self.repeat.get()))
@@ -631,8 +700,16 @@ class SoundPage(Page):
         if not self.fx_version:
             return
         fx = self.fx_values()
-        self.send("fx %d %d %d %d %d %d %d" % (fx["reverb"], fx["depth"], fx["voices"], fx["transpose"], fx["tempo"],
-                                               1 if fx["mono"] else 0, self.mute_mask()))
+        line = "fx %d %d %d %d %d %d %d" % (fx["reverb"], fx["depth"], fx["voices"], fx["transpose"], fx["tempo"],
+                                          1 if fx["mono"] else 0, self.mute_mask())
+        if self.fx_version >= 2:
+            echo = fx["reverb"] in ECHO_DEFAULTS
+            line += " %d %d %d" % (fx["delay"] if echo else -1, fx["feedback"] if echo else -1,
+                                   self.rev_channel_mask())
+        elif fx["voices"] == REVERB_CHANNELS:     # (an older tester: as the bank's tones)
+            line = line.replace("fx %d %d %d " % (fx["reverb"], fx["depth"], fx["voices"]),
+                                "fx %d %d 0 " % (fx["reverb"], fx["depth"]), 1)
+        self.send(line)
 
     def reset_fx(self):
         self.reverb_choice.current(FX_DEFAULTS["reverb"])
@@ -641,6 +718,10 @@ class SoundPage(Page):
         self.transpose.set(FX_DEFAULTS["transpose"])
         self.tempo.set(FX_DEFAULTS["tempo"])
         self.mono.set(FX_DEFAULTS["mono"])
+        self.delay.set(FX_DEFAULTS["delay"])
+        self.feedback.set(FX_DEFAULTS["feedback"])
+        for v in self.rev_vars:
+            v.set(True)
         self.fx_changed()
 
     def mutes_changed(self):

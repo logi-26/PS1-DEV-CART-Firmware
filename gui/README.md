@@ -203,8 +203,12 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     lights while it sounds, with mute (M) and solo (S); **Repeat at the end** (off: a SEQ without loop markers plays
     once and stops, as a game plays a jingle; the loops inside the music play either way). Effects: SPU reverb (libspu's types: room, studio small/medium/
     large, hall, half echo, space echo, chaos echo, delay), its depth and the notes it is on (the tones with reverb in
-    the bank, all or none; the work area at the end of SPU RAM, refused when the samples use that space), SEQ
-    transpose and tempo, and mono. The effects are kept in the settings.
+    the bank, all, none, or the SEQ channels chosen (a row of channel buttons, shown with that choice); the work area at the end of SPU RAM,
+    refused when the samples use that space), for chaos echo and delay libspu's **Delay** time and **Feedback** (0-127,
+    as a game sets them with SpuSetReverbModeParam; libspu's defaults when chosen: 127 and 127 for chaos echo, 127 and
+    0 for delay), SEQ transpose and tempo, and mono. The effects are kept in the settings. The echo types feed most of
+    each echo back: with loud music on every channel the SPU clips their echoes (heard as crunchy, as on a game with
+    the same settings); a lower feedback, or reverb on fewer channels, keeps them clean.
     The **Convert** tab makes common audio files (WAV, and MP3, OGG, FLAC, M4A... with FFmpeg, as the Movie Tools
     page) and MIDI files into the PS1's formats (`audioconv.py`, also a command line tool), each then played by the
     tester with one click:

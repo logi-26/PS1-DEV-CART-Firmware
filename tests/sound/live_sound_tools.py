@@ -15,6 +15,7 @@ You can obtain one at https://mozilla.org/MPL/2.0/.
 """
 import argparse
 import os
+import struct
 import sys
 import time
 import traceback
@@ -48,7 +49,7 @@ class Live:
         page.line = spy
 
     def reset(self):
-        self.pos, self.state, self.chan, self.info, self.vh_hex = None, None, None, None, None
+        self.pos, self.state, self.chan, self.info, self.vh_hex, self.spu_hex = None, None, None, None, None, None
         self.errors, self.fx = [], None
 
     def seen(self, line):
@@ -69,6 +70,8 @@ class Live:
                 self.fx = (int(f[1]), int(f[2], 16))
             elif line.startswith("SNDVH"):
                 self.vh_hex = f[1] if len(f) > 1 else ""
+            elif line.startswith("SNDSPU"):
+                self.spu_hex = f[1] if len(f) > 1 else ""
             elif line.startswith("SNDERR"):
                 self.errors.append(line)
         except (ValueError, IndexError):
@@ -157,7 +160,8 @@ def scenario_seq(live, vh, vb, seq):
     yield sleep(1.5)
     live.check("transpose + mono: still playing", live.state["seq"] == 2 and not live.errors)
     live.send("fx 0 64 0 0 100 0 65535")
-    yield sleep(1.5)
+    # (the notes released: a tone with a long release goes on sounding for a while, e.g. 2 s in GOGO.SEQ's channel 5)
+    yield wait(lambda: live.chan and live.chan["active"] == 0, 5)
     live.check("all channels muted: none sounding", live.chan and live.chan["active"] == 0,
                "active %04X" % (live.chan or {}).get("active", -1))
     live.send("fx 0 64 0 0 100 0 0")
@@ -171,6 +175,27 @@ def scenario_seq(live, vh, vb, seq):
         want = rev if (fits or rev == 0) else -1
         live.check("reverb %s" % REVERBS[rev][0], live.chan and live.chan["rev"] == want,
                    "reported %s, expected %d (samples to %05X)" % ((live.chan or {}).get("rev"), want, samples_end))
+    # Chaos echo's delay time and feedback, reverb on chosen SEQ channels (SoundFx2): the SPU registers read back
+    live.check("effects version 2", live.fx[0] >= 2, "SNDFX %d" % live.fx[0])
+    if (SPU_RAM - REVERBS[8][1]) & ~1023 >= samples_end:
+        for delay, feedback, channels in ((60, 64, 0x0003), (127, 127, 0xFFFF), (1, 0, 0x8000)):
+            live.send("fx 8 64 3 0 100 0 0 %d %d %d" % (delay, feedback, channels))
+            yield sleep(1.0)
+            live.spu_hex = None
+            live.send("spuregs")
+            yield wait(lambda: live.spu_hex is not None, 5)
+            regs = struct.unpack("<256H", bytes.fromhex(live.spu_hex or "00" * 512)[:512])
+            want = (((delay << 13) // 127 - 1) & 0xFFFF, feedback * 0x8100 // 127 & 0xFFFF)
+            got = (regs[0x1D4 // 2], regs[0x1CE // 2])
+            live.check("chaos echo delay %d feedback %d: mLSAME, vWALL" % (delay, feedback), got == want,
+                       "%04X %04X, libspu %04X %04X" % (got + want))
+            # (EON: only voices of the chosen channels; the voices' channels aren't known here: none when none)
+            eon = regs[0x198 // 2] | regs[0x19A // 2] << 16
+            live.check("reverb on channels %04X: still playing" % channels,
+                       live.state["seq"] == 2 and (eon != 0 or channels != 0xFFFF or live.state["voices"] == 0),
+                       "EON %06X voices %06X" % (eon, live.state["voices"]))
+        live.send("fx 0 64 0 0 100 0 0")
+        yield sleep(1.0)
     live.send("vabread")
     yield wait(lambda: live.vh_hex is not None, 5)
     size = vabmod.Vab.load(vh).vh_size()

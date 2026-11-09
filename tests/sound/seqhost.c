@@ -173,6 +173,31 @@ int	main(int argc, char **argv)
 		else if (!strcmp(a, "--transpose"))	fx_transpose = atoi(v), i++;
 		else if (!strcmp(a, "--mute"))		fx_mute = strtoul(v, NULL, 0), i++;
 		else if (!strcmp(a, "--guard"))		guard = 1;
+		else if (!strcmp(a, "--echo") && (i + 4 < (uint32_t)argc))
+		{
+			// --echo TYPE DELAY FEEDBACK REV_CHANNELS: the reverb registers of TYPE with libspu's delay time and
+			// feedback (-1: default), then the voices sending to the reverb with "SEQ channels chosen": voice v on
+			// channel v (0-15), voice 16 and 17 the keyboard's (channel -1) with a tone with and without reverb
+			int	type = atoi(argv[i + 1]), r, v;
+
+			fx_delay = atoi(argv[i + 2]);
+			fx_feedback = atoi(argv[i + 3]);
+			fx_rev_channels = strtoul(argv[i + 4], NULL, 0);
+			for (r = 0; r < 32; r++)
+				SPU_REG(0x1F801DC0 + r * 2) = reverb_types[type].regs[r];
+			ReverbEcho(type);
+			printf("REGS");
+			for (r = 0; r < 32; r++)
+				printf(" %04X", SPU_REG(0x1F801DC0 + r * 2));
+			fx_rev_voices = 3;
+			eon = 0;
+			for (v = 0; v < 16; v++)
+				VoiceReverb(v, v, 0);
+			VoiceReverb(16, -1, 1);
+			VoiceReverb(17, -1, 0);
+			printf("\nEON %06X\n", (unsigned)eon);
+			return (0);
+		}
 		else								seq_path = a;
 	}
 	if (!seq_path)

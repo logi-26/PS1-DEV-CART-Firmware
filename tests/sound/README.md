@@ -10,7 +10,7 @@ the 32-bit MinGW of `buildtools`. What it plays is compared with `seqref.py`, a 
 SEQ format description.
 
 ```
-python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py -v
+python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py tests/sound/test_reverb.py -v
 ```
 
 - `test_seq_player.py`
@@ -25,6 +25,9 @@ python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py
     - each voice's pitch, volume and layered tones against the bank
     - the effects, seeks to several places
   - Damaged copies of those files (cut short, bytes changed): no hang, no read past the data.
+- `test_reverb.py`
+  - chaos echo's and delay's registers for each delay time and feedback, against libspu's SpuSetReverbModeParam
+  - the voices sending to the reverb with "SEQ channels chosen"
 - `test_converters.py`
   - MIDI → SEQ: notes and tempo map; loops from markers, CC 111, the whole music or a tick, played again as written
   - SEQ → MIDI → SEQ round trip
@@ -53,6 +56,7 @@ Drives the Manager's Sound Tools page with the console connected. Every scenario
 the checks:
 - start, time at real speed, seek, pause and resume
 - tempo, transpose, mono, mutes, reverb (and no room for it)
+- chaos echo's delay time and feedback, reverb on chosen channels (the SPU registers read back)
 - the VH read back, stop
 - the music's end (played again or stopped), an endless loop
 - a SEP's SEQs, a VAG alone, a VAB file alone

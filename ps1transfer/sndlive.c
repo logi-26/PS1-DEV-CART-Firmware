@@ -25,10 +25,12 @@
 *	vabwrite OFFSET HEX	VAB editor: the bytes written in the VH the tester plays (OFFSET in the VH, decimal; HEX:
 *					the bytes), applied at once to the notes sounding too: "SNDWROTE OFFSET SIZE"
 *	vabread			the VH as the tester has it: "SNDVH HEX"
-*	fx REVERB DEPTH VOICES TRANSPOSE TEMPO MONO MUTE	effects: reverb type (0 off, 1 room, 2-4 studio small/
-*					medium/large, 5 hall, 6 half echo, 7 space echo, 8 chaos echo, 9 delay), depth 0-127, notes with
-*					reverb (0 as the bank's tones, 1 all, 2 none), SEQ transpose (semitones), SEQ tempo (percent),
-*					mono 0/1, SEQ channels muted (bit n: channel n)
+*	fx REVERB DEPTH VOICES TRANSPOSE TEMPO MONO MUTE [DELAY FEEDBACK REV_CHANNELS]	effects: reverb type (0 off,
+*					1 room, 2-4 studio small/medium/large, 5 hall, 6 half echo, 7 space echo, 8 chaos echo, 9 delay),
+*					depth 0-127, notes with reverb (0 as the bank's tones, 1 all, 2 none, 3 the SEQ channels in
+*					REV_CHANNELS), SEQ transpose (semitones), SEQ tempo (percent), mono 0/1, SEQ channels muted (bit n:
+*					channel n); chaos echo and delay: libspu's delay time and feedback 0-127 (-1: libspu's default),
+*					REV_CHANNELS: bit n = SEQ channel n (SNDFX version 2)
 *	spuregs			the SPU registers (0x1F801C00-0x1F801DFF, read by the debug monitor version 10): "SNDSPU HEX"
 *	quit			the link ended: the music stopped, every sound silenced first (as stop)
 * Answers (start with "SND"): at the start "SNDLIVE ready", "SNDINFO KIND PROGRAMS VAB_PS VAB_TS VAB_VS VAG_RATE" (KIND 0:
@@ -104,7 +106,8 @@
 #define	TESTER_MAX_FILES	8
 #define	TESTER_FILE_SEQ		4
 #define	TESTER_FILE_MAGIC	0x54444E53	// "SNDT" (main.c: TESTER_MAGIC)
-#define	TESTER_HEADER_SIZE	0x100		// The files after the header (file table, SoundPos, SoundSync)
+#define	TESTER_HEADER_SIZE	0x120		// The files after the header (file table, SoundPos, SoundSync, SoundFx2)
+#define	TESTER_FX2_ADRS		0x80100100	// SoundFx2 in soundtest.c: version, rev_delay, rev_feedback, rev_channels
 #define	TESTER_SEQ_SPARE	0x801C0000	// soundtest.c: the second place of a reloaded SEQ
 #define	TESTER_SEQ_SPARE_SIZE	0x20000
 #define	POS_SIZE			(TESTER_SYNC_ADRS - TESTER_POS_ADRS)
@@ -117,6 +120,7 @@
 static int		usb_failures;
 static bool		pressed;			// Cross held from here
 static uint32_t	vh_adrs, vh_size;	// The VH the tester plays (VAB editor)
+static int		fx_version;			// SNDFX: the tester's effects (2: also SoundFx2)
 
 static uint32_t	Get32(const uint8_t *p)	{return (p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24));}
 static int16_t	Get16(const uint8_t *p)	{return ((int16_t)(p[0] | (p[1] << 8)));}
@@ -405,15 +409,22 @@ static void	VabWrite(void)
 	printf("SNDWROTE %u %u\n", offset, size);
 }
 
-// fx REVERB DEPTH VOICES TRANSPOSE TEMPO MONO MUTE: the values, then req_fx (the tester takes them at its next frame)
+// fx REVERB DEPTH VOICES TRANSPOSE TEMPO MONO MUTE [DELAY FEEDBACK REV_CHANNELS]: the values, then req_fx (the tester
+// takes them at its next frame). DELAY, FEEDBACK (-1: libspu's default) and REV_CHANNELS (VOICES 3) in SoundFx2, for a
+// tester that has it (SNDFX version 2)
 static void	Fx(void)
 {
-	int16_t	v[7];
+	int16_t	v[7], v2[3];
 	int		i;
 
 	for (i = 0; i < 7; i++)
 		v[i] = Arg((i == 1) ? 64 : ((i == 4) ? 100 : 0));
-	if (!Usb('U', (uint8_t *)v, TESTER_SYNC_ADRS + SYNC_FX, sizeof(v)))
+	v2[0] = Arg(-1);
+	v2[1] = Arg(-1);
+	v2[2] = Arg(0xFFFF);
+	if ((fx_version >= 2) && !Usb('U', (uint8_t *)v2, TESTER_FX2_ADRS + 2, sizeof(v2)))
+		printf("SNDERR USB error\n");
+	else if (!Usb('U', (uint8_t *)v, TESTER_SYNC_ADRS + SYNC_FX, sizeof(v)))
 		printf("SNDERR USB error\n");
 	else
 		Request(SYNC_REQ_FX, 1);
@@ -541,7 +552,8 @@ int	SndLive(void)
 	if ((vh_adrs < 0x80000000) || (vh_adrs >= 0x80200000) || (vh_size > MAX_HEX_BYTES))
 		vh_adrs = vh_size = 0;
 	printf("SNDVAB %08X %u\n", vh_adrs, vh_size);
-	printf("SNDFX %d %05X\n", Get16(sync + SYNC_FX_VERSION), Get32(sync + SYNC_SAMPLES_END));
+	fx_version = Get16(sync + SYNC_FX_VERSION);
+	printf("SNDFX %d %05X\n", fx_version, Get32(sync + SYNC_SAMPLES_END));
 	State(true);
 
 	while (!eof)

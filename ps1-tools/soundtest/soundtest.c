@@ -19,7 +19,8 @@
 * address in SoundSync.vh_adrs) at each key on, so the computer edits them there; req_refresh applies them at once to
 * the notes sounding too (volume, pan, pitch, ADSR).
 * Effects (the manager's Sound Tools, req_fx): SPU reverb (libspu's types, depth, on the notes of the tones with
-* reverb, all or none), SEQ transpose, tempo and channels muted, mono.
+* reverb, all, none or the SEQ channels chosen; chaos echo and delay: libspu's delay time and feedback), SEQ transpose,
+* tempo and channels muted, mono.
 *
 * Built with PSn00bSDK (open source) instead of PsyQ. PsyQ's libsnd is replaced by our own VAB player
 * (programs, tones with their key range, pitch from the center note and fine tune, volume and pan, ADSR) and SEQ player
@@ -79,7 +80,8 @@ typedef struct
 	int16_t		req_fx;				// 1: the fx_ values applied, -1: nothing
 	int16_t		fx_reverb;			// Reverb type (REVERB_ names), 0: off
 	int16_t		fx_depth;			// Reverb depth (output volume) 0-127
-	int16_t		fx_rev_voices;		// Notes with reverb: 0 as the bank's tones (mode 4), 1 all, 2 none
+	int16_t		fx_rev_voices;		// Notes with reverb: 0 as the bank's tones (mode 4), 1 all, 2 none, 3 the SEQ
+									// channels chosen (SoundFx2; the keyboard's as the bank's tones)
 	int16_t		fx_transpose;		// SEQ: semitones (-24..24)
 	int16_t		fx_tempo;			// SEQ: tempo in percent (25-400)
 	int16_t		fx_mono;			// 1: mono (every note at the center)
@@ -89,7 +91,7 @@ typedef struct
 	uint16_t	ch_used;			// SEQ channels with notes (bit n: channel n)
 	uint16_t	ch_active;			// SEQ channels with notes sounding
 	uint8_t		ch_prog[16];		// Program of each SEQ channel
-	uint16_t	fx_version;			// 1: the effects above (0: an older tester)
+	uint16_t	fx_version;			// 1: the effects above, 2: also SoundFx2 (0: an older tester)
 	uint32_t	samples_end;		// SPU RAM used by the samples (from 0 to this address)
 	int16_t		req_sep;			// SEQ of a SEP (multi-track file) played: its index, -1: nothing
 	int16_t		sep_count;			// SEQs in the music file (1: a SEQ, more: a SEP)
@@ -129,6 +131,23 @@ typedef struct
 #define	TESTER_SEQ_SPARE_SIZE	0x20000
 
 SYNC_CHECK(pos, sizeof(SoundPos) == 0x18);
+
+// More effects (SoundSync is full), after it: the data block header is 0x120 bytes for a ps1transfer that knows this
+// block (its files start after it; an older one puts the first file here: the block not used, fx_version 1). Written
+// by the computer before req_fx
+#define	TESTER_FX2_ADRS		(TESTER_DATA_ADRS + 0x100)
+#define	TESTER_FX2_END		(TESTER_DATA_ADRS + 0x120)
+
+typedef struct
+{
+	uint16_t	version;			// 1: this block (written by the tester)
+	int16_t		rev_delay;			// Chaos echo and delay: libspu's delay time 0-127, -1: libspu's default (127)
+	int16_t		rev_feedback;		// Chaos echo and delay: libspu's feedback 0-127, -1: libspu's default (127, 0)
+	uint16_t	rev_channels;		// fx_rev_voices 3: the SEQ channels whose notes have reverb (bit n: channel n)
+	uint8_t		spare[24];
+} SoundFx2;
+
+SYNC_CHECK(fx2, sizeof(SoundFx2) == TESTER_FX2_END - TESTER_FX2_ADRS);
 
 enum
 {
@@ -245,6 +264,9 @@ static int		quiet_load;
 static int		fx_reverb, fx_depth = 64, fx_rev_voices, fx_transpose, fx_tempo = 100, fx_mono;
 static uint16_t	fx_mute;
 static int		rev_active;				// Reverb type in use, -1: not enough SPU RAM
+static SoundFx2	*fx2;					// The computer's SoundFx2, NULL: not in the data block (older ps1transfer)
+static int		fx_delay = -1, fx_feedback = -1;	// Chaos echo, delay: libspu's delay time and feedback, -1 default
+static uint16_t	fx_rev_channels = 0xFFFF;		// fx_rev_voices 3: the SEQ channels with reverb
 static uint32_t	samples_end = 0x1010;	// SPU RAM used by the samples
 static uint32_t	eon;					// Voices in the reverb (shadow of 0x1F801D98/9A)
 
@@ -503,10 +525,12 @@ static void	VoicePitch(int v)
 	SPU_VOICE(v)[2] = PitchCents(44100, cents);
 }
 
-// Reverb of a voice: as its tone (VAB tone mode 4: reverb, as libsnd), all or no notes
-static void	VoiceReverb(int v, int bank_reverb)
+// Reverb of a voice: as its tone (VAB tone mode 4: reverb, as libsnd), all or no notes, or the SEQ channels chosen
+// (a note of the keyboard or a VAG, channel -1: as its tone)
+static void	VoiceReverb(int v, int channel, int bank_reverb)
 {
-	int	on = (fx_rev_voices == 1) || ((fx_rev_voices == 0) && bank_reverb);
+	int	on = (fx_rev_voices == 1) || ((fx_rev_voices == 0) && bank_reverb) ||
+			 ((fx_rev_voices == 3) && ((channel >= 0) ? (fx_rev_channels >> channel) & 1 : bank_reverb));
 
 	eon = on ? (eon | (1 << v)) : (eon & ~(1 << v));
 	SPU_REG(0x1F801D98) = eon;
@@ -531,6 +555,31 @@ static void	ReverbClear(void)
 	SpuWriteRam(start, NULL, 0x80000 - start);
 }
 
+#define	REVERB_CHAOS_ECHO	8	// libspu's SPU_REV_MODE_ECHO and SPU_REV_MODE_DELAY: delay time and feedback
+#define	REVERB_DELAY		9
+
+// Chaos echo and delay: libspu's delay time and feedback (SpuSetReverbModeParam, its SPU_REV_DELAYTIME and
+// SPU_REV_FEEDBACK). The table is libspu's at delay 127 and feedback 127 (chaos echo) or 0 (delay), its defaults; the
+// same sums as libspu, its quirks kept: feedback 127 is vWALL 8100h (-0.99), 126 down to 0 are +0.99 down to 0 (the
+// same echoes a game hears with them)
+static void	ReverbEcho(int type)
+{
+	const uint16_t	*r = reverb_types[type].regs;
+	int				delay = (fx_delay < 0) ? 127 : fx_delay;
+	int				feedback = (fx_feedback >= 0) ? fx_feedback : ((type == REVERB_CHAOS_ECHO) ? 127 : 0);
+	uint16_t		d13 = (delay << 13) / 127, d12 = (delay << 12) / 127;
+
+	if ((type != REVERB_CHAOS_ECHO) && (type != REVERB_DELAY))
+		return;
+	SPU_REG(0x1F801DC0 + 10 * 2) = d13 - r[0];	// mLSAME: delay - dAPF1
+	SPU_REG(0x1F801DC0 + 11 * 2) = d12 - r[1];	// mRSAME: - dAPF2
+	SPU_REG(0x1F801DC0 + 12 * 2) = d12 + r[13];	// mLCOMB1: + mRCOMB1
+	SPU_REG(0x1F801DC0 + 16 * 2) = d12 + r[17];	// dLSAME: + dRSAME
+	SPU_REG(0x1F801DC0 + 26 * 2) = d12 + r[28];	// mLAPF1: + mLAPF2
+	SPU_REG(0x1F801DC0 + 27 * 2) = d12 + r[29];	// mRAPF1: + mRAPF2
+	SPU_REG(0x1F801DC0 + 7 * 2) = (uint16_t)(feedback * 0x8100 / 127);	// vWALL
+}
+
 // Reverb type: the work area at the top of SPU RAM (zeroed: no old data heard), above the samples, else none (-1)
 static int	ReverbSet(int type)
 {
@@ -547,6 +596,7 @@ static int	ReverbSet(int type)
 		return (-1);
 	for (i = 0; i < 32; i++)
 		SPU_REG(0x1F801DC0 + i * 2) = reverb_types[type].regs[i];
+	ReverbEcho(type);
 	SPU_REG(0x1F801DA2) = base / 8;		// Work area address
 	SPU_REG(0x1F801D84) = SPU_REG(0x1F801D86) = fx_depth * 0x7FFF / 127;	// Depth: reverb output volume
 	SPU_REG(0x1F801DAA) |= 1 << 7;		// Reverb master on
@@ -611,7 +661,7 @@ static void	NoteOn(int channel, int prog, int note, int velocity)
 		SPU_VOICE(v)[3] = vag_adrs[tone->vag] / 8;
 		SPU_VOICE(v)[4] = tone->adsr1;
 		SPU_VOICE(v)[5] = tone->adsr2;
-		VoiceReverb(v, tone->mode & 4);
+		VoiceReverb(v, channel, tone->mode & 4);
 		SPU_KEY_ON(v);
 	}
 }
@@ -1264,7 +1314,7 @@ static void	VagKeyOn(int note, int volume)
 	v[3] = SPU_DATA_ADRS / 8;					// Start address
 	v[4] = 0x000F;								// ADSR: fastest attack, sustain level max
 	v[5] = 0x0008;								// ADSR: sustain held, short release
-	VoiceReverb(VAG_VOICE, 1);					// (no tone: reverb unless "no notes")
+	VoiceReverb(VAG_VOICE, -1, 1);				// (no tone: reverb unless "no notes")
 	SPU_KEY_ON(VAG_VOICE);
 }
 
@@ -1280,6 +1330,7 @@ static void	SyncInit(SoundSync *live)
 	int	i;
 
 	SoundPos	*pos = (SoundPos *)TESTER_POS_ADRS;
+	TesterData	*td = (TesterData *)TESTER_DATA_ADRS;
 
 	memset(pos, 0, sizeof(SoundPos));
 	pos->req_seek = -1;
@@ -1312,7 +1363,20 @@ static void	SyncInit(SoundSync *live)
 	live->fx_tempo = fx_tempo;
 	live->ch_used = seq_channels;
 	live->samples_end = samples_end;
-	live->fx_version = 1;
+	// SoundFx2 after the header's SoundSync, if no file is there (an older ps1transfer's header ends at 0x100)
+	fx2 = (SoundFx2 *)TESTER_FX2_ADRS;
+	if (td->magic == TESTER_MAGIC)
+		for (i = 0; (i < (int)td->count) && (i < TESTER_MAX_FILES); i++)
+			if (td->files[i].adrs < TESTER_FX2_END)
+				fx2 = NULL;
+	if (fx2)
+	{
+		memset(fx2, 0, sizeof(SoundFx2));
+		fx2->rev_delay = fx2->rev_feedback = -1;
+		fx2->rev_channels = 0xFFFF;
+		fx2->version = 1;
+	}
+	live->fx_version = fx2 ? 2 : 1;
 	live->magic = TESTER_SYNC_MAGIC;
 }
 
@@ -1320,30 +1384,49 @@ static void	SyncInit(SoundSync *live)
 static void	ApplyFx(SoundSync *live)
 {
 	int			type = Clamp(live->fx_reverb, 0, REVERB_TYPES - 1), depth = Clamp(live->fx_depth, 0, 127);
-	int			voices_mode = Clamp(live->fx_rev_voices, 0, 2), transpose = Clamp(live->fx_transpose, -24, 24);
-	int			mono = live->fx_mono ? 1 : 0, v, c;
-	uint16_t	muted = live->fx_mute & ~fx_mute;
+	int			voices_mode = Clamp(live->fx_rev_voices, 0, fx2 ? 3 : 2), transpose = Clamp(live->fx_transpose, -24, 24);
+	int			mono = live->fx_mono ? 1 : 0, v, c, delay = -1, feedback = -1;
+	uint16_t	muted = live->fx_mute & ~fx_mute, rev_channels = 0xFFFF;
 
+	if (fx2)
+	{
+		delay = (fx2->rev_delay < 0) ? -1 : Clamp(fx2->rev_delay, 0, 127);
+		feedback = (fx2->rev_feedback < 0) ? -1 : Clamp(fx2->rev_feedback, 0, 127);
+		rev_channels = fx2->rev_channels;
+	}
 	fx_tempo = Clamp(live->fx_tempo, 25, 400);
 	if ((type != fx_reverb) || ((rev_active < 0) && type))
 	{
 		fx_depth = depth;
 		fx_reverb = type;
+		fx_delay = delay;
+		fx_feedback = feedback;
 		rev_active = ReverbSet(type);
 	}
-	else if (depth != fx_depth)
+	else
 	{
-		fx_depth = depth;
-		if (rev_active > 0)
-			SPU_REG(0x1F801D84) = SPU_REG(0x1F801D86) = fx_depth * 0x7FFF / 127;
+		if (depth != fx_depth)
+		{
+			fx_depth = depth;
+			if (rev_active > 0)
+				SPU_REG(0x1F801D84) = SPU_REG(0x1F801D86) = fx_depth * 0x7FFF / 127;
+		}
+		if ((delay != fx_delay) || (feedback != fx_feedback))	// (as libspu: on the reverb running)
+		{
+			fx_delay = delay;
+			fx_feedback = feedback;
+			if (rev_active > 0)
+				ReverbEcho(rev_active);
+		}
 	}
-	if (voices_mode != fx_rev_voices)
+	if ((voices_mode != fx_rev_voices) || (rev_channels != fx_rev_channels))
 	{
 		fx_rev_voices = voices_mode;
+		fx_rev_channels = rev_channels;
 		for (v = 0; v < VOICES - 1; v++)
 			if (voices[v].tone)
-				VoiceReverb(v, voices[v].tone->mode & 4);
-		VoiceReverb(VAG_VOICE, 1);
+				VoiceReverb(v, voices[v].channel, voices[v].tone->mode & 4);
+		VoiceReverb(VAG_VOICE, -1, 1);
 	}
 	fx_mute = live->fx_mute;
 	for (c = 0; c < 16; c++)		// (newly muted: its notes released)
@@ -1376,6 +1459,17 @@ static void	SeqPlay(int on)
 		SeqStop();
 }
 
+// A request of the computer taken: its value, the field set back to -1 (nothing asked)
+static int	Take(int16_t *field)
+{
+	volatile int16_t	*f = field;
+	int					v = *f;
+
+	if (v != -1)
+		*f = -1;
+	return (v);
+}
+
 int	main(void)
 {
 	TesterData	*td = (TesterData *)TESTER_DATA_ADRS;
@@ -1384,6 +1478,8 @@ int	main(void)
 	uint32_t	pad, opad = 0, voice_bits;
 	uint16_t	ch_active;
 	int			prog_index = 0, note = 60, i, side = 0, is_pal, playing_note = 0, active;
+	int			req_prog, req_note, req_volume, req_seq, req_stop, req_refresh, req_fx, req_sep, req_repeat, req_pause;
+	int32_t		req_seek;
 
 	*((volatile uint32_t *)REMOTE_PAD_ADRS) = 0;
 
@@ -1425,28 +1521,44 @@ int	main(void)
 		if (start_clear && !--start_clear && !fx_reverb)
 			rev_active = ReverbSet(0);
 
-		// Changes asked by the computer (before the controller: a note set then played from there is this note)
-		if ((live->req_prog >= 0) && (live->req_prog < n_programs))
-			prog_index = live->req_prog;
-		if ((live->req_note >= 0) && (live->req_note <= 127))
-			note = live->req_note;
-		if ((live->req_volume >= 0) && (live->req_volume <= 127))
-			SetVolume(live->req_volume);
-		if (live->req_seq >= 0)
-			SeqPlay(live->req_seq);
-		if (live->req_stop > 0)
+		// Changes asked by the computer (before the controller: a note set then played from there is this note). Each
+		// one taken (set back to -1) before any is applied: one the computer asks while they are (a reverb change
+		// clears up to 96 KB of SPU RAM) is kept for the next frame (all set back to -1 after them, a Start asked
+		// just after a reverb was lost)
+		req_prog = Take(&live->req_prog);
+		req_note = Take(&live->req_note);
+		req_volume = Take(&live->req_volume);
+		req_seq = Take(&live->req_seq);
+		req_stop = Take(&live->req_stop);
+		req_refresh = Take(&live->req_refresh);
+		req_fx = Take(&live->req_fx);
+		req_sep = Take(&live->req_sep);
+		req_repeat = Take(&live->req_repeat);
+		req_seek = pos->req_seek;
+		pos->req_seek = -1;
+		req_pause = Take(&pos->req_pause);
+		if ((req_prog >= 0) && (req_prog < n_programs))
+			prog_index = req_prog;
+		if ((req_note >= 0) && (req_note <= 127))
+			note = req_note;
+		if ((req_volume >= 0) && (req_volume <= 127))
+			SetVolume(req_volume);
+		if (req_seq >= 0)
+			SeqPlay(req_seq);
+		if (req_stop > 0)
 		{
 			SeqStop();
 			AllNotesOff();
 		}
-		if (live->req_refresh > 0)
+		if (req_refresh > 0)
 			RefreshVoices();
-		if (live->req_fx > 0)
+		if (req_fx > 0)
 			ApplyFx(live);
-		if (live->req_sep >= 0)
-			SeqSelect(live->req_sep);
-		if (live->req_repeat >= 0)
-			seq_repeat = live->req_repeat ? 1 : 0;
+		if (req_sep >= 0)
+			SeqSelect(req_sep);
+		if (req_repeat >= 0)
+			seq_repeat = req_repeat ? 1 : 0;
+		// (req_reload set back once done: the computer waits for it)
 		if (pos->req_reload > 0)		// (first: a seek asked with it is in the new SEQ)
 		{
 			if (pos->req_reload == 3)
@@ -1459,15 +1571,11 @@ int	main(void)
 				SeqReload(pos->req_reload, pos->reload_size);
 			pos->req_reload = -1;
 		}
-		if (pos->req_seek >= 0)
-			SeqSeek(pos->req_seek);
-		if (pos->req_pause >= 0)
-			SeqPause(pos->req_pause);
-		pos->req_seek = -1;
-		pos->req_pause = -1;
+		if (req_seek >= 0)
+			SeqSeek(req_seek);
+		if (req_pause >= 0)
+			SeqPause(req_pause);
 		pos->req_reload = -1;
-		live->req_fx = live->req_sep = live->req_repeat = -1;
-		live->req_prog = live->req_note = live->req_volume = live->req_seq = live->req_stop = live->req_refresh = -1;
 
 		pad = (PadRead(1) & 0xFFFF) | *((volatile uint32_t *)REMOTE_PAD_ADRS);
 #define	PRESSED(_b_)	((pad & (_b_)) && !(opad & (_b_)))

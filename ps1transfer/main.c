@@ -2099,7 +2099,7 @@ out:
 #define	TESTER_DATA_END		0x801E0000	// Below the PS1 DEV CART firmware (0x801EF000) which receives the data
 #define	TESTER_MAGIC		0x54444E53	// "SNDT"
 #define	TESTER_MAX_FILES	8
-#define	TESTER_HEADER_SIZE	0x100
+#define	TESTER_HEADER_SIZE	0x120	// File table, SoundPos, SoundSync, SoundFx2 (soundtest.c)
 
 enum
 {
