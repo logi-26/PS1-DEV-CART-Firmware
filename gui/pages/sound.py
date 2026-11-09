@@ -27,7 +27,7 @@ from widgets import FileList, ScrollFrame
 SOUND_TYPES = [("Sound files", "*.vh *.vb *.vab *.seq *.sep *.vag"), ("All files", "*.*")]
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 PROTOCOL = ("SNDLIVE", "SNDINFO", "SNDPROGS", "SNDSTATE", "SNDVAB", "SNDWROTE", "SNDVH", "SNDSPU", "SNDFX",
-            "SNDCHAN")                                              # Answers of
+            "SNDCHAN", "SNDPOS")                                            # Answers of
                                                                     # ps1transfer -sndlive (not in the log)
 VOICES = 24
 QUIET = 0.6             # s: a control changed here is not set back by the console's state meanwhile
@@ -39,6 +39,8 @@ BLACK_OF = ((1, 0), (3, 1), (6, 3), (8, 4), (10, 5))   # Black key semitone, whi
 KEY_COLORS = {"white": "#f4f4f4", "black": "#202020", "note": "#4fc1ff", "held": "#2b9348", "outline": "#606060"}
 LIGHT_ON, LIGHT_OFF = "#3fb950", "#2c3a2f"
 SEQ_CHANNELS = 16
+TIMELINE_H = 18
+TIMELINE_COLORS = {"trough": "#3a3f44", "done": "#4fc1ff", "paused": "#e0a030", "handle": "#f4f4f4"}
 # SPU reverb types (soundtest.c reverb_types: libspu's modes), work area at the top of SPU RAM (bytes)
 REVERBS = [("Off", 0), ("Room", 0x26C0), ("Studio small", 0x1F40), ("Studio medium", 0x4840),
            ("Studio large", 0x6FE0), ("Hall", 0xADE0), ("Half echo", 0x3C00), ("Space echo", 0xF6C0),
@@ -113,11 +115,30 @@ class SoundPage(Page):
         self.seq_button = tb.Button(row, text="Start", bootstyle="success-outline", width=10, command=self.toggle_seq)
         self.seq_button.pack(side="left")
         self.controls.append(self.seq_button)
+        self.pause_button = tb.Button(row, text="Pause", bootstyle="warning-outline", width=8, command=self.toggle_pause,
+                                      state="disabled")
+        self.pause_button.pack(side="left", padx=(6, 0))
         self.seq_label = tb.Label(row, text="", bootstyle="secondary")
         self.seq_label.pack(side="left", padx=10)
         b = tb.Button(row, text="Unmute all", bootstyle="secondary-outline", command=self.unmute_all)
         b.pack(side="right")
         self.controls.append(b)
+        # Position in the music: click or drag on the bar to play from there (SNDPOS: a tester with seek and pause)
+        row = tb.Frame(box)
+        row.pack(fill="x", pady=(6, 0))
+        self.pos_label = tb.Label(row, text="0:00", width=6, anchor="e")
+        self.pos_label.pack(side="left")
+        self.timeline = tk.Canvas(row, height=TIMELINE_H, highlightthickness=0, background="#202020",
+                                  cursor="hand2")
+        self.timeline.pack(side="left", fill="x", expand=True, padx=6)
+        self.len_label = tb.Label(row, text="0:00", width=6, anchor="w")
+        self.len_label.pack(side="left")
+        self.timeline.bind("<Configure>", lambda e: self.draw_timeline())
+        self.timeline.bind("<ButtonPress-1>", self.timeline_drag)
+        self.timeline.bind("<B1-Motion>", self.timeline_drag)
+        self.timeline.bind("<ButtonRelease-1>", self.timeline_release)
+        self.pos = dict(ms=0, len=0, paused=0, known=False)   # Last SNDPOS
+        self.dragging = None        # ms shown while the bar is dragged
         # At the end of the music: played again, or once (as a game plays a jingle: its code decides; the loops
         # inside the music are played either way)
         self.repeat = tk.BooleanVar(value=self.app.settings.get("sound.repeat", True) is not False)
@@ -164,6 +185,7 @@ class SoundPage(Page):
         box = self.section("Instrument and note  (click and hold a key, or Play, to play it: as Cross held on the "
                            "controller)", left)
         box.pack(fill="x", pady=(0, 8))
+        note_box = box
         row = tb.Frame(box)
         row.pack(fill="x", pady=(0, 6))
         tb.Label(row, text="Instrument", width=10).pack(side="left")
@@ -205,7 +227,7 @@ class SoundPage(Page):
         # Effects (kept in the settings, sent to the tester each time it starts)
         fx = dict(FX_DEFAULTS, **(self.app.settings.get("sound.fx") or {}))
         box = self.section("Effects", left)
-        box.pack(fill="x", pady=(0, 8))
+        box.pack(fill="x", pady=(0, 8), before=note_box)      # (between the SEQ music and the instrument)
         self.fx_controls = []
         grid = tb.Frame(box)
         grid.pack(fill="x")
@@ -328,11 +350,16 @@ class SoundPage(Page):
         self.show_reverb(None)
         self.show_channels(0, 0, [])
         self.show_sep(0, 0)
+        self.pos = dict(ms=0, len=0, paused=0, known=False)
+        self.dragging = None
+        self.show_pos()
 
     def send(self, line):
         return self.live and self.app.runner.send(line)
 
     def line(self, line):
+        if not line.startswith("SND") and "SND" in line:     # (after the PS1's text, without its line end)
+            line = line[line.index("SND"):]
         fields = line.split()
         if line.startswith("SNDLIVE ready"):
             self.live = True
@@ -373,6 +400,15 @@ class SoundPage(Page):
             self.show_channels(used, active, progs)
             if len(fields) >= 6 + SEQ_CHANNELS:
                 self.show_sep(int(fields[4 + SEQ_CHANNELS]), int(fields[5 + SEQ_CHANNELS]))
+        elif line.startswith("SNDPOS") and len(fields) >= 4:
+            try:
+                ms, length, paused = int(fields[1]), int(fields[2]), int(fields[3])
+            except ValueError:
+                return
+            if time.time() - self.changed.get("pos", 0) < QUIET:   # (a seek just asked: the old position)
+                ms = self.pos["ms"]
+            self.pos = dict(ms=ms, len=length, paused=paused, known=True)
+            self.show_pos()
         elif line.startswith("SNDERR"):
             self.status.configure(text=line[7:])
 
@@ -402,8 +438,11 @@ class SoundPage(Page):
                                   bootstyle="danger-outline" if seq == 2 else "success-outline")
         if self.live:
             self.seq_button.configure(state="normal" if seq else "disabled")
+        paused = seq == 2 and self.pos["paused"]
         self.seq_label.configure(text="No SEQ file" if not seq else
-                                 ("Playing: bar %d, loop %d" % (bar, loop)) if seq == 2 else "Stopped")
+                                 ("%s: bar %d, loop %d" % ("Paused" if paused else "Playing", bar, loop))
+                                 if seq == 2 else "Stopped")
+        self.show_pos()
         self.draw_lights(voices)
         self.draw_keys(playing=note if playing else None)
 
@@ -491,6 +530,69 @@ class SoundPage(Page):
 
     def toggle_seq(self):
         self.send("seq %d" % (0 if self.state.get("seq") == 2 else 1))
+
+    def toggle_pause(self):
+        if self.state.get("seq") == 2:
+            self.send("pause %d" % (0 if self.pos["paused"] else 1))
+
+    # ---------------------------------------------------------------- SEQ position (timeline)
+
+    @staticmethod
+    def time_text(ms):
+        s = max(0, ms) // 1000
+        return "%d:%02d" % (s // 60, s % 60)
+
+    def show_pos(self):
+        """The position (SNDPOS), the Pause button: shown, unless the bar is dragged."""
+        seq = self.state.get("seq", 0)
+        on = self.live and self.pos["known"] and seq > 0
+        self.pause_button.configure(text="Resume" if seq == 2 and self.pos["paused"] else "Pause",
+                                    state="normal" if on and seq == 2 else "disabled")
+        self.timeline.configure(cursor="hand2" if on else "")
+        if self.dragging is None:
+            self.pos_label.configure(text=self.time_text(self.pos["ms"] if seq == 2 else 0))
+        self.len_label.configure(text=self.time_text(self.pos["len"]) if self.pos["known"] else "-:--")
+        self.draw_timeline()
+
+    def draw_timeline(self):
+        c = self.timeline
+        c.delete("all")
+        w, h = c.winfo_width(), TIMELINE_H
+        if w < 20:
+            return
+        x0, x1, y = 6, w - 6, h // 2
+        length = self.pos["len"]
+        ms = self.dragging if self.dragging is not None else \
+            (self.pos["ms"] if self.state.get("seq") == 2 else 0)
+        x = x0 + (x1 - x0) * min(1.0, ms / length) if length > 0 else x0
+        c.create_rectangle(x0, y - 3, x1, y + 3, fill=TIMELINE_COLORS["trough"], outline="")
+        color = TIMELINE_COLORS["paused"] if self.pos["paused"] else TIMELINE_COLORS["done"]
+        if x > x0:
+            c.create_rectangle(x0, y - 3, x, y + 3, fill=color, outline="")
+        if self.live and self.pos["known"] and length > 0:
+            c.create_oval(x - 6, y - 6, x + 6, y + 6, fill=TIMELINE_COLORS["handle"], outline=color, width=2)
+
+    def timeline_ms(self, event):
+        w = self.timeline.winfo_width()
+        frac = (event.x - 6) / max(1, w - 12)
+        return int(max(0.0, min(1.0, frac)) * self.pos["len"])
+
+    def timeline_drag(self, event):
+        if not (self.live and self.pos["known"] and self.pos["len"] > 0 and self.state.get("seq")):
+            return
+        self.dragging = self.timeline_ms(event)
+        self.pos_label.configure(text=self.time_text(self.dragging))
+        self.draw_timeline()
+
+    def timeline_release(self, event):
+        if self.dragging is None:
+            return
+        ms = min(self.timeline_ms(event), max(0, self.pos["len"] - 1))
+        self.dragging = None
+        self.changed["pos"] = time.time()
+        self.pos["ms"] = ms
+        self.send("seek %d" % ms)
+        self.show_pos()
 
     # ---------------------------------------------------------------- effects and SEQ channels
 

@@ -48,9 +48,13 @@ class Settings:
         self.data = json.loads(json.dumps(DEFAULTS))
         try:
             with open(self.path, encoding="utf-8") as f:
-                self.data.update(json.load(f))
+                saved = json.load(f)
         except (OSError, ValueError):
-            pass
+            saved = None
+        if isinstance(saved, dict):     # (a damaged file: the defaults, and each part of the wrong kind)
+            for key, value in saved.items():
+                if key not in DEFAULTS or isinstance(value, type(DEFAULTS[key])):
+                    self.data[key] = value
 
     def get(self, key, default=None):
         return self.data.get(key, default)
@@ -74,9 +78,13 @@ class Settings:
         self.data["recent"][key] = ([value] + items)[:MAX_RECENT]
 
     def save(self):
+        # (written next to it, then put in its place: the Manager closed or the computer stopped while it is written,
+        # the settings of before are kept, not a cut file the next start would drop)
+        tmp = self.path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2)
+            os.replace(tmp, self.path)
         except OSError:
             pass

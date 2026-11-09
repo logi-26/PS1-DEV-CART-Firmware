@@ -1174,12 +1174,56 @@ typedef struct
 	int32_t		area[4], offset[2];	// Draw area (top left, bottom right) and offset
 } FrameEnv;
 
+// Words of the GP0 command starting with w (a polyline: up to its end mark, read from adrs on; count: the packet's
+// words left, the most it can take). The draw area / offset commands are looked for in the commands' first words only
+// (a vertex, colour or texture word, or image data, starting with E3-E5 isn't one: it moved the outlines).
+static int	GpuCommandWords(uint32_t w, uint32_t adrs, int count)
+{
+	uint32_t	cmd = w >> 24, v;
+	int			n, verts;
+
+	if ((cmd >= 0x20) && (cmd <= 0x3F))			// Polygon: color, per vertex [color] xy [uv]
+	{
+		verts = (cmd & 0x08) ? 4 : 3;
+		n = 1 + verts * ((cmd & 0x04) ? 2 : 1) + ((cmd & 0x10) ? verts - 1 : 0);
+	}
+	else if ((cmd >= 0x40) && (cmd <= 0x5F))	// Line, polyline (up to its 0x5xxx5xxx end mark)
+	{
+		if (!(cmd & 0x08))
+			n = (cmd & 0x10) ? 4 : 3;
+		else
+			for (n = 1; n < count; n++)
+				if (RamWord(adrs + n * 4, &v) && (n >= 3) && ((v & 0xF000F000) == 0x50005000))
+				{
+					n++;
+					break;
+				}
+	}
+	else if ((cmd >= 0x60) && (cmd <= 0x7F))	// Rectangle: color, xy, [uv], [size]
+		n = 2 + ((cmd & 0x04) ? 1 : 0) + (((cmd >> 3) & 3) ? 0 : 1);
+	else if (cmd == 0x02)
+		n = 3;
+	else if ((cmd >= 0x80) && (cmd <= 0x9F))
+		n = 4;
+	else if ((cmd >= 0xA0) && (cmd <= 0xBF))	// Image to VRAM: its data after it
+	{
+		n = 3;
+		if (RamWord(adrs + 8, &v))
+			n += (int)(((v & 0xFFFF) * (v >> 16) + 1) / 2);
+	}
+	else if ((cmd >= 0xC0) && (cmd <= 0xDF))
+		n = 3;
+	else
+		n = 1;
+	return ((n < 1) ? 1 : n);
+}
+
 // The GPU linked list from start: packets of "words << 24 | next" headers, the end at 0xFFFFFF. False if it isn't one
 // (another DMA use). print: its packets as FRMPKT lines; E3/E4/E5 commands met: the draw area and offset in env.
 static bool	WalkList(uint32_t start, int n, bool print, FrameEnv *env)
 {
 	uint32_t	adrs = start & 0x1FFFFC, hdr, w, next;
-	int			nodes, i, count;
+	int			nodes, i, count, cmd_at;
 	char		line[16 * 9 + 64];
 
 	if ((start & 3) || ((start & 0xFFFFFF) >= 0x200000))
@@ -1196,19 +1240,23 @@ static bool	WalkList(uint32_t start, int n, bool print, FrameEnv *env)
 		{
 			if (print)
 				sprintf(line, "FRMPKT %d %08X", n, 0x80000000 | adrs);
-			for (i = 1; i <= count; i++)
+			for (i = cmd_at = 1; i <= count; i++)
 			{
 				if (!RamWord(adrs + i * 4, &w))
 					return (false);
-				if (print && ((w >> 24) == 0xE3))
-					env->area[0] = w & 0x3FF, env->area[1] = (w >> 10) & 0x3FF;
-				else if (print && ((w >> 24) == 0xE4))
-					env->area[2] = w & 0x3FF, env->area[3] = (w >> 10) & 0x3FF;
-				else if (print && ((w >> 24) == 0xE5))
+				if (print && (i == cmd_at))		// A command's first word (the others: its data)
 				{
-					env->offset[0] = ((int32_t)(w << 21)) >> 21;		// 11-bit signed
-					env->offset[1] = ((int32_t)(w << 10)) >> 21;
-					env->known = true;
+					cmd_at += GpuCommandWords(w, adrs + i * 4, count - i + 1);
+					if ((w >> 24) == 0xE3)
+						env->area[0] = w & 0x3FF, env->area[1] = (w >> 10) & 0x3FF;
+					else if ((w >> 24) == 0xE4)
+						env->area[2] = w & 0x3FF, env->area[3] = (w >> 10) & 0x3FF;
+					else if ((w >> 24) == 0xE5)
+					{
+						env->offset[0] = ((int32_t)(w << 21)) >> 21;		// 11-bit signed
+						env->offset[1] = ((int32_t)(w << 10)) >> 21;
+						env->known = true;
+					}
 				}
 				if (print && (i <= 16))
 					sprintf(line + strlen(line), " %08X", w);

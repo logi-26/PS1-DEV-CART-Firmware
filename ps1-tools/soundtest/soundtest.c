@@ -106,6 +106,30 @@ SYNC_CHECK(sep, __builtin_offsetof(SoundSync, req_sep) == 120);
 SYNC_CHECK(repeat, __builtin_offsetof(SoundSync, req_repeat) == 126);
 SYNC_CHECK(size, sizeof(SoundSync) == 128);	// (the data block header's free end: 0x80 bytes)
 
+// The SEQ position (Manager: its progress bar, seek and pause), in the header's free bytes before SoundSync (the file
+// table ends at 0x68; ps1transfer writes them as 0, a tester without it leaves version 0)
+#define	TESTER_POS_ADRS		(TESTER_DATA_ADRS + 0x68)
+
+typedef struct
+{
+	uint32_t	pos_ms;				// Position in the music (from its start, back at a loop's start when it jumps)
+	uint32_t	len_ms;				// Length of the music (to its end, its loops played once)
+	int32_t		req_seek;			// Asked by the computer: played from this time (ms), -1: nothing
+	int16_t		req_pause;			// 1: pause, 0: resume, -1: nothing
+	int16_t		paused;				// 1: the music is paused
+	uint16_t	version;			// 1: this block, 2: also the SEQ reload, 3: also the bank reload
+	int16_t		req_reload;			// A new SEQ written by the computer, played from the same time: 1 at the SEQ
+									// file's address, 2 at TESTER_SEQ_SPARE (the computer writes the one not played);
+									// 3: new sound files (the file table and the files rewritten, BankReload)
+	uint32_t	reload_size;		// Its size (3: 1 the music stays paused)
+} SoundPos;
+
+// The second place of a reloaded SEQ (the end of the data block: ps1transfer checks the files end below it)
+#define	TESTER_SEQ_SPARE	0x801C0000
+#define	TESTER_SEQ_SPARE_SIZE	0x20000
+
+SYNC_CHECK(pos, sizeof(SoundPos) == 0x18);
+
 enum
 {
 	FILE_VH = 1,
@@ -215,6 +239,9 @@ static const struct
 static uint32_t	seq_notes;			// Notes the music has played since its start
 static int		seq_repeat = 1;		// At the end of the music: played again (1) or stopped (0)
 static int		start_clear = 3;	// Frames before the reverb work area is cleared at the start
+// A reload while the computer is linked (BankReload): nothing printed (the text and the computer's transfers would
+// meet on the USB link: ps1transfer reads the state meanwhile)
+static int		quiet_load;
 static int		fx_reverb, fx_depth = 64, fx_rev_voices, fx_transpose, fx_tempo = 100, fx_mono;
 static uint16_t	fx_mute;
 static int		rev_active;				// Reverb type in use, -1: not enough SPU RAM
@@ -383,12 +410,15 @@ static int	LoadVab(uint8_t *vh, uint8_t *vb)
 		vb_size = 0x80000 - SPU_DATA_ADRS;	// (bank too big for the SPU RAM: the end is lost)
 	SpuUpload(SPU_DATA_ADRS, vb, vb_size);
 	samples_end = SPU_DATA_ADRS + vb_size;
-	printf("VAB: %d programs, %d tones, %d VAGs, %d bytes in SPU RAM\n", vab->ps, vab->ts, vab->vs, (int)vb_size);
+	if (!quiet_load)
+		printf("VAB: %d programs, %d tones, %d VAGs, %d bytes in SPU RAM\n", vab->ps, vab->ts, vab->vs, (int)vb_size);
 	return (1);
 }
 
-// Tone of a program for a note (tones have a note range), NULL if none
-static VagAtr	*FindTone(int prog, int note)
+// Tones of a program for a note (tones have a note range): every tone whose range has the note, as libsnd plays them
+// (layered sounds: e.g. Alundra's tones over the whole range on top of one per range), from tone 'from' on; NULL if no
+// more. *next: the tone to look from for the next one
+static VagAtr	*FindTone(int prog, int note, int from, int *next)
 {
 	VagAtr	*t;
 	int		i;
@@ -396,9 +426,12 @@ static VagAtr	*FindTone(int prog, int note)
 	if (!vab || (prog < 0) || (prog > 127) || (prog_block[prog] < 0))
 		return (NULL);
 	t = tone_atr + prog_block[prog] * 16;
-	for (i = 0; i < prog_atr[prog].tones; i++)
+	for (i = from; i < prog_atr[prog].tones; i++)
 		if ((note >= t[i].min) && (note <= t[i].max))
+		{
+			*next = i + 1;
 			return (&t[i]);
+		}
 	return (NULL);
 }
 
@@ -414,6 +447,7 @@ typedef struct
 	int		prog;
 	VagAtr	*tone;
 	uint32_t	age;
+	int		bend;		// Pitch bend of the note (-8192..8191): 0 at its key on, the channel's bends while it sounds
 } Voice;
 
 typedef struct
@@ -455,11 +489,13 @@ static int	PlayedNote(int channel, int note)
 
 // Pitch: 44100 Hz at the tone's center note, its fine tune, pitch bend: the tone's range in semitones, pbmin down and
 // pbmax up; 0: no bend (as the games' libsnd: a default of 2 semitones put notes out of tune, commercial SEQs leave a
-// channel's bend off-centre on tones with no range, e.g. PoPoLoCrois and Legend of Legaia)
+// channel's bend off-centre on tones with no range, e.g. PoPoLoCrois and Legend of Legaia). The bend is the note's own:
+// as libsnd, a bend event bends the notes sounding, a new note starts unbent (Alundra: a quick fall or rise on one
+// note, the bend set back only at the next one's; the notes between were heard 1 or 2 semitones off)
 static void	VoicePitch(int v)
 {
 	Voice	*vo = &voices[v];
-	int		bend = (vo->channel >= 0) ? channels[vo->channel].bend : 0;
+	int		bend = vo->bend;
 	int		range = (bend < 0) ? vo->tone->pbmin : vo->tone->pbmax;
 	int		cents = (PlayedNote(vo->channel, vo->note) - vo->tone->center) * 100 + vo->tone->shift * 100 / 128 +
 					bend * range * 100 / 8192;
@@ -550,29 +586,34 @@ static int	FreeVoice(void)
 	return (best);
 }
 
+// A voice for each tone of the program that has the note (layered tones: several voices, released together)
 static void	NoteOn(int channel, int prog, int note, int velocity)
 {
-	VagAtr	*tone = FindTone(prog, PlayedNote(channel, note));
-	int		v;
+	VagAtr	*tone;
+	int		v, next = 0;
 
-	if (!tone || (tone->vag < 1) || (tone->vag >= 256))
-		return;
-	v = FreeVoice();
-	SPU_KEY_OFF(v);
-	voices[v].on = 1;
-	voices[v].channel = channel;
-	voices[v].note = note;
-	voices[v].velocity = velocity;
-	voices[v].prog = prog;
-	voices[v].tone = tone;
-	voices[v].age = ++voice_age;
-	VoiceVolume(v);
-	VoicePitch(v);
-	SPU_VOICE(v)[3] = vag_adrs[tone->vag] / 8;
-	SPU_VOICE(v)[4] = tone->adsr1;
-	SPU_VOICE(v)[5] = tone->adsr2;
-	VoiceReverb(v, tone->mode & 4);
-	SPU_KEY_ON(v);
+	while ((tone = FindTone(prog, PlayedNote(channel, note), next, &next)) != NULL)
+	{
+		if ((tone->vag < 1) || (tone->vag >= 256))
+			continue;
+		v = FreeVoice();
+		SPU_KEY_OFF(v);
+		voices[v].on = 1;
+		voices[v].channel = channel;
+		voices[v].note = note;
+		voices[v].velocity = velocity;
+		voices[v].prog = prog;
+		voices[v].tone = tone;
+		voices[v].age = ++voice_age;
+		voices[v].bend = 0;
+		VoiceVolume(v);
+		VoicePitch(v);
+		SPU_VOICE(v)[3] = vag_adrs[tone->vag] / 8;
+		SPU_VOICE(v)[4] = tone->adsr1;
+		SPU_VOICE(v)[5] = tone->adsr2;
+		VoiceReverb(v, tone->mode & 4);
+		SPU_KEY_ON(v);
+	}
 }
 
 static void	NoteOff(int channel, int note)		// note < 0: all the notes of the channel
@@ -631,6 +672,7 @@ static void	AllNotesOff(void)
 // data size (32-bit) and data (up to 16).
 
 #define	SEQ_MAX_TRACKS	16
+#define	SEQ_FRAME_EVENTS	4000	// Events read in a frame at most (a damaged file: the frame still ends)
 
 typedef struct
 {
@@ -643,23 +685,55 @@ static SeqTrack	seq_tracks[SEQ_MAX_TRACKS];
 static int		seq_count, seq_index;
 static int		seq_loop_count;		// Count of the last loop start: -1 none (its end read on), 127 for good
 static int		seq_count_pending;	// A loop start just read: the next data entry is its count
+static int		seq_loop_empty;		// Jumped back to a loop start, no time waited since
 static uint8_t	*seq_data, *seq_ptr, *seq_end, *seq_loop_ptr;
+static uint8_t	*seq_file;			// The SEQ file's address (as uploaded with the sounds)
 static uint32_t	seq_size;
 static uint16_t	seq_channels;		// Channels with notes
 static int		seq_playing, seq_resolution, seq_status, seq_loop_status;
 static uint32_t	seq_tempo, seq_wait, seq_acc, seq_ticks, seq_loops, seq_loop_ticks;
+static uint32_t	seq_us, seq_loop_us, seq_len_us;	// Position (us, from the start), at the loop start, music length
+static int		seq_paused;			// Paused: time stopped, notes released
+static int		seq_seeking;		// Read through up to a time: no notes played, loop ends read on
 static uint32_t	frame_us;
 
+// Ticks to us and back at a tempo (us per quarter note) and resolution (ticks per quarter note), without overflow
+static uint32_t	TicksUs(uint32_t ticks, uint32_t tempo, uint32_t res)
+{
+	return ((ticks / res) * tempo + (ticks % res) * tempo / res);
+}
+
+// The same for times added up event after event (a seek, the length): the fraction of a us left by each one carried
+// to the next (*frac, in 1/res us). (Dropped at each event, a seek's time fell behind the music's: 20 ms after 4
+// minutes of Alundra, the notes just after the time sought read with the seek, not played.)
+static uint32_t	TicksUsFrac(uint32_t ticks, uint32_t tempo, uint32_t res, uint32_t *frac)
+{
+	uint32_t	part = (ticks % res) * tempo + *frac;
+
+	*frac = part % res;
+	return ((ticks / res) * tempo + part / res);
+}
+
+static uint32_t	UsTicks(uint32_t us, uint32_t tempo, uint32_t res)
+{
+	return ((us / tempo) * res + (us % tempo) * res / tempo);
+}
+
+// A variable-length number (delta time, meta event length): up to 4 bytes, not read past the data's end (a file cut
+// short: 0 there, then the end)
 static uint32_t	SeqVarLen(void)
 {
 	uint32_t	v = 0;
 	uint8_t		b;
+	int			n = 0;
 
 	do
 	{
+		if (seq_ptr >= seq_end)
+			return (v);
 		b = *seq_ptr++;
 		v = (v << 7) | (b & 0x7F);
-	} while (b & 0x80);
+	} while ((b & 0x80) && (++n < 4));
 	return (v);
 }
 
@@ -687,9 +761,11 @@ static void	SeqStart(void)
 	seq_loop_ptr = NULL;
 	seq_loop_count = -1;
 	seq_count_pending = 0;
+	seq_loop_empty = 0;
 	seq_status = 0;
 	seq_acc = 0;
 	seq_ticks = 0;			// (bars counted from the start of the music, at each loop too)
+	seq_us = seq_loop_us = 0;
 	seq_notes = 0;
 	seq_wait = SeqVarLen();
 }
@@ -701,6 +777,7 @@ static void	SeqStop(void)
 	for (c = 0; c < 16; c++)
 		NoteOff(c, -1);
 	seq_playing = 0;
+	seq_paused = 0;
 }
 
 // One event (after its delta time): returns 0 at the end of the music
@@ -709,7 +786,8 @@ static int	SeqEvent(void)
 	uint8_t	status, d1, d2;
 	int		c, v;
 
-	if (seq_ptr + 1 >= seq_end)		// (a file cut short)
+	// (a file cut short: the end where an event's bytes would go past it)
+	if (seq_ptr >= seq_end)
 		return (0);
 	status = *seq_ptr;
 	if (status & 0x80)
@@ -718,13 +796,18 @@ static int	SeqEvent(void)
 		status = seq_status;		// Running status
 	if (status == 0xFF)				// Meta event (Sony: no length byte)
 	{
-		uint8_t		type = *seq_ptr++;
+		uint8_t		type;
 
+		if (seq_ptr >= seq_end)
+			return (0);
+		type = *seq_ptr++;
 		seq_status = 0xFF;			// (running status: a meta event again)
 		if (type == 0x2F)			// End of track
 			return (0);
 		if (type == 0x51)			// Tempo: 3 bytes, us per quarter note
 		{
+			if (seq_ptr + 3 > seq_end)
+				return (0);
 			seq_tempo = (seq_ptr[0] << 16) | (seq_ptr[1] << 8) | seq_ptr[2];
 			if (!seq_tempo)
 				seq_tempo = 500000;
@@ -734,6 +817,8 @@ static int	SeqEvent(void)
 		seq_ptr += SeqVarLen();		// (other meta events: none in Sony's SEQ, a MIDI file's length taken)
 		return (1);
 	}
+	if (seq_ptr + ((((status & 0xF0) == 0xC0) || ((status & 0xF0) == 0xD0)) ? 1 : 2) > seq_end)
+		return (0);
 	seq_status = status;
 	c = status & 15;
 	d1 = *seq_ptr++;
@@ -749,6 +834,8 @@ static int	SeqEvent(void)
 			if (d2)
 			{
 				seq_notes++;
+				if (seq_seeking)
+					break;
 				NoteOff(c, d1);
 				if (!(fx_mute & (1 << c)))	// (muted channel: its notes not played)
 					NoteOn(c, channels[c].prog, d1, d2);
@@ -783,6 +870,7 @@ static int	SeqEvent(void)
 				seq_loop_ptr = seq_ptr;
 				seq_loop_status = status;
 				seq_loop_ticks = seq_ticks;
+				seq_loop_us = seq_us;
 				seq_loop_count = -1;
 				seq_count_pending = 1;
 			}
@@ -794,14 +882,18 @@ static int	SeqEvent(void)
 			else if ((d1 == 99) && (d2 == 30) && seq_loop_ptr)	// Loop end: from the loop start again
 			{
 				seq_count_pending = 0;
-				if ((seq_loop_count == 127) || (seq_loop_count > 0))
+				// (a loop without time inside it, its start and end at the same tick: read on after one jump back;
+				// followed, the frame never ended, the tester and its USB link hung)
+				if (!seq_seeking && !seq_loop_empty && ((seq_loop_count == 127) || (seq_loop_count > 0)))
 				{
 					if (seq_loop_count != 127)
 						seq_loop_count--;
 					seq_ptr = seq_loop_ptr;
 					seq_status = seq_loop_status;
 					seq_ticks = seq_loop_ticks;
+					seq_us = seq_loop_us;
 					seq_loops++;
+					seq_loop_empty = 1;		// (until a wait is read)
 				}
 			}
 			break;
@@ -811,9 +903,12 @@ static int	SeqEvent(void)
 		case 0xE0:	// Pitch bend
 			d2 = *seq_ptr++;
 			channels[c].bend = ((d2 << 7) | d1) - 8192;
-			for (v = 0; v < VOICES - 1; v++)
+			for (v = 0; v < VOICES - 1; v++)	// (the notes sounding only: see VoicePitch)
 				if (voices[v].on && (voices[v].channel == c))
+				{
+					voices[v].bend = channels[c].bend;
 					VoicePitch(v);
+				}
 			break;
 		case 0xA0:	// Key pressure (unused)
 			seq_ptr++;
@@ -830,15 +925,16 @@ static int	SeqEvent(void)
 static void	SeqUpdate(void)
 {
 	uint32_t	ticks;
-	int			n;
+	int			n, events;
 
-	if (!seq_playing)
+	if (!seq_playing || seq_paused)
 		return;
-	seq_acc += (frame_us * fx_tempo / 100) * seq_resolution;	// (tempo scaled)
+	seq_us += frame_us * fx_tempo / 100;						// (the music's time: tempo scaled)
+	seq_acc += (frame_us * fx_tempo / 100) * seq_resolution;
 	ticks = seq_acc / seq_tempo;
 	seq_acc -= ticks * seq_tempo;
 	seq_ticks += ticks;
-	while (seq_playing)
+	for (events = 0; seq_playing && (events < SEQ_FRAME_EVENTS); )	// (a damaged file: the frame still ends)
 	{
 		if (seq_wait > ticks)
 		{
@@ -846,8 +942,10 @@ static void	SeqUpdate(void)
 			break;
 		}
 		ticks -= seq_wait;
-		for (n = 0; ; n++)		// Events at the same time
+		for (n = 0; ; n++, events++)		// Events at the same time
 		{
+			uint32_t	tempo = seq_tempo;
+
 			if (!SeqEvent())
 			{
 				// The end: played again (until stopped, as SSPLAY_INFINITY), or stopped (once, as a game plays a
@@ -863,24 +961,37 @@ static void	SeqUpdate(void)
 				seq_loops++;
 				return;
 			}
+			if (seq_tempo != tempo)	// (the rest of the frame's ticks: at the new tempo, not the one it started with)
+				ticks = UsTicks(TicksUs(ticks, tempo, seq_resolution), seq_tempo, seq_resolution);
 			seq_wait = SeqVarLen();
+			if (seq_wait)
+				seq_loop_empty = 0;
 			if (seq_wait || (n > 1000))
 				break;
 		}
 	}
 }
 
-// The channels with notes in the music (read once, as SeqEvent without playing)
+// The channels with notes in the music and its length (read once, as SeqEvent without playing)
 static void	SeqScan(void)
 {
-	uint8_t	*end = seq_tracks[seq_index].end, status = 0, s, type;
-	int		n;
+	uint8_t		*end = seq_tracks[seq_index].end, status = 0, s, type;
+	uint32_t	res = seq_tracks[seq_index].resolution, tempo = seq_tracks[seq_index].tempo, frac = 0;
+	int			n;
 
+	if (!res)
+		res = 480;
+	if (!tempo)
+		tempo = 500000;
 	seq_channels = 0;
+	seq_len_us = 0;
 	seq_ptr = seq_tracks[seq_index].data;
+	seq_end = end;					// (SeqVarLen's limit)
 	for (n = 0; (n < 500000) && (seq_ptr + 4 < end); n++)
 	{
-		SeqVarLen();
+		seq_len_us += TicksUsFrac(SeqVarLen(), tempo, res, &frac);
+		if (seq_ptr + 2 > end)		// (no event left: status and data, or meta type)
+			break;
 		s = *seq_ptr;
 		if (s & 0x80)
 			seq_ptr++;
@@ -891,6 +1002,10 @@ static void	SeqScan(void)
 			status = 0xFF;
 			if ((type = *seq_ptr++) == 0x2F)
 				break;
+			if ((type == 0x51) && (seq_ptr + 3 > end))
+				break;
+			if ((type == 0x51) && (seq_ptr[0] | seq_ptr[1] | seq_ptr[2]))
+				tempo = (seq_ptr[0] << 16) | (seq_ptr[1] << 8) | seq_ptr[2];
 			seq_ptr += (type == 0x51) ? 3 : SeqVarLen();
 			continue;
 		}
@@ -898,7 +1013,7 @@ static void	SeqScan(void)
 		switch (s & 0xF0)
 		{
 			case 0x90:
-				if (seq_ptr[1])
+				if ((seq_ptr + 2 <= end) && seq_ptr[1])
 					seq_channels |= 1 << (s & 15);
 				seq_ptr += 2;
 				break;
@@ -971,6 +1086,131 @@ static void	SeqSelect(int index)
 	seq_playing = was;
 }
 
+// Played from a time (ms): read from the start up to it without notes (programs, volumes, pan, bends, tempo set as
+// they would be), loop ends read on. Paused: stays paused there; stopped or playing: plays from there.
+static void	SeqSeek(uint32_t ms)
+{
+	uint32_t	target = ms * 1000, step, ticks, frac = 0, f;
+	int			paused = seq_paused;
+
+	if (!seq_data)
+		return;
+	SeqStop();
+	SeqStart();
+	if (target >= seq_len_us)
+		target = 0;
+	seq_seeking = 1;
+	for (;;)
+	{
+		f = frac;
+		step = TicksUsFrac(seq_wait, seq_tempo, seq_resolution, &f);
+		if (seq_us + step >= target)	// (the time is at or before the next event: its wait shortened, it is played)
+		{
+			ticks = UsTicks(target - seq_us, seq_tempo, seq_resolution);
+			if (ticks > seq_wait)
+				ticks = seq_wait;
+			seq_wait -= ticks;
+			seq_ticks += ticks;
+			seq_us = target;
+			break;
+		}
+		seq_us += step;
+		frac = f;
+		seq_ticks += seq_wait;
+		if (!SeqEvent())
+		{
+			SeqStart();
+			break;
+		}
+		seq_wait = SeqVarLen();
+	}
+	seq_seeking = 0;
+	seq_playing = 1;
+	seq_paused = paused;
+}
+
+// A new SEQ written by the computer (music tracker: the song edited while it plays), played from the same time
+static void	SeqReload(int where, uint32_t size)
+{
+	uint8_t		*data = (where == 2) ? (uint8_t *)TESTER_SEQ_SPARE : seq_file;
+	uint32_t	at = seq_us / 1000;
+	int			was = seq_playing, paused = seq_paused, count;
+
+	if (!seq_file || (size < 16) || ((where == 2) && (size > TESTER_SEQ_SPARE_SIZE)))
+		return;
+	if (!(count = SeqParse(data, size)))
+		return;
+	if (seq_playing)
+		SeqStop();
+	seq_data = data;
+	seq_size = size;
+	seq_count = count;
+	if (seq_index >= seq_count)
+		seq_index = 0;
+	SeqScan();
+	SeqStart();
+	if (was)
+	{
+		SeqSeek(at);
+		seq_paused = paused;
+	}
+}
+
+static void	LoadSounds(TesterData *td);
+
+// New instruments and music written by the computer (music tracker: an instrument changed while it plays): the file
+// table and the files rewritten (ps1transfer paused the music first and waited for it), the bank uploaded to the SPU
+// RAM again (every voice silenced first), the SEQ played from the same time. paused: stays paused there
+static void	BankReload(SoundSync *live, int paused)
+{
+	uint32_t	at = seq_us / 1000;
+	int			was = seq_playing, i;
+
+	SeqStop();
+	AllNotesOff();
+	SpuKeys();
+	memset(voices, 0, sizeof(voices));
+	vab = NULL;
+	vag_data = NULL;
+	n_programs = 0;
+	seq_data = seq_file = NULL;
+	seq_count = 0;
+	seq_len_us = 0;
+	seq_channels = 0;
+	quiet_load = 1;
+	LoadSounds((TesterData *)TESTER_DATA_ADRS);
+	quiet_load = 0;
+	rev_active = ReverbSet(fx_reverb);	// (the samples may now reach the reverb work area: cleared, or no room)
+	if (was && seq_data)
+	{
+		SeqSeek(at);
+		seq_paused = paused;
+	}
+	// The shared state of the sound data
+	live->n_programs = n_programs;
+	memset(live->prog_map, 0, sizeof(live->prog_map));
+	for (i = 0; i < n_programs; i++)
+		live->prog_map[programs[i] >> 3] |= 1 << (programs[i] & 7);
+	live->vab_ps = vab ? vab->ps : 0;
+	live->vab_ts = vab ? vab->ts : 0;
+	live->vab_vs = vab ? vab->vs : 0;
+	live->vh_adrs = vab ? (uint32_t)vab : 0;
+	live->vh_size = vab ? VhSize(vab) : 0;
+	live->samples_end = samples_end;
+}
+
+static void	SeqPause(int on)
+{
+	int	c;
+
+	if (!seq_playing || (on == seq_paused))
+		return;
+	if (on)
+		for (c = 0; c < 16; c++)
+			NoteOff(c, -1);
+	seq_paused = on;
+}
+
 /****************************************/
 
 static void	LoadSounds(TesterData *td)
@@ -996,11 +1236,12 @@ static void	LoadSounds(TesterData *td)
 	{
 		if (seq && (seq_count = SeqParse(seq, seq_size)))
 		{
-			seq_data = seq;
+			seq_data = seq_file = seq;
 			seq_index = 0;
 			SeqScan();
 			SeqStart();
-			printf("SEQ: resolution %d, tempo %d us\n", seq_resolution, (int)seq_tempo);
+			if (!quiet_load)
+				printf("SEQ: resolution %d, tempo %d us\n", seq_resolution, (int)seq_tempo);
 		}
 	}
 	else if (vag_data)
@@ -1009,7 +1250,8 @@ static void	LoadSounds(TesterData *td)
 		vag_rate = BigEndian32(vag_data + 16);
 		SpuUpload(SPU_DATA_ADRS, vag_data + VAG_HEADER_SIZE, BigEndian32(vag_data + 12));
 		samples_end = SPU_DATA_ADRS + BigEndian32(vag_data + 12);
-		printf("VAG: %d Hz, %d bytes\n", (int)vag_rate, (int)BigEndian32(vag_data + 12));
+		if (!quiet_load)
+			printf("VAG: %d Hz, %d bytes\n", (int)vag_rate, (int)BigEndian32(vag_data + 12));
 	}
 }
 
@@ -1037,6 +1279,14 @@ static void	SyncInit(SoundSync *live)
 {
 	int	i;
 
+	SoundPos	*pos = (SoundPos *)TESTER_POS_ADRS;
+
+	memset(pos, 0, sizeof(SoundPos));
+	pos->req_seek = -1;
+	pos->req_pause = -1;
+	pos->req_reload = -1;
+	pos->len_ms = seq_len_us / 1000;
+	pos->version = seq_file ? 3 : 1;
 	memset(live, 0, sizeof(SoundSync));
 	live->kind = vab ? 1 : (vag_data ? 2 : 0);
 	live->n_programs = n_programs;
@@ -1130,6 +1380,7 @@ int	main(void)
 {
 	TesterData	*td = (TesterData *)TESTER_DATA_ADRS;
 	SoundSync	*live = (SoundSync *)TESTER_SYNC_ADRS;
+	SoundPos	*pos = (SoundPos *)TESTER_POS_ADRS;
 	uint32_t	pad, opad = 0, voice_bits;
 	uint16_t	ch_active;
 	int			prog_index = 0, note = 60, i, side = 0, is_pal, playing_note = 0, active;
@@ -1196,6 +1447,25 @@ int	main(void)
 			SeqSelect(live->req_sep);
 		if (live->req_repeat >= 0)
 			seq_repeat = live->req_repeat ? 1 : 0;
+		if (pos->req_reload > 0)		// (first: a seek asked with it is in the new SEQ)
+		{
+			if (pos->req_reload == 3)
+			{
+				BankReload(live, pos->reload_size & 1);
+				if (prog_index >= n_programs)
+					prog_index = 0;
+			}
+			else
+				SeqReload(pos->req_reload, pos->reload_size);
+			pos->req_reload = -1;
+		}
+		if (pos->req_seek >= 0)
+			SeqSeek(pos->req_seek);
+		if (pos->req_pause >= 0)
+			SeqPause(pos->req_pause);
+		pos->req_seek = -1;
+		pos->req_pause = -1;
+		pos->req_reload = -1;
 		live->req_fx = live->req_sep = live->req_repeat = -1;
 		live->req_prog = live->req_note = live->req_volume = live->req_seq = live->req_stop = live->req_refresh = -1;
 
@@ -1267,10 +1537,11 @@ int	main(void)
 				FntPrint(fnt_data, "SEQ  %d/%d ", seq_index + 1, seq_count);
 			else
 				FntPrint(fnt_data, "SEQ  ");
-			FntPrint(fnt_data, "%s%s", !seq_data ? "NONE\n" : (seq_playing ? "PLAYING" : "STOPPED"),
+			FntPrint(fnt_data, "%s%s", !seq_data ? "NONE\n" : (seq_playing ? (seq_paused ? "PAUSED" : "PLAYING") : "STOPPED"),
 					 !seq_data ? "" : (seq_repeat ? (seq_playing ? "" : "\n") : (seq_playing ? " ONCE" : " ONCE\n")));
 			if (seq_data && seq_playing)
-				FntPrint(fnt_data, "  BAR %d  LOOP %d\n", (int)(seq_ticks / (seq_resolution * 4)) + 1, (int)seq_loops);
+				FntPrint(fnt_data, "  %d:%02d/%d:%02d  LOOP %d\n", (int)(seq_us / 60000000), (int)(seq_us / 1000000 % 60),
+						 (int)(seq_len_us / 60000000), (int)(seq_len_us / 1000000 % 60), (int)seq_loops);
 			FntPrint(fnt_data, "PROGRAM  %d  (%d/%d)", n_programs ? programs[prog_index] : -1, prog_index + 1, n_programs);
 		}
 		else if (vag_data)
@@ -1293,6 +1564,9 @@ int	main(void)
 		live->seq = !seq_data ? 0 : (seq_playing ? 2 : 1);
 		live->seq_bar = seq_playing ? (int)(seq_ticks / (seq_resolution * 4)) + 1 : 0;
 		live->seq_loop = seq_loops;
+		pos->pos_ms = seq_playing ? seq_us / 1000 : 0;
+		pos->len_ms = seq_len_us / 1000;
+		pos->paused = seq_paused;
 		live->voices = voice_bits;
 		live->rev_active = rev_active;
 		live->ch_used = seq_channels;

@@ -110,8 +110,27 @@ static int	MidiLength(uint8_t status)
 	return (0);		// System messages: not sent
 }
 
-// Writes the messages (4 bytes each) in the ring, then the head
+// Writes the messages (4 bytes each) in the ring, then the head; a line of more than half the ring: in batches (the
+// messages after the first batch were dropped)
+static bool	SendMidiBatch(uint8_t *bytes, int count, int *used);
+
 static bool	SendMidi(uint8_t *bytes, int count)
+{
+	int	used;
+
+	while (count > 0)
+	{
+		if (!SendMidiBatch(bytes, count, &used))
+			return (false);
+		if (!used)
+			break;
+		bytes += used;
+		count -= used;
+	}
+	return (true);
+}
+
+static bool	SendMidiBatch(uint8_t *bytes, int count, int *used)
 {
 	uint8_t		msg[SYNTH_MIDI_RING][4];
 	int			i = 0, n = 0, len, first, chunk;
@@ -131,6 +150,7 @@ static bool	SendMidi(uint8_t *bytes, int count)
 		if (n == SYNTH_MIDI_RING / 2)
 			break;
 	}
+	*used = i;		// (the bytes read: the next batch from there)
 	if (!n)
 		return (true);
 	// Ring full: wait for the synth (it reads continuously)

@@ -196,7 +196,7 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
   - **Sound Tools**: up to 8 sound files (VH, VB, VAB, SEQ, VAG) played by the sound tester (`ps1transfer -snd ...
     -sndlive`). While it runs, its controls are on the page too, linked live with the console's controller: program,
     note (buttons as Up/Down and L1/R1, a two-octave keyboard that follows the note: click and hold a key to play it,
-    as Cross held), volume (also for the notes sounding), SEQ start/stop with its bar and loop (a SEP: the SEQ played chosen), stop all sounds, and the
+    as Cross held), volume (also for the notes sounding), SEQ start/stop and pause with its bar, loop and a timeline (its time and length: click or drag to play from there; a SEP: the SEQ played chosen), stop all sounds, and the
     24 voices lit while they sound. A change made with the controller shows on the page, and the other way round, so
     sounds can be tested without a controller. The instrument (a program of the bank) is the one the keyboard plays;
     the SEQ plays each of its 16 channels with the program its own events choose: each channel shows its program and
@@ -228,6 +228,45 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     Each change is written in the bank the console plays: hold a note (Play) while moving a slider to hear it at once
     (key ranges and VAGs: from the next note). Changes made before Play on the PS1 are sent when it starts. **Save
     VAB...** writes the edited bank (VAB: VH + VB, or a VH alone).
+  - **Music Tracker**: music made of riffs (short patterns of notes) placed on tracks, saved as a song (`.dcsong`)
+    and exported as what games play with libsnd: a SEQ and a VAB (VH + VB), or as a MIDI file (tracker.py).
+    - **Riffs** (left): the song's own and a **Library** of starter riffs (riffs.py: drum beats, bass lines, chords,
+      arpeggios, melodies, all on the same four chords so they play together, with their instruments; drum hits
+      louder and softer for their groove). **Listen**
+      plays the one picked; **New riff** starts an empty one; **More**: rename, copy, delete.
+    - **Song** (the arranger, pages/tracker_arrange.py): tracks as lanes (Drums, Bass, Chords, Melody to start with;
+      Add track, rename with a double click, M mutes one), riffs as blocks over the bars. Click on a track to put the
+      riff picked there; drag a block to move it (to another track too), its right end to make it longer (the riff
+      plays again); right click: edit the riff, repeat it after (Ctrl+D), make it a new riff of its own, remove it
+      (Delete). A block cuts the one before it on its track. Click the ruler to play from there; right click it to
+      set where the song loops back to at its end, or no loop. Each track has the channels its riffs use (16 in all).
+    - **Riff editor**: the **piano roll** (pages/tracker_roll.py): click to put a note with the instrument picked
+      (drag to make it longer, the new notes' length chosen above), drag a note to move it, its right end to change
+      its length, right click or Delete to remove it, arrows to move the one picked (Shift+Up/Down: an octave),
+      Ctrl+wheel to zoom; the keys on the left play their note. Notes played together go on channels of their own
+      (each channel plays one note at a time). Or the **note grid**, as trackers: notes typed with the computer
+      keyboard (Z S X D C V... one octave, Q 2 W 3 E... the next, 1: note off), instrument, volume (the note's
+      velocity) and effect columns in hexadecimal (P pan, V channel volume, E expression, B pitch bend, T tempo in
+      BPM, G slide to the note over xx rows, A arpeggio xy: the note, + x, + y semitones through the row; slides and
+      arpeggios are pitch bends within the instrument's bend range, 1-12 semitones, an arpeggio beyond it plays the
+      notes again), selection (Shift+arrows, mouse), Ctrl+C/X/V, transpose (Ctrl+Up/Down, Shift: an octave), channels
+      muted or solo from the header. Both edit the same notes; undo/redo (Ctrl+Z/Y) for everything.
+    - **Instruments**: built-in waveforms (square, pulse, saw, triangle, sine, strings: three saws slightly apart,
+      organ, noise), built-in drums (kick, snare, clap, hi-hat, open hat, tom: one-shot sounds, each as made at its
+      General MIDI drum note) or samples (WAV, or MP3/OGG/FLAC... with FFmpeg), each with its root note, tuning,
+      volume, pan, bend range, envelope, loop and reverb: one VAB program each. **Reverb** (above): the song's SPU
+      reverb type and depth, on the instruments with Reverb ticked (songs made before it: off).
+    - **Import MIDI...** makes a song of a MIDI file: its notes on the rows (rows per beat chosen to fit them), each
+      MIDI channel on as many channels as it plays notes at once, an instrument per program (a waveform of its
+      General MIDI family, the drum channel's notes on the built-in drums, to replace with samples), tempo, volume
+      and pan changes; one track of riffs, split at its
+      loopStart marker, the song looped from there. Songs of the earlier version (patterns in an order) open as one
+      track of their patterns.
+    - **Play song** / **Play riff** (the riff edited, looped; Space too): the sound tester plays it on the PS1 and the
+      page shows the row playing (arranger, piano roll, grid), with pause and stop. The notes put or typed are heard
+      on the console (the first one starts the sound tester). While it plays each change is sent at once as a new SEQ
+      (`seqload`), played from the same time; changed instruments with it (`bankload`: the tester loads the new sound
+      files and goes on, a pause of about 0.3 s).
   - **Movie Tools**: STR movies (MDEC video frames, XA ADPCM sound), made, checked and played on the PS1:
     - **Convert**: a video file (read by FFmpeg: any format it knows) or pictures (TIM, PNG, JPG, BMP: a slide show,
       each one for some seconds with a cross-fade into the next, or one frame each), with the video's sound, a sound

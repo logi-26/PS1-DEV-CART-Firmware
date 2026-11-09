@@ -554,16 +554,19 @@ class StrWriter:
         self.frames = 0
         self.pending = []           # (subheader, data, form) to write
         self.stats = []             # Per frame: (scale, bytes, sectors)
+        self.over_budget = 0        # Frames bigger than their share of the sectors (taken from the next ones')
 
     def video_rate(self):
         """Video sectors a second."""
         return self.rate * (1 - 1 / self.interleave) if self.interleave else self.rate
 
     def frame_budget(self, frame=None):
-        """Sectors of the frame (its share of the video sectors: frames at a steady rate), and its byte budget."""
+        """Sectors of the next frame (its share of the video sectors: frames at a steady rate, less what frames before
+        it took over their share), and its byte budget. (frame: the share of that frame, as if all were on time.)"""
         f = self.frames if frame is None else frame
         vr = self.video_rate()
-        n = int((f + 1) * vr / self.fps) - int(f * vr / self.fps)
+        used = self.video_sectors if frame is None else int(f * vr / self.fps)
+        n = int((f + 1) * vr / self.fps) - used
         return max(1, n), max(1, n) * VIDEO_PAYLOAD
 
     def _audio_slot(self):
@@ -585,9 +588,15 @@ class StrWriter:
         self._put(sub, data + bytes(20), 2)
 
     def add_frame(self, bs, sectors):
-        """The BS frame in its sectors (sectors: its share, from frame_budget; the bytes must fit)."""
+        """The BS frame in its sectors (sectors: its share, from frame_budget). A frame bigger than its share (even at
+        the coarsest scale: a detailed picture in 1 or 2 sectors) takes the sectors it needs: it's shown late on the
+        console, the next frames' shares are smaller until the movie is back on time (counted: over_budget)."""
         self.frames += 1
         size = len(bs)
+        need = -(-size // VIDEO_PAYLOAD)
+        if need > sectors:
+            self.over_budget += 1
+            sectors = need
         payload = bs + bytes(sectors * VIDEO_PAYLOAD - size)
         for i in range(sectors):
             while self._audio_slot():

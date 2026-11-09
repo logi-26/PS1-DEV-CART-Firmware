@@ -24,9 +24,34 @@ def codes(app, owner):
     return app.engine_codes.get(owner, [])
 
 
+def serial_fits(code, value, nxt):
+    """A serial code (50) and the code after it: its writes all inside the 2 MB of RAM. (The engine writes on past
+    its end: the RAM repeats every 2 MB, the writes wrap onto the kernel at its start, the game crashes.)"""
+    count, step = (code >> 8) & 0xFF, code & 0xFF
+    if nxt is None:
+        return True
+    width = 2 if nxt[0] >> 24 == 0x80 else 1
+    return not count or (nxt[0] & 0x1FFFFF) + (count - 1) * step + width <= 0x200000
+
+
+def safe_codes(lines):
+    """The codes without the serial codes (and the code after each) that would write past the RAM."""
+    out, i = [], 0
+    while i < len(lines):
+        code, value = lines[i]
+        if code >> 24 == 0x50:
+            nxt = lines[i + 1] if i + 1 < len(lines) else None
+            if not serial_fits(code, value, nxt):
+                i += 2
+                continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+
 def table(app):
     """The table of every page's codes (8 bytes of zeros: off)."""
-    lines = [line for owner in OWNERS for line in app.engine_codes.get(owner, ())][:CHEAT_MAX]
+    lines = safe_codes([line for owner in OWNERS for line in app.engine_codes.get(owner, ())])[:CHEAT_MAX]
     if not lines:
         return bytes(8)
     return (CHEAT_MAGIC.to_bytes(4, "little") + len(lines).to_bytes(4, "little") +

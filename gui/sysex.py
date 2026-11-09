@@ -6,7 +6,9 @@ are 7-bit; numbers are little endian, 7 bits per byte.
     01 SAMPLE START  slot(0-15) rate(3 bytes) size(4 bytes) name(16 bytes, ASCII)
     02 SAMPLE DATA   up to 128 bytes of SPU ADPCM (the VAG data without its header), 7 bytes packed in 8:
                      a byte with the high bits of the next 7 (bit 0 = first byte), then their low 7 bits
-    03 SAMPLE END    checksum(2 bytes): sum of the ADPCM bytes & 0x3FFF
+    03 SAMPLE END    checksum(2 bytes): sum of the ADPCM bytes & 0x3FFF, then crc(5 bytes): their CRC-32 (zlib's)
+                     (the sum alone can't see a byte's change moved to the next one, e.g. a group's high-bits byte
+                     02 for 01; the CRC can. Files without it, written before: their sum checked alone)
     04 SET           slot param value (param: synth.h order, root volume pan attack decay sustain release reverb tune)
     05 CLEAR         slot
 
@@ -14,6 +16,7 @@ A sample is loaded once its SAMPLE END arrives with the right checksum.
 """
 
 import struct
+import zlib
 
 HEADER = bytes((0xF0, 0x7D, 0x50, 0x53))
 START, DATA, END, SET, CLEAR = 1, 2, 3, 4, 5
@@ -56,7 +59,7 @@ def sample_messages(slot, adpcm, rate, name=""):
     msgs = [message(START, bytes((slot & 15,)) + _num(rate, 3) + _num(len(adpcm), 4) + name_bytes)]
     for i in range(0, len(adpcm), CHUNK):
         msgs.append(message(DATA, pack7(adpcm[i:i + CHUNK])))
-    msgs.append(message(END, _num(sum(adpcm) & 0x3FFF, 2)))
+    msgs.append(message(END, _num(sum(adpcm) & 0x3FFF, 2) + _num(zlib.crc32(adpcm) & 0xFFFFFFFF, 5)))
     return msgs
 
 
@@ -104,7 +107,8 @@ class Receiver:
         if command == END and self.sample:
             s, self.sample = self.sample, None
             data = bytes(s["data"][:s["size"]])
-            if len(data) != s["size"] or (sum(data) & 0x3FFF) != _unnum(payload[:2]):
+            if (len(data) != s["size"] or (sum(data) & 0x3FFF) != _unnum(payload[:2]) or
+                    (len(payload) >= 7 and (zlib.crc32(data) & 0xFFFFFFFF) != _unnum(payload[2:7]))):
                 return ("error", "SysEx sample for slot %d: bad size or checksum" % (s["slot"] + 1))
             return ("load", s["slot"], data, s["rate"], s["name"])
         if command == SET and len(payload) >= 3:

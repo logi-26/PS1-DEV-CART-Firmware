@@ -504,6 +504,8 @@ bool		hook_packet_detected;
 #define	FEATURE_HOOK_BIG_PACKETS	(1 << 2)	// The kernel hook and the debug monitor also use big packets
 
 bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size);
+void	PC_FileServerCmd(int first);
+bool	PC_IsFileServerRequest(uint8_t type);
 
 // A second cartridge open at the same time (USB link relay): USB_Process uses the selected one
 void	*USB_GetHandle(void)
@@ -650,12 +652,68 @@ bool	USB_SendRawByte(uint8_t c)
 	return (ftdi_write_data(ftdi, &c, 1) == 1);
 }
 
+// Bytes read ahead: what USB_ReadByteNoWait took in one go (all that was waiting: one byte at a time, a driver call
+// each, the profiler and the frame capture couldn't keep up with a program's samples and file server requests, the
+// reports never came), and the bytes PC_IsFileServerRequest gave back. Read first.
+// One for each cartridge open (the USB link relay switches between two: USB_SetHandle).
+#define	AHEAD_SIZE	8192
+typedef struct
+{
+	void	*owner;
+	uint8_t	buf[AHEAD_SIZE + 64];
+	int		start, end;
+} Ahead;
+static Ahead	aheads[2];
+
+static Ahead	*AheadOf(void)
+{
+	int	i;
+
+	for (i = 0; i < 2; i++)
+		if (aheads[i].owner == (void *)ftdi)
+			return (&aheads[i]);
+	for (i = 0; i < 2; i++)
+		if (!aheads[i].owner || (aheads[i].start == aheads[i].end))
+		{
+			aheads[i].owner = (void *)ftdi;
+			aheads[i].start = aheads[i].end = 0;
+			return (&aheads[i]);
+		}
+	return (&aheads[0]);
+}
+
+#define	ahead		(AheadOf()->buf)
+#define	ahead_start	(AheadOf()->start)
+#define	ahead_end	(AheadOf()->end)
+
+void	USB_Unread(const uint8_t *data, int n)
+{
+	int	have = ahead_end - ahead_start;
+
+	if (n > 64)
+		n = 64;
+	if (ahead_start >= n)
+		ahead_start -= n;
+	else
+	{
+		memmove(ahead + n, ahead + ahead_start, have);
+		ahead_start = 0;
+		ahead_end = n + have;
+	}
+	memcpy(ahead + ahead_start, data, n);
+}
+
 // Read exactly "size" bytes (reads may return less data than requested), fails after USB_READ_TIMEOUT seconds without data
 bool	USB_ReadData(uint8_t *data, uint32_t size)
 {
 	time_t	last = time(NULL);
 	int		n;
 
+	while (size && (ahead_start < ahead_end))
+	{
+		*data++ = ahead[ahead_start++];
+		size--;
+	}
 	while (size)
 	{
 		n = ftdi_read_data(ftdi, data, size);
@@ -1087,6 +1145,9 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 	// writing every frame), skipped; while profiling, the profiler packets (DLE + type, see profiler.c); "DLE q"
 	// (answer to the 'Q'). Escaped answer: "DLE g" / "DLE b", the only one accepted when the firmware has them (text
 	// can't be taken for it). Otherwise 'G' / 'B' (a 'G' or 'B' in text just before is taken for it: older firmwares).
+	// A request of the program's file server meanwhile (the program waits for its answer, and its kernel hook answers
+	// this command only after: it is served here; skipped, both sides waited for each other, e.g. the profiler and the
+	// frame capture of a program reading files)
 	ack_ok = USB_ReadData(&ack, 1);
 	for (skipped = 0; ack_ok && (skipped < 4096); skipped++)
 	{
@@ -1099,7 +1160,14 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 				ack -= 'a' - 'A';
 				break;
 			}
-			if (prof_active && (ack != 'q') && !(ack_ok = ProfReadPacketType(ack)))
+			if (ack == 'q')
+				;
+			else if (PC_IsFileServerRequest(ack))
+			{
+				PC_FileServerCmd(ack);
+				skipped = 0;
+			}
+			else if (prof_active && !(ack_ok = ProfReadPacketType(ack)))
 				break;
 		}
 		else if (!escaped && ((ack == 'G') || (ack == 'B')))
@@ -1239,15 +1307,29 @@ bool	USB_ReadByteNoWait(uint8_t *c)
 {
 #ifdef _WIN32
 	DWORD	queued = 0;
-
-	if (ftdi->com)
-		queued = SerialQueued(ftdi->com);
-	else if (FT_GetQueueStatus(ftdi->ft, &queued) != FT_OK)
-		queued = 0;
-	if (!queued)
-		return (false);
 #endif
-	return (ftdi_read_data(ftdi, c, 1) == 1);
+	int		n;
+
+	if (ahead_start == ahead_end)
+	{
+		ahead_start = ahead_end = 0;
+#ifdef _WIN32
+		if (ftdi->com)
+			queued = SerialQueued(ftdi->com);
+		else if (FT_GetQueueStatus(ftdi->ft, &queued) != FT_OK)
+			queued = 0;
+		if (!queued)
+			return (false);
+		n = ftdi_read_data(ftdi, ahead, (queued < AHEAD_SIZE) ? queued : AHEAD_SIZE);
+#else
+		n = ftdi_read_data(ftdi, ahead, 1);
+#endif
+		if (n <= 0)
+			return (false);
+		ahead_end = n;
+	}
+	*c = ahead[ahead_start++];
+	return (true);
 }
 
 bool	USB_WriteBytes(uint8_t *data, uint32_t size)
@@ -1262,6 +1344,23 @@ bool		mon_stop_pending;	// Debug monitor stop notification ('B' request), see gd
 uint32_t	mon_stop_regs, mon_stop_info;
 
 // first: the command byte when it was already read (profiler), -1 otherwise
+// After a DLE, its type byte read: a request of the program's file server (true), or not (a profiler packet, an
+// answer). The close request 'c' is also the profiler's root counter conflict packet ('c' and 1 byte): a request's 9
+// bytes end on their CRC; the bytes read to see it are given back.
+bool	PC_IsFileServerRequest(uint8_t type)
+{
+	uint8_t	p[10];
+
+	if (type != 'c')
+		return ((type == 'I') || (type == 'O') || (type == 'C') || (type == 'S') || (type == 'R') || (type == 'W') ||
+			(type == 'B'));
+	p[0] = type;
+	if (!USB_ReadData(p + 1, 9))
+		return (false);
+	USB_Unread(p + 1, 9);
+	return (p[9] == CRC8_Compute(p, 9));
+}
+
 void	PC_FileServerCmd(int first)
 {
 	uint8_t		*data, *ptr = NULL, answer, param[1+4+4+1];
@@ -2390,10 +2489,19 @@ static void	McDelete(uint8_t *img, int first)
 	printf("Save in block %d deleted (%d block(s) freed)\n", first, n);
 }
 
+// DexDrive .gme images loaded: their header, written back with the image (the file stays a .gme: it was saved as a
+// raw image, its header lost, after an import, a delete or a copy)
+static struct
+{
+	char	name[1024];
+	uint8_t	head[CARD_GME_HEADER];
+}	mc_gme[2];
+static int	mc_gme_next;
+
 static uint8_t	*McLoadImage(char *filename)
 {
 	uint8_t	*file, *img;
-	int		size;
+	int		size, i;
 
 	if (!(file = SystemGetFile(filename, &size)))
 		return (NULL);
@@ -2404,7 +2512,16 @@ static uint8_t	*McLoadImage(char *filename)
 		return (NULL);
 	}
 	img = malloc(CARD_SIZE);
-	memcpy(img, file + size - CARD_SIZE, CARD_SIZE);	// DexDrive .gme: header skipped
+	memcpy(img, file + size - CARD_SIZE, CARD_SIZE);	// DexDrive .gme: header kept aside
+	for (i = 0; i < 2; i++)
+		if (!strcmp(mc_gme[i].name, filename))
+			mc_gme[i].name[0] = 0;
+	if (size == CARD_SIZE + CARD_GME_HEADER)
+	{
+		i = mc_gme_next++ & 1;
+		snprintf(mc_gme[i].name, sizeof(mc_gme[i].name), "%s", filename);
+		memcpy(mc_gme[i].head, file, CARD_GME_HEADER);
+	}
 	free(file);
 	return (img);
 }
@@ -2429,6 +2546,26 @@ static bool	McSaveFile(char *filename, uint8_t *data, int size, bool backup)
 	fwrite(data, 1, size, f);
 	fclose(f);
 	return (true);
+}
+
+// A card image written back (a .gme with its header)
+static bool	McSaveImage(char *filename, uint8_t *img, bool backup)
+{
+	uint8_t	*buf;
+	bool	ok;
+	int		i;
+
+	for (i = 0; i < 2; i++)
+		if (mc_gme[i].name[0] && !strcmp(mc_gme[i].name, filename))
+		{
+			buf = malloc(CARD_GME_HEADER + CARD_SIZE);
+			memcpy(buf, mc_gme[i].head, CARD_GME_HEADER);
+			memcpy(buf + CARD_GME_HEADER, img, CARD_SIZE);
+			ok = McSaveFile(filename, buf, CARD_GME_HEADER + CARD_SIZE, backup);
+			free(buf);
+			return (ok);
+		}
+	return (McSaveFile(filename, img, CARD_SIZE, backup));
 }
 
 // -mclist, -mcexport, -mcimport, -mcdelete, -mccopy, -mcformat: returns the exit code
@@ -2475,7 +2612,7 @@ int	CardImageCommand(int argc, char **argv, int i)
 	}
 	else if (!strcmp(cmd, "-mcimport"))
 	{
-		if ((mcs = SystemGetFile(argv[i + 2], &size)) && McImport(img, mcs, size) && McSaveFile(argv[i + 1], img, CARD_SIZE, true))
+		if ((mcs = SystemGetFile(argv[i + 2], &size)) && McImport(img, mcs, size) && McSaveImage(argv[i + 1], img, true))
 		{
 			McList(img, NULL);
 			ret = EXIT_SUCCESS;
@@ -2486,14 +2623,14 @@ int	CardImageCommand(int argc, char **argv, int i)
 		if ((first = McFind(img, argv[i + 2])))
 		{
 			McDelete(img, first);
-			if (McSaveFile(argv[i + 1], img, CARD_SIZE, true))
+			if (McSaveImage(argv[i + 1], img, true))
 				ret = EXIT_SUCCESS;
 		}
 	}
 	else if (!strcmp(cmd, "-mccopy"))	// src save dst
 	{
 		if ((first = McFind(img, argv[i + 2])) && (mcs = McExport(img, first, &size)) && (img2 = McLoadImage(argv[i + 3])) &&
-			McImport(img2, mcs, size) && McSaveFile(argv[i + 3], img2, CARD_SIZE, true))
+			McImport(img2, mcs, size) && McSaveImage(argv[i + 3], img2, true))
 		{
 			McList(img2, NULL);
 			ret = EXIT_SUCCESS;
@@ -3767,7 +3904,7 @@ static int	CardLiveCommand(int argc, char **argv, int i, char *argv0, bool start
 			if (LiveDirectory(c) && McImport(c->img, mcs, size) && LiveWriteChanges(c, text))
 				ret = EXIT_SUCCESS;
 		}
-		else if ((img = McLoadImage(argv[i + 3])) && McImport(img, mcs, size) && McSaveFile(argv[i + 3], img, CARD_SIZE, true))
+		else if ((img = McLoadImage(argv[i + 3])) && McImport(img, mcs, size) && McSaveImage(argv[i + 3], img, true))
 		{
 			McList(img, NULL);
 			ret = EXIT_SUCCESS;

@@ -110,7 +110,7 @@ def _tim_block(d, o, clut, longer=False):
 
 def tim_at(d, o):
     """The TIM at offset o: (size, mode, image block, CLUT block or None), or None."""
-    if u32(d, o) != 0x10 or o + 8 > len(d):
+    if o + 8 > len(d) or u32(d, o) != 0x10:
         return None
     flags = u32(d, o + 4)
     mode = flags & 7
@@ -532,7 +532,9 @@ def textures_in_use(ram, vram, progress=None):
     words = np.frombuffer(bytes(ram[:len(ram) & ~3]), "<u4")
     nw = len(words)
     lens, nxt = words >> 24, words & 0xFFFFFF
-    cand = np.flatnonzero((lens >= 3) & (lens <= 16) & ((nxt == 0xFFFFFF) | ((nxt < len(ram)) & ((nxt & 3) == 0))))
+    # (from 1 word: the draw mode packets the sprites use, libgpu's DR_TPAGE (1) and DR_MODE (2): with 3 at least,
+    # every sprite's texture page was unknown, the sprites left out)
+    cand = np.flatnonzero((lens >= 1) & (lens <= 16) & ((nxt == 0xFFFFFF) | ((nxt < len(ram)) & ((nxt & 3) == 0))))
     cand = cand[cand + 1 + lens[cand] <= nw]
     tex = ((words[np.minimum(cand + 1, nw - 1)] >> 24) & 0xE4) == 0x24                  # Textured polygon
     sprite = (((words[np.minimum(cand + 1, nw - 1)] >> 24) & 0xE4) == 0x64)              # Textured rectangle

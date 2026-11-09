@@ -304,5 +304,7 @@ class Job:
         if self.stop_event.is_set():
             raise RuntimeError("stopped")
         stats = writer.stats
-        return {"sectors": sectors, "frames": len(stats), "stats": stats, "over": over, "interleave": writer.interleave,
+        return {"sectors": sectors, "frames": len(stats), "stats": stats, "over": over, "late": writer.over_budget,
+                "behind": max(0, writer.video_sectors - int(len(stats) * writer.video_rate() / fps)),
+                "interleave": writer.interleave, "speed": o["speed"],
                 "seconds": sectors / (75.0 * o["speed"]), "bytes": os.path.getsize(o["out"])}

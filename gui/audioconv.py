@@ -162,8 +162,8 @@ def tune(root, rate, cents=0):
 
 def build_vab(tones, progress=None):
     """A VAB bank (VH bytes, VB bytes) from tones: dicts with pcm (mono int16), rate, program, root, cents, min, max,
-    vol, pan, adsr1, adsr2, reverb, loop, loop_start (seconds). Tones of the same program are its key splits (up to
-    16), in their order."""
+    vol, pan, adsr1, adsr2, reverb, loop, loop_start (seconds), bend (pitch bend range in semitones, default 2).
+    Tones of the same program are its key splits (up to 16), in their order."""
     if not tones:
         raise ConvertError("no samples")
     programs = {}
@@ -197,9 +197,10 @@ def build_vab(tones, progress=None):
     for block, p in enumerate(sorted(programs)):            # (tone blocks in program order)
         for n, t in enumerate(programs[p]):
             center, shift = tune(int(t["root"]), t["rate"], t.get("cents", 0))
+            bend = int(t.get("bend", 2))
             struct.pack_into("<8B6B2xHHhh", vh, base + (block * vab.TONES_PER_PROGRAM + n) * vab.TONE_SIZE,
                              0, 4 if t.get("reverb") else 0, int(t["vol"]), int(t["pan"]), center, shift,
-                             int(t["min"]), int(t["max"]), 0, 0, 0, 0, 2, 2, t["adsr1"], t["adsr2"], p,
+                             int(t["min"]), int(t["max"]), 0, 0, 0, 0, bend, bend, t["adsr1"], t["adsr2"], p,
                              index[id(t)] + 1)
     sizes = base + ps * vab.TONES_PER_PROGRAM * vab.TONE_SIZE
     for i, data in enumerate(vags):
@@ -300,6 +301,46 @@ def read_midi(path):
     return division, events
 
 
+def _loop_state(events, tempo, start, end, drum_program=None):
+    """What a loop changes, set back at its start: [(event bytes, is a channel event)] of the tempo and each channel's
+    program, volume, pan, expression and pitch bend that change inside the loop (start..end), at their value before
+    the loop start (the sound tester's and libsnd's defaults if none). Written just after the loop start marker, they
+    are played at each jump back: the loop played again as it was the first time, not with the tempo and controllers
+    its end left (a MIDI with a tempo change inside its loop: the repeats at the wrong tempo)."""
+    before = {("tempo",): tempo}
+    changed = set()
+    for t, _, kind, v in events:
+        if kind == "tempo":
+            key, value = ("tempo",), v
+        elif kind == "ch" and v[0] & 0xF0 == 0xC0:
+            key, value = (v[0] & 15, "prog"), v[1]
+        elif kind == "ch" and v[0] & 0xF0 == 0xB0 and v[1] in (7, 10, 11):
+            key, value = (v[0] & 15, v[1]), v[2]
+        elif kind == "ch" and v[0] & 0xF0 == 0xE0:
+            key, value = (v[0] & 15, "bend"), (v[1], v[2])
+        else:
+            continue
+        if t < start:
+            before[key] = value
+        elif t < end:
+            changed.add(key)
+    defaults = {"prog": 0, 7: 127, 10: 64, 11: 127, "bend": (0, 0x40)}
+    out = []
+    for key in sorted(changed, key=str):
+        if key == ("tempo",):
+            out.append((b"\xFF\x51" + struct.pack(">I", before[key])[1:], False))
+            continue
+        ch, what = key
+        value = before.get(key, defaults[what])
+        if what == "prog":
+            out.append((bytes((0xC0 | ch, drum_program if ch == 9 and drum_program is not None else value)), True))
+        elif what == "bend":
+            out.append((bytes((0xE0 | ch,) + tuple(value)), True))
+        else:
+            out.append((bytes((0xB0 | ch, what, value)), True))
+    return out
+
+
 def midi_to_seq(path, loop="markers", loop_tick=0, drum_program=None):
     """SEQ bytes of a MIDI file and a summary dict. loop: "none", "markers" (a "loopStart"/"loopEnd" marker or
     CC 111 as in RPG Maker's music, else none), "whole" (the whole music) or "tick" (from loop_tick to the end).
@@ -348,9 +389,16 @@ def midi_to_seq(path, loop="markers", loop_tick=0, drum_program=None):
     if drum_program is not None:
         body.append((0, -1, bytes((0xC9, drum_program)), True))
     if start is not None:
+        loop_end = stop if stop is not None and stop > start else end_tick
         body.append((start, -0.5, b"\xB0\x63\x14", True))      # Loop start (NRPN 99 = 20), as Alundra's music
         body.append((start, -0.4, b"\xB0\x62\x7F", True))
-        body.append(((stop if stop is not None and stop > start else end_tick), 1 << 40, b"\xB0\x63\x1E", True))
+        # The loop end after the notes released at its tick, before what starts there (after the loop: not played,
+        # else played and the loop start's notes with them, two notes at once at each jump back)
+        body.append((loop_end, -1, b"\xB0\x63\x1E", True))
+        body = [(t, -2 if t == loop_end and is_ch and d[0] & 0xF0 == 0x90 and d[2] == 0 else o, d, is_ch)
+                for t, o, d, is_ch in body]
+        body += [(start, -0.3, data, is_ch) for data, is_ch in _loop_state(events, tempo, start, loop_end,
+                                                                           drum_program)]
     body.sort(key=lambda e: (e[0], e[1]))
     last, status, notes, chans, poly, peak = 0, 0, 0, set(), {}, 0
     for t, _, data, is_ch in body:
@@ -644,6 +692,24 @@ def _seq_events(d):
     return out, tick
 
 
+def _bend_resets(events):
+    """[(tick, MIDI bytes)] in time order, with a pitch bend back to the centre before a note on of a channel left
+    bent. On the console (libsnd, the sound tester) a bend bends the notes sounding and a new note starts unbent:
+    SEQs bend one note (Alundra: a quick fall or rise) and set the bend back only at the next note bent. In a MIDI
+    file a bend stays for the notes after it: they were heard 1 or 2 semitones off. (A note of the channel still
+    sounding then is unbent with it in MIDI, where the console keeps its bend.)"""
+    bend, out = [8192] * 16, []
+    for t, e in events:
+        kind, c = e[0] & 0xF0, e[0] & 15
+        if kind == 0xE0 and e[0] < 0xF0:
+            bend[c] = e[1] | (e[2] << 7)
+        elif kind == 0x90 and e[0] < 0xF0 and len(e) > 2 and e[2] and bend[c] != 8192:
+            out.append((t, bytes((0xE0 | c, 0x00, 0x40))))
+            bend[c] = 8192
+        out.append((t, e))
+    return out
+
+
 def seq_to_midi(src, out, loops=0):
     """SEQ (or each SEQ of a SEP: out_NN.mid) -> MIDI file (type 0), played as the console plays it: a loop with a
     count written that many more times, an endless one (count 127) marked loopStart / loopEnd (read back by
@@ -693,7 +759,7 @@ def seq_to_midi(src, out, loops=0):
         track = bytearray(b"\x00\xFF\x51\x03" + struct.pack(">I", tempo)[1:] + b"\x00\xFF\x58\x04" +
                           bytes((num or 4, den or 2, 24, 8)))
         last = 0
-        for t, e in sorted(rendered, key=lambda x: x[0]):
+        for t, e in _bend_resets(sorted(rendered, key=lambda x: x[0])):
             track += _varlen(t - last) + e
             last = t
         track += _varlen(max(0, end + offset - last)) + b"\xFF\x2F\x00"

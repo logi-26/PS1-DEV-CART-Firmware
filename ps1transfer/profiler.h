@@ -28,6 +28,7 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size);
 bool	USB_ReadData(uint8_t *data, uint32_t size);
 bool	USB_ReadByteNoWait(uint8_t *c);
 void	PC_FileServerCmd(int first);
+bool	PC_IsFileServerRequest(uint8_t type);	// (main.c)
 void	AutoLoadSymbols(char *symfile);
 extern bool		ps1_program_running;
 extern uint32_t	usb_big_packet_size;

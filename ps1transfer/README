@@ -74,10 +74,13 @@ Parameters:
    "program I" (index of the programs with tones), "note N" (0-127, 60 = C4), "volume V" (0-127, also for the notes
    sounding), "play [N]" / "release" (Cross held), "seq 0/1" (SEQ stop/start), "stop" (all sounds), "vabwrite OFFSET
    HEX" (VAB editor: bytes written in the VH the tester plays, applied at once to the notes sounding), "vabread" (the
-   VH: "SNDVH HEX"), "spuregs" (the SPU registers: "SNDSPU HEX", debug monitor version 10), "quit". It prints
+   VH: "SNDVH HEX"), "spuregs" (the SPU registers: "SNDSPU HEX", debug monitor version 10), "seek MS" (SEQ played from
+   this time), "pause 0/1", "seqload FILE" (a new SEQ played from the same time: the music tracker's song changed while
+   it plays; the SEQ must be the last -snd file), "bankload BASE" (new sound files BASE.vh, BASE.vb, BASE.seq loaded by
+   the tester, the music on from the same time: the tracker's instruments changed; "SNDBANK SIZE"), "quit". It prints
    "SNDINFO KIND PROGRAMS VAB_PS VAB_TS VAB_VS VAG_RATE", "SNDPROGS P0 P1..." at the start, then
    "SNDSTATE PROG_INDEX PROGRAM NOTE VOLUME PLAYING SEQ BAR LOOP VOICES" each time the tester's state changes (also with
-   its controller; VOICES: hexadecimal, bit n = voice n sounding)
+   its controller; VOICES: hexadecimal, bit n = voice n sounding), "SNDPOS POS_MS LEN_MS PAUSED" (the SEQ position)
 -tim TIM file for the TIM and VRAM viewer (timviewer.ps-exe next to ps1transfer), up to 32 files
 -timlive With -tim -c: the viewer takes commands on the input (PS1 Dev Cart Manager): "clut I ROW V0 V1..." writes a
    CLUT row of TIM I (16-bit colours in hexadecimal) in the viewer's copy and in VRAM, "read" prints the CLUTs as the

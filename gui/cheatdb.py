@@ -41,6 +41,7 @@ import shutil
 import sqlite3
 import sys
 
+import codeengine
 from settings import config_dir
 
 SCHEMA = """
@@ -145,7 +146,7 @@ def pops_cheat(lines):
                 emit("80%06X %04X" % (adrs + k * step * 4 + 2, w >> 16))
         elif t == 0xD:                              # Test: nn lines, T (0 =, 1 !=, 2 <, 3 >), S (0: 16, 1: 8-bit)
             count, test, size = v >> 24, (v >> 20) & 0xF, (v >> 16) & 0xF
-            if test > 3 or size > 1 or cond:
+            if test > 3 or size > 1 or cond or not count:      # (a test of no line: its meaning not known)
                 return None
             cond[:] = ["%s%X%06X %04X" % ("E" if size else "D", test, adrs, v & (0xFF if size else 0xFFFF)), count]
         else:
@@ -428,6 +429,8 @@ def rom_cheats(db, serials, size=ROM_CHEATS_SIZE):
                 lines.append((int(m.group(1), 16), int(m.group(2), 16)))
             else:
                 if not lines or len(lines) > 255 or any(c >> 24 not in ENGINE_TYPES for c, _v in lines):
+                    continue
+                if codeengine.safe_codes(lines) != lines:   # (a serial code writing past the RAM)
                     continue
                 text = name.encode("ascii", "replace")[:40]
                 cheats += bytes([len(text)]) + text + bytes([len(lines)])

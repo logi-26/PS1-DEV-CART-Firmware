@@ -15,6 +15,12 @@
 *	seq 0/1			SEQ music stopped / started
 *	sep N			the SEQ N (0...) of a SEP (several SEQs in one file)
 *	repeat 0/1		at the end of the music: stopped (0: played once, as a game plays a jingle) or played again (1)
+*	seek MS			SEQ music played from this time (milliseconds; paused: stays paused there)
+*	pause 0/1		SEQ music resumed / paused
+*	seqload FILE	a new SEQ played from the same time (music tracker: the song changed while it plays): "SNDSEQ
+*					SIZE" when sent (the SEQ must be the last of the -snd files)
+*	bankload BASE	new instruments and music (BASE.vh, BASE.vb, BASE.seq: the sound files replaced, the music played
+*					from the same time, paused if it was): "SNDBANK SIZE" when sent
 *	stop			all sounds stopped (Start)
 *	vabwrite OFFSET HEX	VAB editor: the bytes written in the VH the tester plays (OFFSET in the VH, decimal; HEX:
 *					the bytes), applied at once to the notes sounding too: "SNDWROTE OFFSET SIZE"
@@ -24,7 +30,7 @@
 *					reverb (0 as the bank's tones, 1 all, 2 none), SEQ transpose (semitones), SEQ tempo (percent),
 *					mono 0/1, SEQ channels muted (bit n: channel n)
 *	spuregs			the SPU registers (0x1F801C00-0x1F801DFF, read by the debug monitor version 10): "SNDSPU HEX"
-*	quit
+*	quit			the link ended: the music stopped, every sound silenced first (as stop)
 * Answers (start with "SND"): at the start "SNDLIVE ready", "SNDINFO KIND PROGRAMS VAB_PS VAB_TS VAB_VS VAG_RATE" (KIND 0:
 * no sound data, 1: VAB, 2: VAG), "SNDPROGS P0 P1 ..." (program numbers, in index order), "SNDVAB ADDR SIZE" (the VH in
 * RAM, VAB editor; 0 0: not editable, an older tester); then
@@ -33,7 +39,9 @@
 * older tester, no effects; SAMPLES_END: SPU RAM used by the samples, hexadecimal), then
 * "SNDCHAN REVERB CH_USED CH_ACTIVE P0 ... P15" each time it changes (REVERB: type in use, -1 not enough SPU RAM;
 * CH_USED/CH_ACTIVE: hexadecimal, bit n = SEQ channel n with notes / sounding; Pn: program of channel n), then
-* SEP_INDEX SEP_COUNT (the SEQ played, the SEQs in the music file: 1 for a SEQ, 0 for none). "SNDLIVE disconnected" (then the end) when the cartridge
+* SEP_INDEX SEP_COUNT (the SEQ played, the SEQs in the music file: 1 for a SEQ, 0 for none).
+* "SNDPOS POS_MS LEN_MS PAUSED" each time it changes (by 100 ms; a tester with seek and pause only): the SEQ position
+* (0 when stopped), its length, 1 when paused. "SNDLIVE disconnected" (then the end) when the cartridge
 * stops answering. Errors: "SNDERR text". The tester's printf text goes on meanwhile.
 *
 * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -82,6 +90,24 @@
 #define	SYNC_SEP_INDEX		124
 #define	SYNC_REQ_REPEAT		126		// At the end of the music: 1 played again, 0 stopped
 #define	SYNC_SIZE			128
+#define	TESTER_POS_ADRS		0x80100068	// SoundPos in soundtest.c (before SoundSync)
+#define	POS_MS				0
+#define	POS_LEN_MS			4
+#define	POS_REQ_SEEK		8
+#define	POS_REQ_PAUSE		12
+#define	POS_PAUSED			14
+#define	POS_VERSION			16
+#define	POS_REQ_RELOAD		18		// 1: the SEQ at its file's address, 2: at TESTER_SEQ_SPARE
+#define	POS_RELOAD_SIZE		20
+#define	TESTER_DATA_ADRS	0x80100000
+#define	TESTER_FILE_TABLE	8			// TesterData: magic, count, then type, address, size of each file
+#define	TESTER_MAX_FILES	8
+#define	TESTER_FILE_SEQ		4
+#define	TESTER_FILE_MAGIC	0x54444E53	// "SNDT" (main.c: TESTER_MAGIC)
+#define	TESTER_HEADER_SIZE	0x100		// The files after the header (file table, SoundPos, SoundSync)
+#define	TESTER_SEQ_SPARE	0x801C0000	// soundtest.c: the second place of a reloaded SEQ
+#define	TESTER_SEQ_SPARE_SIZE	0x20000
+#define	POS_SIZE			(TESTER_SYNC_ADRS - TESTER_POS_ADRS)
 #define	MAX_HEX_BYTES		0x11000	// vabwrite, vabread: a whole VH (128 programs: 68128 bytes)
 
 #define	POLL_MS				50		// The state read (and printed when it changes) 20 times a second
@@ -99,8 +125,19 @@ static bool	Usb(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 {
 	bool	ok;
 
+	static const int	wait_ms[] = {20, 60, 150};
+	int					i;
+
+	// Tried again: a transfer now and then fails, and the tester doesn't answer while it is busy (sounds loaded in
+	// the SPU RAM); writing again is harmless. (The answer of a transfer given up may come late: drained.)
 	LiveDrain();
 	ok = USB_Process(cmd, data, adrs, size);
+	for (i = 0; !ok && (i < (int)(sizeof(wait_ms) / sizeof(wait_ms[0]))); i++)
+	{
+		LiveSleepMs(wait_ms[i]);
+		LiveDrain();
+		ok = USB_Process(cmd, data, adrs, size);
+	}
 	usb_failures = ok ? 0 : usb_failures + 1;
 	return (ok);
 }
@@ -112,6 +149,193 @@ static void	Request(int offset, int value)
 
 	if (!Usb('U', (uint8_t *)&v, TESTER_SYNC_ADRS + offset, sizeof(v)))
 		printf("SNDERR USB error\n");
+}
+
+// A request of the position block (seek: 32-bit, pause: 16-bit)
+static void	PosRequest(int offset, int value, int size)
+{
+	int32_t	v32 = value;
+	int16_t	v16 = value;
+
+	if (!Usb('U', (size == 4) ? (uint8_t *)&v32 : (uint8_t *)&v16, TESTER_POS_ADRS + offset, size))
+		printf("SNDERR USB error\n");
+}
+
+// seqload FILE: the new SEQ written where the tester doesn't read (its file's place and the spare one in turn), then
+// the tester asked to play it from the same time
+static int	slot = 1;			// Where the tester plays the SEQ from (seqload; bankload: its file again)
+
+static void	SeqLoad(const char *path)
+{
+	uint8_t		table[TESTER_FILE_TABLE + TESTER_MAX_FILES * 12], pos[POS_SIZE], *data;
+	uint32_t	seq_adrs = 0, seq_size = 0, end = 0, adrs, size, room;
+	int			i, count, next = (slot == 1) ? 2 : 1;
+	long		length;
+	FILE		*f;
+
+	if (!Usb('D', pos, TESTER_POS_ADRS, sizeof(pos)) || (Get16(pos + POS_VERSION) < 2) ||
+		!Usb('D', table, TESTER_DATA_ADRS, sizeof(table)))
+	{
+		printf("SNDERR this sound tester can't reload a SEQ (rebuild soundtest.ps-exe)\n");
+		return;
+	}
+	count = Get32(table + 4);
+	for (i = 0; (i < count) && (i < TESTER_MAX_FILES); i++)
+	{
+		adrs = Get32(table + TESTER_FILE_TABLE + i * 12 + 4);
+		size = Get32(table + TESTER_FILE_TABLE + i * 12 + 8);
+		if (Get32(table + TESTER_FILE_TABLE + i * 12) == TESTER_FILE_SEQ)
+		{
+			seq_adrs = adrs;
+			seq_size = size;
+		}
+		if (adrs + size > end)
+			end = adrs + size;
+	}
+	if (!seq_adrs || (end > TESTER_SEQ_SPARE))
+	{
+		printf("SNDERR %s\n", !seq_adrs ? "no SEQ was sent with the sounds" : "the sound files leave no room for a new SEQ");
+		return;
+	}
+	if (!(f = fopen(path, "rb")))
+	{
+		printf("SNDERR can't open %s\n", path);
+		return;
+	}
+	fseek(f, 0, SEEK_END);
+	length = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	room = (next == 2) ? TESTER_SEQ_SPARE_SIZE : ((seq_adrs + seq_size == end) ? TESTER_SEQ_SPARE - seq_adrs : seq_size);
+	if ((length < 16) || ((uint32_t)length > room) || !(data = malloc(length)))
+	{
+		printf("SNDERR the SEQ is too big (%ld bytes, %u here)\n", length, room);
+		fclose(f);
+		return;
+	}
+	if (fread(data, 1, length, f) != (size_t)length)
+	{
+		printf("SNDERR can't read %s\n", path);
+		fclose(f);
+		free(data);
+		return;
+	}
+	fclose(f);
+	adrs = (next == 2) ? TESTER_SEQ_SPARE : seq_adrs;
+	size = length;
+	if (Usb('U', data, adrs, size) && Usb('U', (uint8_t *)&size, TESTER_POS_ADRS + POS_RELOAD_SIZE, 4))
+	{
+		PosRequest(POS_REQ_RELOAD, next, 2);
+		slot = next;
+		printf("SNDSEQ %u\n", size);
+	}
+	else
+		printf("SNDERR USB error\n");
+	free(data);
+}
+
+// A whole file read (NULL: printed why)
+static uint8_t	*ReadWhole(const char *path, uint32_t *size)
+{
+	uint8_t	*data = NULL;
+	long	length;
+	FILE	*f;
+
+	if (!(f = fopen(path, "rb")))
+	{
+		printf("SNDERR can't open %s\n", path);
+		return (NULL);
+	}
+	fseek(f, 0, SEEK_END);
+	length = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if ((length <= 0) || !(data = malloc(length)) || (fread(data, 1, length, f) != (size_t)length))
+	{
+		printf("SNDERR can't read %s\n", path);
+		free(data);
+		data = NULL;
+	}
+	fclose(f);
+	*size = (uint32_t)length;
+	return (data);
+}
+
+// bankload BASE: new instruments and music (BASE.vh, BASE.vb, BASE.seq) while the tester runs: the music paused (so
+// the tester reads none of it while it is written), the files and the file table written as -snd does, then the
+// tester asked to load them (BankReload in soundtest.c) and play the music from the same time
+static void	BankLoad(const char *base)
+{
+	static const char	*ext[3] = {".vh", ".vb", ".seq"};
+	static const int	types[3] = {1, 2, TESTER_FILE_SEQ};
+	uint8_t				pos[POS_SIZE], *data[3] = {NULL, NULL, NULL};
+	uint32_t			table[2 + 3 * 3], size[3], offset = TESTER_HEADER_SIZE, keep_paused, i;
+	char				path[1024];
+	bool				ok = true;
+
+	if (!Usb('D', pos, TESTER_POS_ADRS, sizeof(pos)) || (Get16(pos + POS_VERSION) < 3))
+	{
+		printf("SNDERR this sound tester can't reload the instruments (rebuild soundtest.ps-exe)\n");
+		return;
+	}
+	table[0] = TESTER_FILE_MAGIC;
+	table[1] = 3;
+	for (i = 0; (i < 3) && ok; i++)
+	{
+		snprintf(path, sizeof(path), "%s%s", base, ext[i]);
+		if (!(data[i] = ReadWhole(path, &size[i])))
+			ok = false;
+		else
+		{
+			table[2 + i * 3] = types[i];
+			table[2 + i * 3 + 1] = TESTER_DATA_ADRS + offset;
+			table[2 + i * 3 + 2] = size[i];
+			offset += (size[i] + 3) & ~3;
+		}
+	}
+	if (ok && (TESTER_DATA_ADRS + offset > TESTER_SEQ_SPARE))
+	{
+		printf("SNDERR the sound files are too big (%u KB, %u KB free)\n", offset / 1024,
+			   (TESTER_SEQ_SPARE - TESTER_DATA_ADRS - TESTER_HEADER_SIZE) / 1024);
+		ok = false;
+	}
+	if (ok)
+	{
+		// The music paused (its notes released), waited for: nothing read while the files are written
+		keep_paused = Get16(pos + POS_PAUSED) ? 1 : 0;
+		if (!keep_paused)
+		{
+			PosRequest(POS_REQ_PAUSE, 1, 2);
+			for (i = 0; i < 10; i++)
+			{
+				LiveSleepMs(20);
+				if (!Usb('D', pos, TESTER_POS_ADRS, sizeof(pos)) || (Get16(pos + POS_REQ_PAUSE) < 0))
+					break;
+			}
+		}
+		for (i = 0; (i < 3) && ok; i++)
+			ok = Usb('U', data[i], table[2 + i * 3 + 1], size[i]);
+		ok = ok && Usb('U', (uint8_t *)table, TESTER_DATA_ADRS, sizeof(table)) &&
+			 Usb('U', (uint8_t *)&keep_paused, TESTER_POS_ADRS + POS_RELOAD_SIZE, 4);
+		if (ok)
+		{
+			PosRequest(POS_REQ_RELOAD, 3, 2);
+			// Waited for (up to 2 s): the tester busy loading them doesn't answer, the next commands would fail
+			for (i = 0; i < 40; i++)
+			{
+				LiveSleepMs(50);
+				if (USB_Process('D', pos, TESTER_POS_ADRS, sizeof(pos)) && (Get16(pos + POS_REQ_RELOAD) <= 0))
+					break;
+				LiveDrain();
+			}
+			slot = 1;
+			vh_adrs = table[3];		// (the VAB editor's place of the VH)
+			vh_size = size[0];
+			printf("SNDBANK %u\n", offset - TESTER_HEADER_SIZE);
+		}
+		else
+			printf("SNDERR USB error\n");
+	}
+	for (i = 0; i < 3; i++)
+		free(data[i]);
 }
 
 // Cross held (or released) from the computer
@@ -237,12 +461,23 @@ static void	SpuRegs(void)
 static void	State(bool force)
 {
 	static char	last[128];
-	uint8_t		sync[SYNC_SIZE];
+	uint8_t		block[POS_SIZE + SYNC_SIZE], *sync = block + POS_SIZE, *pos = block;
 	char		text[128];
 	int			i;
 
-	if (!Usb('D', sync, TESTER_SYNC_ADRS, sizeof(sync)) || (Get32(sync) != TESTER_SYNC_MAGIC))
+	if (!Usb('D', block, TESTER_POS_ADRS, sizeof(block)) || (Get32(sync) != TESTER_SYNC_MAGIC))
 		return;
+	if (Get16(pos + POS_VERSION) >= 1)
+	{
+		static char	last_pos[64];
+
+		sprintf(text, " %u %u %d", Get32(pos + POS_MS) / 100 * 100, Get32(pos + POS_LEN_MS), Get16(pos + POS_PAUSED));
+		if (force || strcmp(text, last_pos))
+		{
+			strcpy(last_pos, text);
+			printf("SNDPOS%s\n", text);
+		}
+	}
 	text[0] = 0;
 	for (i = 0; i < 8; i++)
 		sprintf(text + strlen(text), " %d", Get16(sync + SYNC_STATE + i * 2));
@@ -354,6 +589,36 @@ int	SndLive(void)
 			Request(SYNC_REQ_SEP, Arg(0));
 		else if (!strcmp(cmd, "repeat"))
 			Request(SYNC_REQ_REPEAT, Arg(1) ? 1 : 0);
+		else if (!strcmp(cmd, "seek"))
+		{
+			int	ms = Arg(0);
+
+			PosRequest(POS_REQ_SEEK, (ms < 0) ? 0 : ms, 4);
+		}
+		else if (!strcmp(cmd, "seqload"))
+		{
+			char	*path = strtok(NULL, "");		// (the rest of the line: a path with spaces)
+
+			while (path && (*path == ' '))
+				path++;
+			if (path && *path)
+				SeqLoad(path);
+			else
+				printf("SNDERR seqload: give the SEQ file\n");
+		}
+		else if (!strcmp(cmd, "bankload"))
+		{
+			char	*base = strtok(NULL, "");
+
+			while (base && (*base == ' '))
+				base++;
+			if (base && *base)
+				BankLoad(base);
+			else
+				printf("SNDERR bankload: give the files' name (without .vh, .vb, .seq)\n");
+		}
+		else if (!strcmp(cmd, "pause"))
+			PosRequest(POS_REQ_PAUSE, Arg(1) ? 1 : 0, 2);
 		else if (!strcmp(cmd, "fx"))
 			Fx();
 		else if (!strcmp(cmd, "spuregs"))
@@ -365,5 +630,8 @@ int	SndLive(void)
 	}
 	if (pressed)		// (no note left held by the computer)
 		Cross(false);
+	// The link ends (Stop on the page, quit, the Manager closed): the music stopped and every sound silenced, else the
+	// tester played on with nothing left to stop it but a reset
+	Request(SYNC_REQ_STOP, 1);
 	return (0);
 }

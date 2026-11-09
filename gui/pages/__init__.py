@@ -13,6 +13,7 @@ from pages.tim import TimPage
 from pages.spu import SpuPage
 from pages.sound import SoundPage
 from pages.synth import SynthPage
+from pages.tracker import TrackerPage
 from pages.movie import MoviePage
 from pages.card import CardPage
 from pages.gamedata import GameDataPage
@@ -22,5 +23,5 @@ from pages.firmware import FirmwarePage
 from pages.settings_page import SettingsPage
 
 PAGES = [RunPsxPage, RunYarozePage, ConsolePage, ControllerPage, MemoryPage, ProfilerPage, HotReloadPage, ScreenPage,
-         DebugPage, FramePage, ViewersPage, TimPage, SpuPage, SoundPage, SynthPage, MoviePage, GameDataPage, CardPage,
+         DebugPage, FramePage, ViewersPage, TimPage, SpuPage, SoundPage, TrackerPage, SynthPage, MoviePage, GameDataPage, CardPage,
          LinkTestPage, CheatsPage, FirmwarePage, SettingsPage]

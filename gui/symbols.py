@@ -133,9 +133,11 @@ def _ecoff(d):
     return [s for s in syms if s.name]
 
 
-MAP_SECTION = re.compile(r"^\s*\.(\w+)")                                         # " .text   0x80010000 ..."
+MAP_SECTION = re.compile(r"^\.(\w+)")             # The output section (".text   0x80010000 ..."), at the line start
+                                                  # (not an input one inside it: " .prof_ram", code in .text)
 MAP_SYMBOL = re.compile(r"^\s+0x([0-9a-fA-F]{8,16})\s+([A-Za-z_][\w.$:<>~]*)\s*$")  # "   0x80012345   player"
-NM_LINE = re.compile(r"^([0-9a-fA-F]{8})\s+(?:([0-9a-fA-F]{8})\s+)?([A-Za-z])\s+(.+)$")
+# (8 hex digits, or 16 as a 64-bit nm prints them: ffffffff80012345, the PSn00bSDK toolchain's)
+NM_LINE = re.compile(r"^([0-9a-fA-F]{8}|[0-9a-fA-F]{16})\s+(?:([0-9a-fA-F]{8}|[0-9a-fA-F]{16})\s+)?([A-Za-z])\s+(.+)$")
 
 
 def _text(text):
@@ -148,8 +150,8 @@ def _text(text):
             if letter in "Uuw":
                 continue
             kind = "func" if letter in "Tt" else ("data" if letter in "BbDdGgSsRrCc" else "?")
-            syms.append(Symbol(m.group(4).strip(), int(m.group(1), 16), int(m.group(2), 16) if m.group(2) else 0,
-                               kind))
+            syms.append(Symbol(m.group(4).strip(), int(m.group(1), 16) & 0xFFFFFFFF,
+                               int(m.group(2), 16) & 0xFFFFFFFF if m.group(2) else 0, kind))
             continue
         m = MAP_SYMBOL.match(line)
         if m:               # GNU ld map: the symbol's section is the last one named before it

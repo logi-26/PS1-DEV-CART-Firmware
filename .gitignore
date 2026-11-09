@@ -42,3 +42,8 @@ buildtools/
 demos/*/*.ld
 # Demos: the PCSX-Redux settings made by demos/plaza/redux.ps1
 demos/*/.redux/
+# The sound and movie tests' host builds (tests/*/build_host.py) and temporary files
+tests/sound/build/
+tests/movie/build/
+tests/tools/build/
+__pycache__/

@@ -112,9 +112,14 @@ class Spu:
             if kind == "zero":
                 while adrs < limit and self._block(adrs) == "zero":
                     adrs += BLOCK
-                # A single zero block just before a sample: its first block (VAG files start with one)
-                if adrs - start == BLOCK and adrs < limit and self._block(adrs) == "adpcm":
-                    adrs = start
+                # The zero block just before a sample: its first block (VAG files start with one); the ones before it
+                # free. (Only a single one was: a bank loaded at 0x1010, after the zero block at 0x1000 libsnd keeps,
+                # had its first sample start a block late, the voice playing it said to be in free memory.)
+                if adrs < limit and self._block(adrs) == "adpcm":
+                    if adrs - start > BLOCK:
+                        regions.append(Region(start, adrs - BLOCK, "free"))
+                    adrs -= BLOCK
+                    start = adrs
                     kind = "adpcm"
                 else:
                     regions.append(Region(start, adrs, "free"))
@@ -203,7 +208,9 @@ class Spu:
                                   (what, v.start))
             elif r.kind in ("capture", "reverb", "data"):
                 r.warnings.append("%s starts in the %s at 0x%05X" % (what, r.name().lower(), v.start))
-            elif v.start != r.start and v.start != r.loop_start and not idle:
+            elif (v.start != r.start and v.start != r.loop_start and not idle and
+                  not (v.start == r.start + BLOCK and not any(self.ram[r.start:r.start + BLOCK]))):
+                # (its first block after the zero one a VAG starts with: the sound's start, not a wrong address)
                 r.warnings.append("%s starts 0x%X bytes into it (0x%05X): wrong address?" %
                                   (what, v.start - r.start, v.start))
 

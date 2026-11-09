@@ -390,6 +390,11 @@ class MoviePage(Page):
             min(scales), max(scales), sum(scales) / len(scales), sum(sizes) // len(sizes))
         if res["over"]:
             text += "; %d frames didn't fit at the fixed scale (coarser)" % res["over"]
+        if res.get("late"):
+            # (too detailed for their sectors even at the coarsest scale: they took the next frames' sectors)
+            text += "; %d frames too big for their sectors (shown late%s: a smaller size, fewer frames a second or " \
+                    "speed 2x)" % (res["late"], ", the picture %.2f s behind the sound at the end" % (
+                        res["behind"] / (75.0 * res.get("speed", 2))) if res.get("behind") else "")
         self.status.configure(text=text)
         self.app.log.append("Movie: %s\n" % text)
         self.inspect_file.set(self.out.get())
@@ -694,6 +699,8 @@ class MoviePage(Page):
 
     def _tester_line(self, line):
         line = line.strip()
+        if "VIDTEST" in line and not line.startswith("VIDTEST"):  # (after the PS1's text, without its line end)
+            line = line[line.index("VIDTEST"):]
         if not line.startswith("VIDTEST"):
             return
         parts = line.split()

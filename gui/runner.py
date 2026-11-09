@@ -126,7 +126,8 @@ class Runner:
                 break
             if not data:
                 break
-            self.queue.put((task, data.decode(errors="replace")))
+            # (zero bytes: padding of the PS1 tty's USB packets, not text)
+            self.queue.put((task, data.replace(b"\x00", b"").decode(errors="replace")))
         task.proc.wait()
         self.queue.put((task, None))
 

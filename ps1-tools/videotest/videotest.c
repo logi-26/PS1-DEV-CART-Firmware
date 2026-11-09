@@ -333,6 +333,27 @@ static int32_t	SoundClock(void)
 	return (clock_now);
 }
 
+// Paused: the sound stopped, the FIFO taken back over the blocks the SPU had been given but hadn't played yet (its ring
+// holds up to two halves ahead, 190 ms at 37800 Hz): they are played again when it resumes. (They were lost: after each
+// pause the sound was ahead of the picture by that much, the clock following the sound.)
+static void	PauseSound(void)
+{
+	int32_t		unplayed = consumed_samples - SoundClock();
+	uint32_t	blocks = (unplayed > 0) ? (uint32_t)unplayed / 28 : 0;
+	int			c, channels = stereo ? 2 : 1;
+
+	SPU_KEY_OFF = 3;
+	sound_on = 0;
+	clock_base = -1;
+	if (blocks > 2 * HALF_BLOCKS)
+		blocks = 2 * HALF_BLOCKS;
+	for (c = 0; c < channels; c++)		// (only while those blocks are still in the FIFO: not written over since)
+		if ((FifoBlocks(c) + blocks) * 16 > AUDIO_FIFO - 16)
+			blocks = (AUDIO_FIFO - 16) / 16 - FifoBlocks(c);
+	for (c = 0; c < channels; c++)
+		fifo_tail[c] -= blocks * 16;
+}
+
 /****************************************/
 // Video: frames put together from their sectors, decoded in the background, shown at their time
 
@@ -1160,7 +1181,7 @@ int	main(void)
 		if ((pad & PADLdown) && (volume > 0))	{ volume--; SetVolume(); }
 		opad = pad;
 		if (paused && sound_on)
-			SPU_KEY_OFF = 3, sound_on = 0, clock_base = -1;
+			PauseSound();
 
 		if (playing && (frame - report >= 30))
 		{

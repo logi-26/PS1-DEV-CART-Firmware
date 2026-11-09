@@ -802,19 +802,20 @@ static bool	Drain(int ms)
 
 	do
 	{
-		while (USB_ReadByteNoWait(&c))
+		// (50 ms at most past its time: what keeps coming is read at the next call, the reports and commands in between)
+		while ((Now() < end + 0.05) && USB_ReadByteNoWait(&c))
 		{
 			if (c == ESC)
 			{
 				if (!USB_ReadData(&type, 1))
 					return (false);
-				if (PacketSize(type))
+				if (PC_IsFileServerRequest(type))	// (first: the close request is the same byte as a conflict packet)
+					PC_FileServerCmd(type);		// A PCDRV request of the program
+				else if (PacketSize(type))
 				{
 					if (!HandlePacket(type))
 						return (false);
 				}
-				else
-					PC_FileServerCmd(type);		// A PCDRV request of the program
 			}
 			else
 			{
@@ -946,6 +947,13 @@ int	UsbProfile(ProfOptions *o)
 			(ram_hi - ram_lo) / 1024);
 	last_char = '\n';
 
+	// The first second's measures from now: what came while it started (the samples of the start, the frames before)
+	// was counted in it (65 fps for a program at 50)
+	Drain(0);
+	for (i = 0; i < BUCKETS; i++)
+		buckets[i].period = 0;
+	memset(&period, 0, sizeof(period));
+	period.sp_min = 0xFFFFFFFF;
 	start = last = Now();
 	while (!LinkStopRequested() && (conflict < 0))
 	{
