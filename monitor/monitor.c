@@ -1418,8 +1418,35 @@ static void	ProfSlow(uint32_t *regs)
 /****************************************/
 // Stopped program: commands from the computer
 
+// Bus timing of the writes to the USB chip on BIOS 4.x consoles (SCPH-7002/7502, USB_SEND_TIMING of usb.h): the word
+// the menu left for the kernel hook (0 on the other consoles), EXP1 |= word, COM_DELAY |= word >> 4 (COM1 15: the
+// program's startup may have set the BIOS value again, e.g. CdInit). The monitor's answers had the BIOS timing (only
+// the kernel hook's memory reads and writes had it): the SPU RAM viewer's read ("retry..." then a USB error), memory
+// reads of a stopped program, VRAM and GPU reads failed on these consoles
+#define	USB_SEND_BITS		(*((volatile uint32_t *)0x8000DEDC))	// USB_SEND_BITS_ADRS
+#define	EXP1_DELAY_SIZE		(*((volatile uint32_t *)0x1F801008))
+#define	COM_DELAY			(*((volatile uint32_t *)0x1F801020))
+
+static bool	MonCommand(bool wait);
+
 // Returns true when the computer resumes the program. wait: waits for the command (service while the program runs).
 static bool	MonReceive(bool wait)
+{
+	uint32_t	exp1 = EXP1_DELAY_SIZE, bits = USB_SEND_BITS;
+	bool		resume;
+
+	if (bits)
+	{
+		EXP1_DELAY_SIZE = exp1 | bits;
+		COM_DELAY |= bits >> 4;
+	}
+	resume = MonCommand(wait);
+	if (bits)
+		EXP1_DELAY_SIZE = exp1;	// (each transfer ends with an ACK read: its writes are done)
+	return (resume);
+}
+
+static bool	MonCommand(bool wait)
 {
 	uint8_t		cmd[1+4+4+1];
 	uint32_t	adrs, size;

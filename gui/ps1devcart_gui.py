@@ -29,7 +29,7 @@ from runner import Runner  # noqa: E402
 from settings import Settings  # noqa: E402
 from widgets import MonoText  # noqa: E402
 
-APP_VERSION = "1.2"     # PS1 DEV CART release (the same as the firmware)
+APP_VERSION = "1.3"     # PS1 DEV CART release (the same as the firmware)
 APP_TITLE = "PS1 Dev Cart Manager " + APP_VERSION
 
 def resource(*parts):

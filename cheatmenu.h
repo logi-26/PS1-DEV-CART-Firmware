@@ -70,20 +70,33 @@ static int	CheatFind(const char *serial, const volatile uint8_t **cheats, char *
 			if (!serial[i])
 				break;
 		}
-		for (n = 0; (n < count) && (c + 2 <= end); n++)
+		// Only the cheats read whole (name and codes before the end): a damaged area's header could count more (the
+		// cheats past the data were listed with no place, the kernel's RAM read as their codes)
+		for (n = 0; n < count; n++)
 		{
+			const volatile uint8_t	*codes, *next;
+
+			if (c + 1 > end)
+				break;
+			codes = c + 1 + c[0];		// Name
+			if (codes + 1 > end)
+				break;
+			next = codes + 1 + codes[0] * 6;	// Codes
+			if (next > end)
+				break;
 			if (same && (n < CHEATS_SHOWN))
 				cheats[n] = c;
-			c += 1 + c[0];				// Name
-			c += 1 + c[0] * 6;			// Codes
+			c = next;
 		}
 		if (same)
 		{
 			for (i = 0; i < CHEAT_DB_TITLE - 1; i++)
 				title[i] = g[CHEAT_DB_SERIAL + i];
 			title[i] = 0;
-			return ((count < CHEATS_SHOWN) ? count : CHEATS_SHOWN);
+			return ((n < CHEATS_SHOWN) ? n : CHEATS_SHOWN);
 		}
+		if (n < count)					// (a damaged area: no game after it)
+			break;
 		g = c;
 	}
 	return (0);
@@ -197,10 +210,27 @@ int	CheatMenu(const char *serial)
 
 			if (!on[i])
 				continue;
-			for (k = 0; (k < c[0]) && (count < CHEAT_MAX); k++, count++)
+			for (k = 0; (k < c[0]) && (count < CHEAT_MAX); k++)
 			{
-				t->codes[count].code = RomLe(c + 1 + k * 6, 4);
+				uint32_t	code = RomLe(c + 1 + k * 6, 4);
+
+				// A serial code (50) whose writes go past the 2 MB of RAM: left out with the code after it (the
+				// kernel hook's engine, no room left there, writes on: the RAM's mirror, the kernel at its start;
+				// the Manager's codeengine.safe_codes, which also leaves them out of the flash)
+				if (((code >> 24) == 0x50) && (k + 1 < c[0]))
+				{
+					uint32_t	next = RomLe(c + 1 + (k + 1) * 6, 4), times = (code >> 8) & 0xFF;
+
+					if (times && ((next & 0x1FFFFF) + (times - 1) * (code & 0xFF) +
+						(((next >> 24) == 0x80) ? 2 : 1) > 0x200000))
+					{
+						k++;
+						continue;
+					}
+				}
+				t->codes[count].code = code;
 				t->codes[count].value = RomLe(c + 5 + k * 6, 2);
+				count++;
 			}
 		}
 		t->count = count;

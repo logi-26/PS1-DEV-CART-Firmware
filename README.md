@@ -288,8 +288,9 @@ These are timed on the whole `ps1transfer` command, so they include starting it:
 with the BIOS bus timing when the console writes to the USB chip, so some data sent to the computer failed every
 retry ("retry...", then the link lost; the original firmware has the same problem there). Since firmware 1.2 the
 menu detects BIOS 4.x and gives those writes a longer hold period. Downloads at the menu are then about 25% slower
-on those consoles (about 3% while a program runs); earlier consoles keep the full speed. `ps1transfer -timingtest`
-checks the link on any console and writes a report.
+on those consoles (about 3% while a program runs); earlier consoles keep the full speed. Firmware 1.3 also gives it
+to the debug monitor's answers (the SPU RAM Viewer's read, memory reads of a stopped program, VRAM and GPU reads),
+which 1.2 had left with the BIOS timing. `ps1transfer -timingtest` checks the link on any console and writes a report.
 
 
 The memory card tool reads and writes the card through the controller port registers itself, one 128-byte sector at

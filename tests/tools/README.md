@@ -55,9 +55,9 @@ Each tool run as its page runs it, nothing written to the flash or a memory card
   its `@input` every few frames): the PC side now serves those requests while it waits for an answer, tells a file
   close from the profiler's conflict packet, keeps up with the samples and returns from its reads in time, but the
   console still leaves the profiler's or the capture's command unanswered (its debug monitor, busy with the program's
-  requests): a firmware fix. Programs that don't use the file server, or attached after it, work. The live test uses
+  requests: the kernel hook reads the command's first byte as the acknowledgement of the program's request; the fix
+  needs room the kernel hook doesn't have). Programs that don't use the file server, or attached after it, work. The live test uses
   the control tester for both.
-- **Firmware cheat screen:** a damaged cheats area in the flash can make it list cheats it didn't read (marked as an
-  expected failure in `test_cheats.py`); the Manager always writes it whole.
-- **Code engine (kernel hook):** a serial code running past the 2 MB of RAM writes on. The Manager never sends one
-  (`codeengine.safe_codes`).
+- **Code engine (kernel hook):** a serial code running past the 2 MB of RAM writes on (the kernel hook has no room
+  left for the check). Nothing puts one in its table: the Manager leaves them out (`codeengine.safe_codes`), and since
+  firmware 1.3 so does the cheat screen for cheats in the flash.

@@ -48,8 +48,8 @@ static uint32_t	*p_ReturnFromExceptionOld = (uint32_t *)0x8000DF7C;
 // Menu screen images stored in the ROM file system (cartrom/tim.tfs), missing ones are skipped
 static char	*tim_files[] = {"logo.tim", "font.tim"};
 
-#define	FIRMWARE_VERSION	"1.2"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
-#define	FIRMWARE_VERSION_BCD	0x12	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
+#define	FIRMWARE_VERSION	"1.3"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
+#define	FIRMWARE_VERSION_BCD	0x13	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
 // In the ROM as text: the Manager's Firmware page reads the version of a ROM file from it (used by the menu: kept)
 static const char	firmware_tag[] = "Firmware: " FIRMWARE_VERSION;
 

@@ -252,7 +252,8 @@ class Engine(unittest.TestCase):
 
     def test_serial_past_the_ram(self):
         """A serial code running past the RAM's end: the console's engine writes on (on the PS1: the RAM's mirror,
-        the kernel at its start). The Manager never sends one (codeengine.safe_codes), nor puts one in the flash."""
+        the kernel at its start; no room left in the kernel hook for a check). The Manager never sends one
+        (codeengine.safe_codes) nor puts one in the flash, and the cheat screen leaves one out (firmware 1.3)."""
         codes = [(0x5000FFFF, 0x0001), (0x801FFF00, 0x0000)]
         t = write(tmp_path("t.bin"), table_bytes(codes))
         rin, rout = write(tmp_path("r.bin"), bytes(RAM)), tmp_path("o.bin")
@@ -378,14 +379,16 @@ class Flash(unittest.TestCase):
 
     def menu(self, blob, serial, mask=0):
         r = subprocess.run([self.exe, "menu", write(tmp_path("db.bin"), blob), serial, "%X" % mask],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, errors="replace", timeout=30)
         self.assertEqual(0, r.returncode, r.stderr)
         found, cheats, table = None, [], []
         for line in r.stdout.splitlines():
             if line.startswith("FOUND"):
                 found = line.split(" ", 2)
             elif line.startswith("CHEAT"):
-                name, codes = line[6:].split("|")
+                if "|" not in line:     # (a damaged name's bytes: a newline in it)
+                    continue
+                name, codes = line[6:].rsplit("|", 1)
                 cheats.append((name, [c for c in codes.split(";") if c]))
             elif line.startswith("CODE"):
                 table.append(line[5:])
@@ -430,11 +433,9 @@ class Flash(unittest.TestCase):
         self.assertEqual((0, "", [], []), self.menu(blob, "SLUS_999.99"))
         self.assertEqual(0, self.menu(blob, put[0][:10])[0], "a serial's start isn't the game")
 
-    @unittest.expectedFailure
     def test_damaged_flash(self):
-        """A damaged cheats area: the cheat screen must not use cheats it didn't read. KNOWN (firmware): CheatFind
-        returns the count in the game's header even when the data ends before (its pointers NULL: the kernel's RAM
-        read as cheats, their codes put in the engine). Needs a firmware change (count the cheats read)."""
+        """A damaged cheats area: the cheat screen uses only the cheats it read whole (firmware 1.3: CheatFind
+        returned the count in the game's header even when the data ended before)."""
         db = self.db([("SLES_001.00", "A", [("c%d" % i, ["80012345 %04X" % i]) for i in range(5)])])
         blob, _, _ = cheatdb.rom_cheats(db, ["SLES_001.00"])
         rng = random.Random(9)
@@ -445,6 +446,46 @@ class Flash(unittest.TestCase):
             self.menu(bytes(d), "SLES_001.00", 0xFF)      # (no crash: the reads stay in the flash)
             cheatdb.read_rom_cheats(bytes(d))
         self.assertEqual(bytes(16), cheatdb.rom_cheats(db, [])[0])
+
+    def test_unsafe_serial_in_flash(self):
+        """Serial codes writing past the RAM in the flash (put there without the Manager's filter): the cheat screen
+        leaves them out of the engine's table with the code after each (firmware 1.3), as codeengine.safe_codes."""
+        cheats = [("ok", ["50000402 0001", "801FFFF8 0000", "80010000 0005"]),
+                  ("past", ["5000FFFF 0001", "801FFF00 0000", "30010000 0007"]),
+                  ("8-bit edge", ["5000FF01 0001", "301FFFC0 0055"]),
+                  ("16-bit past", ["5000FF01 0001", "801FFFC1 0055", "80020000 0001"]),
+                  ("last code", ["5000FFFF 0001"])]
+        db = self.db([("SLES_001.00", "A", cheats)])
+        keep = codeengine.safe_codes
+        codeengine.safe_codes = lambda lines: lines             # (the flash written without the filter)
+        try:
+            blob, _, _ = cheatdb.rom_cheats(db, ["SLES_001.00"])
+        finally:
+            codeengine.safe_codes = keep
+        n, _title, got, table = self.menu(blob, "SLES_001.00", (1 << len(cheats)) - 1)
+        self.assertEqual(len(cheats), n)
+        want = []
+        for _name, codes in cheats:
+            lines = [(int(c.split()[0], 16), int(c.split()[1], 16)) for c in codes]
+            want += ["%08X %04X" % cv for cv in codeengine.safe_codes(lines)]
+        self.assertEqual(want, [t.upper() for t in table])
+
+    def test_cut_short(self):
+        """The area's size cut inside the game's cheats (its header still counting 5): only the cheats read whole."""
+        db = self.db([("SLES_001.00", "A", [("c%d" % i, ["80012345 %04X" % i] * (i + 1)) for i in range(5)])])
+        blob, _, _ = cheatdb.rom_cheats(db, ["SLES_001.00"])
+        ends, c = [], 12 + 12 + 32 + 2
+        for i in range(5):
+            c += 1 + blob[c]
+            c += 1 + blob[c] * 6
+            ends.append(c)
+        for cut in range(12 + 46, len(blob) + 1):
+            d = bytearray(blob.ljust(cheatdb.ROM_CHEATS_SIZE, b"\xFF"))
+            d[8:12] = cut.to_bytes(4, "little")
+            n, _title, cheats, _table = self.menu(bytes(d), "SLES_001.00")
+            whole = sum(1 for e in ends if e <= cut)
+            self.assertEqual(whole, n, "cut at %d" % cut)
+            self.assertEqual(["c%d" % i for i in range(whole)], [name for name, _codes in cheats])
 
 
 if __name__ == "__main__":
