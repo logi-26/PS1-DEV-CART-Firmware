@@ -40,7 +40,7 @@ EXT_TYPES = {".STR": "Movie (STR)", ".XA": "XA audio", ".TIM": "Image (TIM)", ".
              ".EXE": "Program", ".CNF": "Boot settings", ".DA": "CD audio (the tracks)", ".MDEC": "Movie",
              ".BS": "Image (MDEC)", ".PAK": "Archive", ".BIN": "Data", ".DAT": "Data"}
 VRAM_SCALE = 0.75
-FILTERS = {"All": None, "Textures and images": ("Texture", "TIM"), "Sound banks and music": ("VAB", "VH", "SEQ", "SEP"),
+FILTERS = {"All": None, "Textures and images": ("Texture", "TIM"), "Sound banks and music": ("VAB", "VH", "SEQ", "SEP", "SQ", "SND", "SFX", "AKAO"),
            "Samples": ("VAG", "Sample"), "Models": ("TMD",)}
 DRIVE_STATES = {2: "licensed disc", 5: "unlicensed disc or audio CD"}
 
@@ -794,6 +794,20 @@ class GameDataPage(Page):
         self.status.configure(text="%d file%s written to %s" % (n, "" if n == 1 else "s", folder))
         return None
 
+    @staticmethod
+    def music_groups(saved):
+        """The tester's files among an SQ's or SND's saved files: [[.vh, .vb, its (first) .seq]] for each asset."""
+        groups, bases = [], []
+        for p in saved:
+            if p.lower().endswith((".sq", ".snd", ".snf")):
+                bases.append(os.path.splitext(p)[0])
+        for base in bases:
+            seqs = sorted((p for p in saved if p.startswith(base) and p.lower().endswith(".seq")), key=len)
+            banks = [base + e for e in (".vh", ".vb") if base + e in saved]
+            if seqs:
+                groups.append(banks + seqs[:1])
+        return groups
+
     def open_assets(self):
         items = self.chosen_assets()
         if not items:
@@ -816,6 +830,9 @@ class GameDataPage(Page):
             self.app.show_page("Model & Animation Viewer")
             return None
         sound = [p for k in ("VAB", "VH", "SEQ", "SEP", "VAG", "Sample") for p in paths.get(k, [])]
+        for k in ("SQ", "SND", "SFX", "AKAO"):      # (games' music: their files converted for the tester, a bank's 1st music)
+            for group in self.music_groups(paths.get(k, [])):
+                sound += group
         if sound:
             page = self.app.pages["Sound Tools"]
             page.files.set_files(sound[:8])

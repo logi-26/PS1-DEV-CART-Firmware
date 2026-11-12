@@ -4,7 +4,9 @@ Viewer (pages/tim.py Tim) and the scanner (assetscan.tim_image) against a refere
 PS1_TIM_DIR (both readers agree); the scanner (assetscan.scan_bytes) on data with TIM, VAB, VH (its samples found in
 SPU RAM), SEQ, SEP, VAG and TMD files put in real program bytes: each found at its offset with its bytes, none made up
 in the programs alone; the textures a game draws (assetscan.textures_in_use) from GPU packets in RAM and its VRAM;
-damaged files and random data (no exception but the ones the pages catch).
+damaged files and random data (no exception but the ones the pages catch); games' music (SQ/HD and Crystal
+Dynamics' SND, with the test files of tests/sound) found in other data and in a BIGFILE.DAT, saved as found and
+converted for the tester.
 
     python -m unittest tests/tools/test_assets.py -v
 
@@ -280,6 +282,94 @@ class Scanner(unittest.TestCase):
                     d[o:o + 4] = magic
                 d = bytes(d)
             assetscan.scan_bytes(d, "x", d[:512 * 1024] if k % 3 == 0 else None)
+
+    def test_random_data_game_music(self):
+        """The games' music IDs in random data (their checks: no exception, nothing made up)."""
+        rng = random.Random(11)
+        for k in range(20):
+            d = bytearray(rng.randrange(256) for _ in range(rng.randint(100, 30000)))
+            for magic in (b"SSsq", b"SShd", b"DNSa", b"PMSa", b"QESa"):
+                o = rng.randrange(12, max(13, len(d) - 8))
+                d[o:o + 4] = magic
+            found = assetscan.game_music(bytes(d), "x")
+            self.assertEqual([], [a.kind for a in found if a.kind == "SND"])
+
+
+# ---------------------------------------------------------------------------------------------------- games' music
+
+class GameMusic(unittest.TestCase):
+    """SQ/HD (sshd.py) and Crystal Dynamics' SND (aad.py) found by the scanner: the test files of their converters'
+    tests (tests/sound) put in other data."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.join(ROOT, "tests", "sound"))
+        import test_aad
+        import test_sshd
+        cls.aad, cls.sshd = test_aad, test_sshd
+
+    def save(self, asset):
+        folder, out = tmp_path("assets_music"), {}
+        for p in asset.save(folder):
+            with open(p, "rb") as f:
+                out[os.path.basename(p)[len(asset.name()) - len(asset.ext):]] = f.read()
+        return out
+
+    def test_sq(self):
+        t = self.sshd
+        sq = t.sq_file([((0x90, 30, 100), 240), ((0x80, 30, 0), 0), ((0x90, 70, 100), 240), ((0x80, 70, 0), 0)],
+                       programs=(0,))
+        junk = bytes(range(7, 251)) * 9                 # (a multiple of 4 bytes)
+        d = junk + t.ScanTests.pad(sq) + t.ScanTests.pad(t.ScanTests.HD2) + t.ScanTests.BD2 + junk
+        found = [a for a in assetscan.scan_bytes(d, "MUSIC.DAT") if a.kind == "SQ"]
+        self.assertEqual(1, len(found))
+        a = found[0]
+        self.assertEqual((len(junk), sq), (a.offset, a.data))
+        self.assertIn("its bank: 2 programs", a.info)
+        files = self.save(a)
+        self.assertEqual({".sq", ".seq", ".hd", ".bd", ".vh", ".vb"}, set(files))
+        self.assertEqual((t.ScanTests.HD2, t.ScanTests.BD2), (files[".hd"], files[".bd"]))
+        self.assertEqual(b"pQES", files[".seq"][:4])
+        self.assertEqual(b"pBAV", files[".vh"][:4])
+
+    def test_snd_stored_as_is(self):
+        t = self.aad
+        d = b"\x11" * 5001 + t.GEX + b"\x22" * 777 + t.SMP + b"\x33" * 300
+        found = [a for a in assetscan.scan_bytes(d, "RAM") if a.kind == "SND"]
+        self.assertEqual(1, len(found))
+        a = found[0]
+        self.assertEqual(5001, a.offset)
+        self.assertEqual(t.GEX[:len(a.data)], a.data)  # (to its last end command)
+        self.assertIn("2 programs, 1 music;", a.info)
+        files = self.save(a)
+        self.assertEqual({".snd", ".smp", ".vh", ".vb", "_1.seq"}, set(files))
+        self.assertEqual(t.SMP, files[".smp"])
+        self.assertEqual(b"pQES", files["_1.seq"][:4])
+
+    def test_snd_in_archive(self):
+        t = self.aad
+        big = t.bigfile([b"TIM junk" * 50, t.GEX, t.SMP, t.AKUJI, t.SMP], packed=(1, 3))
+        found = [a for a in assetscan.scan_bytes(big, "BIGFILE.DAT") if a.kind == "SND"]
+        self.assertEqual(2, len(found))
+        self.assertEqual([t.GEX, t.AKUJI], [a.data for a in found])     # (unpacked, as stored)
+        self.assertIn("archive file 001", found[0].info)
+        self.assertEqual(0x800 * 2, found[0].offset)    # (where the archive stores it: after the junk file)
+        self.assertEqual(t.SMP, self.save(found[1])[".smp"])
+
+    def test_sound_effects(self):
+        snf, smf = self.aad.sfx_pair()
+        found = [a for a in assetscan.scan_bytes(b"\x11" * 100 + snf + b"\x22" * 30 + smf, "x") if a.kind == "SFX"]
+        self.assertEqual(1, len(found))
+        self.assertEqual((100, snf), (found[0].offset, found[0].data))
+        self.assertIn("3 effects, 2 samples", found[0].info)
+        files = self.save(found[0])
+        self.assertEqual({".snf", ".smf", ".vh", ".vb", ".seq"}, set(files))
+        self.assertEqual(smf, files[".smf"])
+
+    def test_no_samples(self):
+        found = [a for a in assetscan.scan_bytes(b"\x11" * 64 + self.aad.GEX, "x") if a.kind == "SND"]
+        self.assertIn("samples not found", found[0].info)
+        self.assertEqual({".snd", "_1.seq"}, set(self.save(found[0])))
 
 
 # ---------------------------------------------------------------------------------------------------- textures

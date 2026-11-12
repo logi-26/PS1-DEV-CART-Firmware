@@ -120,20 +120,32 @@ static void	OnInterrupt(int sig)
 }
 #endif
 
-// Ctrl+C, or a line / end of file on the standard input when it is a pipe (GUI)
+int		PC_InputState(void);	// main.c: the standard input taken by the program's "@input" (-1: no, 0: yes, 1: stop)
+
+// Ctrl+C, or a line / end of file on the standard input when it is a pipe (GUI). Taken by the program's "@input":
+// its lines are the program's, only the end of file of a pipe stops (the GUI writes "quit" then closes it).
 static bool	StopRequested(void)
 {
 #ifdef _WIN32
 	HANDLE	h = GetStdHandle(STD_INPUT_HANDLE);
 	DWORD	avail = 0;
+#else
+	fd_set			fds;
+	struct timeval	tv = {0, 0};
+#endif
+	int		input = PC_InputState();
 
+	if (input >= 0)
+	{
+		if (input)
+			stop_requested = 1;
+		return (stop_requested != 0);
+	}
+#ifdef _WIN32
 	if ((h != INVALID_HANDLE_VALUE) && (GetFileType(h) == FILE_TYPE_PIPE) &&
 		(!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail))
 		stop_requested = 1;
 #else
-	fd_set			fds;
-	struct timeval	tv = {0, 0};
-
 	if (!isatty(0))
 	{
 		FD_ZERO(&fds);

@@ -193,7 +193,9 @@ def play(res, tempo, evs, horizon_us, loops=True, start_us=None):
             raise SeqError("more than 5 million events before the horizon")
         apply(st, kind, args)
         if kind == "note":
-            if start_us is None or t >= start_us:
+            # (a note at the time sought: its time added up in floating point can come just short of it, Ape Escape's
+            # Coral Cave at 102.5 s: 102499999.99999991 us)
+            if start_us is None or t >= start_us - 0.001:
                 notes.append((t, args[0], args[1], args[2], dict(st[args[0]])))
         elif kind == "tempo":
             tempo = args[0]

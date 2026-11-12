@@ -357,7 +357,16 @@ bool	USB_GetData(volatile uint8_t *ptr, uint32_t size, uint32_t packet_size)
 	return (true);
 }
 
-int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, uint32_t *ret)
+// An answer other than 'G' to a request: sent again by the kernel hook (see USB_ProcessSend)
+#ifdef HOOK
+#define	USB_SEND_NACK	(-1)
+#else
+#define	USB_SEND_NACK	false
+#endif
+
+// (in USB_ProcessSend: one exit, where is_usb_busy_sending is cleared)
+static inline __attribute__((always_inline)) int	USB_ProcessSendInline(uint8_t cmd, uint32_t param, uint8_t *data,
+	uint32_t size, uint32_t *ret)
 {
 	uint8_t						USB_cmd[1+1+4+4+1];
 	register volatile uint8_t	*ptr;
@@ -389,9 +398,10 @@ int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, 
 	if (!USB_GetByte(&USB_cmd[0]))
 		return (false);
 
-	// Check ACK
+	// Check ACK (kernel hook: another byte, e.g. the first of a command the computer sent before it saw this request,
+	// the request is sent again, see USB_ProcessSend)
 	if (USB_cmd[0] != 'G')
-		return (false);
+		return (USB_SEND_NACK);
 
 	// Read/Write data
 	if (data)
@@ -423,6 +433,43 @@ int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, 
 		*ret = (USB_cmd[0] << 24) | (USB_cmd[1] << 16) | (USB_cmd[2] << 8) | USB_cmd[3];
 
 	return (true);
+}
+
+// A request to the computer (file server). Meanwhile the interrupt-driven poller (USB_ProcessReceive) and the profiler's
+// sampler don't read or send (is_usb_busy_sending). Here, not in USB_Process: the call to it is a jump (hook space).
+//
+// Kernel hook: a command of the computer (e.g. a read of the profiler or the Frame Inspector) would be read as the
+// answer to the request:
+// - one already waiting in the USB FIFO, not yet seen by ReturnFromExceptionHook: the request waits for the FIFO to be
+//   empty, the hook answers the command at the next interrupt, as usual (in an exception: a 'P' pause has its
+//   registers). Not forever: the program may have disabled the interrupts (0x40000 status reads, several frames).
+// - one sent after, before the computer saw the request (the USB chip keeps the bytes it sends to the computer a few
+//   milliseconds): its first byte is read as the answer. The computer drops a request that comes while it waits for
+//   its own answer (ps1transfer USB_Process), so the request was not done: sent again, after the same wait (the hook
+//   answers the rest of the command meanwhile, plain 'G'/'B': its 'Q' taken).
+// No call in the wait: the arguments stay in their registers (hook space). One branch: the FIFO's empty bit (HAVE_DATA,
+// bit 0) moved to bit 31 ends it (count negative).
+int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, uint32_t *ret)
+{
+	int			res;
+#ifdef HOOK
+	int32_t		wait;
+
+	do
+	{
+		wait = 0x40000;
+		do
+			wait = (wait - 1) | ((uint32_t)USB_STATUS << 31);
+		while (wait > 0);
+#endif
+		is_usb_busy_sending = true;
+		res = USB_ProcessSendInline(cmd, param, data, size, ret);
+		is_usb_busy_sending = false;
+#ifdef HOOK
+	}
+	while (res < 0);
+#endif
+	return (res);
 }
 
 #define	FEATURE_LIVE_ACCESS	(1 << 0)	// 'D'/'U' memory access and 'V' VRAM read also while a program runs (kernel hook)
@@ -709,7 +756,6 @@ int		USB_ProcessReceive(void)
 		DeviceIdReceived();
 		return (USB_STATE_NONE);
 	}
-
 	if (USB_cmd[0] == 'E')	// Execute
 	{
 		PadStop();
@@ -737,16 +783,8 @@ int		USB_ProcessReceive(void)
 
 int		USB_Process(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, uint32_t *ret)
 {
-	int res;
-
 	if (cmd)
-	{
-		is_usb_busy_sending = true;
-		res = USB_ProcessSend(cmd, param, data, size, ret);
-		is_usb_busy_sending = false;
-
-		return res;
-	}
+		return (USB_ProcessSend(cmd, param, data, size, ret));	// (sets is_usb_busy_sending)
 
 	return USB_ProcessReceive();
 }

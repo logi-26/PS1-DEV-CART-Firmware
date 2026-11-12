@@ -14,7 +14,16 @@ Found by their headers, each one checked before it is kept (a header alone is of
 - VAG samples ("VAGp" and the data size).
 - TMD models: ID 0x41, the object table (vertices, normals and primitives inside the file).
 - The samples in SPU RAM (spu.py's map), as VAG files.
-Compressed data isn't found: a game's own compression has to be undone first.
+- Games' music in other formats, each saved as found and converted for the sound tester (SEQ + VH + VB):
+  - SQ: Sony's later format ("SSsq" music, "SShd" bank and its BD samples: Ape Escape, Alundra 2...; sshd.py), the
+    music with the bank found near it.
+  - SND: Crystal Dynamics' banks ("DNSa", with their "PMSa" samples: Gex 3, Akuji...; aad.py), stored as they are or
+    in a Gex-style BIGFILE.DAT (its compression undone); each bank with its musics.
+  - SFX: Crystal Dynamics' sound effect sets ("FNSa" + "FMSa": Soul Reaver), as a VAB with a SEQ playing each one.
+  - AKAO: Square's sequences and sample sets ("AKAO": FF7, FF8, Vagrant Story...; akao.py), also inside FF7's LZS
+    files; a sequence converted when the sample set it names is in the same file (FF7's instruments are in
+    SOUND/INSTR.ALL: the Game music scan of the disc converts those).
+Other compressed data isn't found: a game's own compression has to be undone first.
 
 The VRAM of a snapshot is shown as 16-bit pixels, or as 4/8-bit texture pages with a CLUT picked in it; a part of it is
 saved as a PNG or a TIM.
@@ -39,7 +48,8 @@ VH_HEADER, VH_PROGRAMS, VH_TONES = 32, 128 * 16, 16 * 32
 SPU_RAM_SIZE, SPU_REGS_SIZE = 0x80000, 512
 NIBBLE_SWAP = bytes(((b & 15) << 4) | (b >> 4) for b in range(256))     # 4-bit pixels: low nibble first
 MIN_SAMPLE = 256                    # SPU RAM samples smaller than this, played by no voice: left out
-KINDS = ("Texture", "TIM", "VAB", "VH", "SEQ", "SEP", "VAG", "TMD", "Sample")
+KINDS = ("Texture", "TIM", "VAB", "VH", "SEQ", "SEP", "VAG", "TMD", "Sample", "SQ", "SND", "SFX", "AKAO")
+TESTER_FILES = (".vab", ".vh", ".vb", ".seq", ".sep", ".vag")     # (what the sound tester plays)
 
 
 class Asset:
@@ -435,6 +445,125 @@ def scan_bytes(d, where="RAM", spu_ram=None, progress=None):
                                    "%d object%s, %d vertices, %d primitives" % (t[1], "s" if t[1] > 1 else "", t[2], t[3]),
                                    ".tmd"))
                 covered = o + t[0]
+    found += game_music(d, where)
+    return found
+
+
+def _seconds(info):
+    minutes, seconds = divmod(int(round(info["seconds"])), 60)
+    return "%d:%02d" % (minutes, seconds)
+
+
+def game_music(d, where="RAM"):
+    """The SQ/HD musics and Crystal Dynamics banks in d: [Asset] ("SQ", "SND"), each with its original files and the
+    tester's (parts: .seq, .vh, .vb; an SND's musics _N.seq). A file of another kind: none (never an exception)."""
+    import aad
+    import sshd
+    found, d = [], d if isinstance(d, bytes) else bytes(d)
+    try:
+        musics = sshd.scan(d)
+    except Exception:                   # (damaged data: the other assets are still listed)
+        musics = []
+    for m in musics:
+        try:
+            seq, info = sshd.to_seq(m["sq"])
+            parts, text = {".seq": seq}, "SQ/HD music, %s, %d notes" % (_seconds(info), info["notes"])
+            if m["hd"]:
+                vh, vb, vinfo = sshd.to_vab(m["hd"], m["bd_bytes"])
+                parts.update({".hd": m["hd_bytes"], ".bd": m["bd_bytes"], ".vh": vh, ".vb": vb})
+                text += "; its bank: %d programs, %d samples (%d KB)" % (len(vinfo["programs"]), vinfo["samples"],
+                                                                          len(vb) // 1024)
+            else:
+                text += "; no bank found (SEQ only)"
+            found.append(Asset("SQ", where, m["at"], m["sq_bytes"], text, ".sq", parts))
+        except Exception:
+            continue
+    try:
+        banks = aad.scan(d)
+    except Exception:
+        banks = []
+    for b in banks:
+        try:
+            snd = b["snd"]
+            name = b["name"]
+            musics = [(k, s) for k, s in enumerate(snd.sequences) if s.notes]
+            text = "Crystal Dynamics bank%s, %d programs, %d music%s" % (
+                "" if name.startswith("at 0x") else " (archive file %s)" % name, len(snd.programs), len(musics),
+                "" if len(musics) == 1 else "s")
+            parts = {}
+            if b["smp"] is not None:
+                vh, vb, vinfo = aad.to_vab(snd, b["smp"])
+                parts.update({".smp": b["smp_file"], ".vh": vh, ".vb": vb})
+                text += "; samples: %d (%d KB); reverb: %s" % (vinfo["samples"], len(vb) // 1024, vinfo["reverb"])
+            else:
+                text += "; samples not found (SEQs only)"
+            for k, s in musics:
+                parts["_%d.seq" % k] = aad.to_seq(s)[0]
+            found.append(Asset("SND", where, b["at"], b["data"], text, ".snd", parts))     # (as stored)
+        except Exception:
+            continue
+    try:
+        sets = aad.scan_sfx(d)
+    except Exception:
+        sets = []
+    for s in sets:
+        try:
+            vh, vb, info = aad.sfx_to_vab(s["sfx"])
+            seq, seconds = aad.sfx_demo_seq(s["sfx"])
+            found.append(Asset("SFX", where, s["at"], s["snf"], "Crystal Dynamics sound effects: %d effects, %d samples "
+                               "(%d KB); the SEQ plays each once" % (info["effects"], info["samples"], len(vb) // 1024),
+                               ".snf", {".smf": s["smf"], ".vh": vh, ".vb": vb, ".seq": seq}))
+        except Exception:
+            continue
+    found += akao_music(d, where)
+    return found
+
+
+def akao_music(d, where="RAM"):
+    """Square's AKAO sequences and sample sets in d (or in d decompressed, an LZS file of FF7: their place then 0):
+    [Asset] ("AKAO"). A sequence with its instruments in d (a sample set it names) also as the tester's .seq + .vh +
+    .vb; FF7's (instruments in SOUND/INSTR.ALL) as stored: the Game music scan of the disc converts those."""
+    import akao
+    found, blobs = [], [(d, False)]
+    try:
+        if d[:4] != akao.MAGIC and akao._LZS_AKAO.search(d):
+            u = akao.unlzs(d)
+            if u and akao.MAGIC in u:
+                blobs.append((u, True))
+    except Exception:
+        pass
+    seqs, sets = [], []
+    for data, packed in blobs:
+        p = data.find(akao.MAGIC)
+        while p >= 0:
+            at = 0 if packed else p
+            try:
+                if data[p + 6:p + 8] == b"\0\0":
+                    n, size = akao.u32(data, p + 0x1C), akao.u32(data, p + 0x14)
+                    s = akao.SampleSet(data[p:p + 0x40 + n * 16 + size])
+                    sets.append((at, s, data[p:p + 0x40 + n * 16 + size]))
+                else:
+                    seqs.append((at, akao.Sequence(data[p:p + akao.SEQ_WINDOW])))
+            except Exception:
+                pass
+            p = data.find(akao.MAGIC, p + 1)
+    for at, s, raw in sets:
+        found.append(Asset("AKAO", where, at, raw, "AKAO sample set %d: articulations %d-%d, %d KB of samples" % (
+            s.id, s.first, s.first + s.count - 1, s.size // 1024), ".akao"))
+    for at, s in seqs:
+        try:
+            text = "AKAO music (version %s, ID %d), %d tracks" % (s.version, s.id, len(s.tracks))
+            parts = {}
+            arts, names = akao.articulations_for(s, [("", x) for _, x, _ in sets])
+            if arts and s.version != akao.V1_0:
+                seq, vh, vb, info = akao.convert(s, arts)
+                parts = {".seq": seq, ".vh": vh, ".vb": vb}
+                text += ", %s, %d notes; instruments: %s" % (_seconds(info), info["notes"], names)
+            else:
+                text += "; its instruments aren't in this file (the Game music scan of the disc converts it)"
+            found.append(Asset("AKAO", where, at, s.data, text, ".akao", parts))
+        except Exception:
+            continue
     return found
 
 

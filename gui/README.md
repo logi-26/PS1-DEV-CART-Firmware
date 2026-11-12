@@ -225,6 +225,20 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     WAV/MP3/OGG/FLAC (the WAV keeps the loop, or the loop is played again), VAB → its samples in a folder (WAVs with
     their root note and loop) and a list of its programs and tones, SEQ → MIDI (the loop as loopStart/loopEnd
     markers, or written again), XA (or an STR movie's sound) → one audio file per channel.
+    - **Game music**: games' music as SEQ + VAB for the tester, the samples kept as they are: Sony's later format
+      (SQ/HD, 1999: Ape Escape, Alundra 2, The Legend of Dragoon, Wild Arms 2...; `sshd.py`) and Crystal Dynamics'
+      (SND + SMP: Gex 2, Gex 3, Akuji, Soul Reaver...; their BIGFILE.DAT unpacked; `aad.py`; Soul Reaver's tracks,
+      each looping over its own length, merged with one loop where they all start again together) and Square's AKAO
+      (Final Fantasy VII and VIII, Vagrant Story...; FF7's LZS files decompressed, its instruments from
+      SOUND/INSTR.ALL; a sequence's sample set paired by its ID with the sets the game keeps loaded; up to 32 tracks
+      given the SEQ's 16 channels note by note; `akao.py`), all also command line tools.
+      One music (.SQ) with its bank (.HD + .BD), or every music of a game found in its disc image or archive file,
+      each with its bank, listed with its length and notes and played with a double click. Disc images: .bin / .img
+      (2352-byte sectors, Mode 2 or Mode 1), .iso (2048), .cue (its data track: one .bin or a .bin a track; 2048,
+      2336 or 2352-byte sectors) and .ecm (also a .cue's .bin given as .bin.ecm). The disc image is read where
+      needed, never loaded whole, an .ecm decoded where needed (`discimage.py`). Not converted: the modulation of some SQ/HD tones, the
+      sound effects, the games' interactive commands (Crystal Dynamics: channels muted and unmuted by the game, all
+      played).
     The **VAB Editor** tab tunes the bank (the VAB, or VH + VB, of the sound files) on the console, like Sony's
     SoundDelicatessen: bank volume; program volume, pan and priority; for each tone its volume, pan, center note, fine
     tune, key range (drawn on a keyboard strip with the note played), pitch bend range, VAG, and its ADSR envelope
@@ -283,10 +297,11 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
       drive reads them, EDC/ECC: mkpsxiso takes it as an "str" file) or 2048 (video only, a plain data file).
       FFmpeg: the settings' path, the PATH, or **Get FFmpeg** (the essentials build of gyan.dev, GPL, downloaded
       into the settings folder; an outside program, run to read the videos). Pictures and WAV sounds don't need it.
-    - **Inspect & preview**: any STR (2336, 2352 or 2048-byte sectors, also with a RIFF CDXA header): its sectors,
-      frames (sector, sectors, bytes, quantization, BS version, size), sound (rate, channels, interleave), drive
-      speed, problems (incomplete frames...), each frame as the MDEC decodes it (BS version 2), played here with its
-      sound; a frame saved as PNG, the sound as WAV.
+    - **Inspect & preview**: any STR or IKI movie (2336, 2352 or 2048-byte sectors, also with a RIFF CDXA header):
+      its sectors, frames (sector, sectors, bytes, quantization, BS version, size), sound (rate, channels,
+      interleave), drive speed, problems (incomplete frames...), each frame as the MDEC decodes it (BS versions 1, 2,
+      3 and IKI, as The Legend of Dragoon's movies), played here with its sound; a frame saved as PNG, the sound as
+      WAV.
     - **Test on the PS1**: the PS1 DEV CART MOVIE TESTER plays it (`ps1transfer -e -f videotest.ps-exe -c -p
       FOLDER`, the movie read through the file server, the commands through its `@input`): RAM (the movie loaded
       first, up to 1 MB: 3 s at 2x, 6 s at 1x, then played at the exact pace) or stream (read as it plays: about
@@ -342,9 +357,14 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
       their headers: TIM images (previewed), VAB banks (a VH alone in RAM: its samples found in SPU RAM, the VAG
       sizes of the VH one after the other each ending on an end flag, and put together as VH + VB; the sound
       library's values in the VH reset as in the files), SEQ and SEP music, VAG samples, TMD models, and the SPU RAM
-      samples as VAGs. **Save selected**/**Save all**, or **Open in the tools**: TIMs in the VRAM Viewer, a bank,
-      music and samples in Sound Tools, a TMD in the Model Viewer. Compressed data isn't found: only the formats as
-      they are stored. `python assetscan.py FILE_OR_SNAPSHOT_FOLDER [OUT_FOLDER]` does the same from the command
+      samples as VAGs. Also games' music in other formats, saved as found and converted for the tester (SEQ + VH
+      + VB): **SQ** (Sony's SQ/HD/BD: Ape Escape, Alundra 2...), **SND** (Crystal Dynamics' bank with its SMP
+      samples and one SEQ for each of its musics: Gex 3, Akuji...; also inside a Gex-style BIGFILE.DAT, its
+      compression undone) and **AKAO** (Square's sequences and sample sets: FF7, FF8, Vagrant Story...; also inside
+      FF7's LZS files; a sequence converted when its sample set is in the same file, else saved as found: the Game
+      music scan of the whole disc image converts it). **Save selected**/**Save all**, or **Open in the tools**: TIMs in the VRAM Viewer, a bank,
+      music and samples in Sound Tools (an SQ or SND: its converted files, a bank's first music), a TMD in the Model
+      Viewer. Other compressed data isn't found: only the formats as they are stored. `python assetscan.py FILE_OR_SNAPSHOT_FOLDER [OUT_FOLDER]` does the same from the command
       line.
   - **Memory Card Tools**: backup and restore of the whole card in slot 1 or 2, and a save browser with the icons and
     titles: export (.mcs), import, copy (to an image or a card slot), delete, new blank image. It works on a card

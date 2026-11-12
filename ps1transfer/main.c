@@ -175,6 +175,8 @@ static uint8_t				input_ring[INPUT_RING];
 static volatile uint32_t	input_head, input_tail;
 static int					pcdrv_input_fd = -1;
 static bool					input_started;
+static volatile bool		input_ended;		// End of file on the standard input (e.g. the GUI's stop)
+static bool					input_pipe;			// The standard input is a pipe (GUI), seen before the thread reads it
 
 #ifdef _WIN32
 static DWORD WINAPI	InputThread(LPVOID arg)
@@ -196,7 +198,17 @@ static void	*InputThread(void *arg)
 		input_ring[input_head % INPUT_RING] = (uint8_t)c;
 		input_head++;
 	}
+	input_ended = true;
 	return (0);
+}
+
+// The standard input taken by "@input" (usblink.c's stop request, -prof / -link): -1 not taken, 0 taken (its lines go
+// to the program), 1 stop: the end of file of a pipe (as a pipe's end of file stops without "@input"; not a console or
+// NUL). Its handle isn't looked at while the thread reads it: on Windows a PeekNamedPipe waits for that read to end
+// (the profiler of a program reading "@input" stopped there).
+int		PC_InputState(void)
+{
+	return (input_started ? (input_ended && input_pipe) : -1);
 }
 
 static void	InputStart(void)
@@ -205,8 +217,10 @@ static void	InputStart(void)
 		return;
 	input_started = true;
 #ifdef _WIN32
+	input_pipe = (GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE);
 	CreateThread(NULL, 0, InputThread, NULL, 0, NULL);
 #else
+	input_pipe = !isatty(0);	// (as usblink.c's stop request without "@input")
 	{
 		pthread_t	t;
 
@@ -1081,7 +1095,7 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 	uint32_t	lsize, usize, packet_size = MAX_PACKET_SIZE, header_size = size, total;
 	bool		ack_ok;
 	int			skipped;
-	bool		escaped;
+	bool		escaped, request_dropped = false;
 	// Small transfers (e.g. crash report reads) and hot reloads without progress text
 	bool		show_progress = (size > MAX_PACKET_SIZE) && (cmd != MON_CMD_VRAM_WRITE) && (cmd != MON_CMD_SPU_WRITE) &&
 				!usb_quiet;
@@ -1145,9 +1159,12 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 	// writing every frame), skipped; while profiling, the profiler packets (DLE + type, see profiler.c); "DLE q"
 	// (answer to the 'Q'). Escaped answer: "DLE g" / "DLE b", the only one accepted when the firmware has them (text
 	// can't be taken for it). Otherwise 'G' / 'B' (a 'G' or 'B' in text just before is taken for it: older firmwares).
-	// A request of the program's file server meanwhile (the program waits for its answer, and its kernel hook answers
-	// this command only after: it is served here; skipped, both sides waited for each other, e.g. the profiler and the
-	// frame capture of a program reading files)
+	// A request of the program's file server meanwhile (e.g. the profiler or the frame capture of a program reading
+	// files): the program sent it before this command reached the PS1 (its USB chip keeps the bytes a few milliseconds),
+	// then took this command's first byte for the answer to its request. The request was not done: dropped here (not
+	// served: the PS1 doesn't wait for it any more). The kernel hook answers the rest of this command, with a plain
+	// 'G' / 'B' (its 'Q' taken), then the program sends its request again (PS1 DEV CART 1.4, usb.h USB_ProcessSend;
+	// older firmwares return an error to the program).
 	ack_ok = USB_ReadData(&ack, 1);
 	for (skipped = 0; ack_ok && (skipped < 4096); skipped++)
 	{
@@ -1164,13 +1181,17 @@ bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size)
 				;
 			else if (PC_IsFileServerRequest(ack))
 			{
-				PC_FileServerCmd(ack);
+				uint8_t	rest[4+4+1];
+
+				if (!(ack_ok = USB_ReadData(rest, sizeof(rest))))
+					break;
+				request_dropped = true;
 				skipped = 0;
 			}
 			else if (prof_active && !(ack_ok = ProfReadPacketType(ack)))
 				break;
 		}
-		else if (!escaped && ((ack == 'G') || (ack == 'B')))
+		else if ((!escaped || request_dropped) && ((ack == 'G') || (ack == 'B')))
 			break;
 		ack_ok = USB_ReadData(&ack, 1);
 	}

@@ -160,7 +160,10 @@ def expected_volumes(vel, ch, tone, prog, bank_mvol, master=100):
 
 def compare_voices(ref, host, bank, transpose=0, mute=0, limit=3):
     """The voices keyed for each note against the bank: as many as its program's tones with the note in their range
-    (and a sample), each at its tone's pitch and volume (channel state of the reference). [text]"""
+    (and a sample), each at its tone's pitch and volume (channel state of the reference). [text]
+
+    The voices are matched with the tones in any order: a note's layered tones are keyed on free voices, which needn't
+    come in the bank's tone order (Ape Escape's and Alundra 2's layers: the right sounds, listed in another order)."""
     problems, header = [], bank.header()
     for w, g in zip(ref, host):
         ch, note, vel, st = w[1], w[2], w[3], w[4]
@@ -176,15 +179,21 @@ def compare_voices(ref, host, bank, transpose=0, mute=0, limit=3):
                 ch, note, w[0] / 1e6, prog_no, len(g[5]), len(tones)))
         else:
             prog = bank.prog(prog_no) if tones else None
-            for (vprog, center, shift, pitch, voll, volr), t in zip(g[5], tones):
+            left = list(g[5])
+            for t in tones:
                 want_pitch = expected_pitch(note, t, transpose)
                 want_l, want_r = expected_volumes(vel, st, t, prog, header["mvol"])
-                if vprog != prog_no or abs(pitch - want_pitch) > want_pitch * 0.006 + 1:
-                    problems.append("ch %d note %d at %.3f s: program %d pitch %04X, expected program %d pitch %04X" % (
-                        ch, note, w[0] / 1e6, vprog, pitch, prog_no, want_pitch))
-                elif abs(voll - want_l) > 2 or abs(volr - want_r) > 2:
+                same_pitch = [v for v in left if v[0] == prog_no and abs(v[3] - want_pitch) <= want_pitch * 0.006 + 1]
+                match = [v for v in same_pitch if abs(v[4] - want_l) <= 2 and abs(v[5] - want_r) <= 2]
+                if match:
+                    left.remove(match[0])
+                elif same_pitch:
                     problems.append("ch %d note %d at %.3f s: volume %d/%d, expected %d/%d" % (
-                        ch, note, w[0] / 1e6, voll, volr, want_l, want_r))
+                        ch, note, w[0] / 1e6, same_pitch[0][4], same_pitch[0][5], want_l, want_r))
+                else:
+                    problems.append("ch %d note %d at %.3f s: no voice of program %d at pitch %04X (voices: %s)" % (
+                        ch, note, w[0] / 1e6, prog_no, want_pitch, ", ".join(
+                            "program %d pitch %04X" % (v[0], v[3]) for v in g[5])))
         if len(problems) >= limit:
             break
     return problems

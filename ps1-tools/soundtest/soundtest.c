@@ -1011,8 +1011,18 @@ static void	SeqUpdate(void)
 				seq_loops++;
 				return;
 			}
-			if (seq_tempo != tempo)	// (the rest of the frame's ticks: at the new tempo, not the one it started with)
-				ticks = UsTicks(TicksUs(ticks, tempo, seq_resolution), seq_tempo, seq_resolution);
+			// The rest of the frame's ticks: at the new tempo, not the one it started with. Their time back into
+			// seq_acc (us * resolution: exactly what they were made from) and divided by the new tempo, the part of a
+			// tick left over kept there. (Through us and back, each change lost up to a tick: Alundra 2's tempo
+			// changes, played again at each loop, put notes 5-14 ms late after 2 minutes.)
+			if (seq_tempo != tempo)
+			{
+				seq_acc += ticks * tempo;
+				seq_ticks -= ticks;
+				ticks = seq_acc / seq_tempo;
+				seq_acc -= ticks * seq_tempo;
+				seq_ticks += ticks;
+			}
 			seq_wait = SeqVarLen();
 			if (seq_wait)
 				seq_loop_empty = 0;
@@ -1037,7 +1047,7 @@ static void	SeqScan(void)
 	seq_len_us = 0;
 	seq_ptr = seq_tracks[seq_index].data;
 	seq_end = end;					// (SeqVarLen's limit)
-	for (n = 0; (n < 500000) && (seq_ptr + 4 < end); n++)
+	for (n = 0; (n < 500000) && (seq_ptr + 4 <= end); n++)	// (4: a delta time and FF 2F 00 at least; "<" left a last wait out of the length)
 	{
 		seq_len_us += TicksUsFrac(SeqVarLen(), tempo, res, &frac);
 		if (seq_ptr + 2 > end)		// (no event left: status and data, or meta type)

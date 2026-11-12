@@ -48,8 +48,8 @@ static uint32_t	*p_ReturnFromExceptionOld = (uint32_t *)0x8000DF7C;
 // Menu screen images stored in the ROM file system (cartrom/tim.tfs), missing ones are skipped
 static char	*tim_files[] = {"logo.tim", "font.tim"};
 
-#define	FIRMWARE_VERSION	"1.3"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
-#define	FIRMWARE_VERSION_BCD	0x13	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
+#define	FIRMWARE_VERSION	"1.4"	// Firmware version, shown on the menu (the tools': DEVCART_VERSION, devcart_ui.h)
+#define	FIRMWARE_VERSION_BCD	0x14	// Same, major << 4 | minor, read by "ps1transfer -info" (MonitorState.fw_version)
 // In the ROM as text: the Manager's Firmware page reads the version of a ROM file from it (used by the menu: kept)
 static const char	firmware_tag[] = "Firmware: " FIRMWARE_VERSION;
 
@@ -549,13 +549,21 @@ void	KernelHooksInstall(void)
 	mon_state->fw_version = FIRMWARE_VERSION_BCD;
 }
 
+/****************************************/
+// Screensaver: the menu screen is a static image, left on for a long time it can burn into a CRT. With no pad or USB
+// activity for a while, the display is simply turned off (SetDispMask); any activity turns it back on. Nothing is
+// redrawn (VRAM was never touched), and no new image is needed (there's no ROM space left for one: the menu's own
+// images already use all but a few bytes of their flash area).
+
+#define	SCREENSAVER_IDLE_FRAMES	(180 * 60)	// About 3 minutes (NTSC; a bit longer on PAL)
+
 int main(void)
 {
-	int		size, i;
-	bool	usb_ok;
+	bool	usb_ok, screensaver_on = false;
 	RECT	vram = {0, 0, 1024, 512};
 	uint32_t	pad;
 	int		boot_hold = 0;	// Start + Select held since this VSync count + 1, -1 until released
+	int		last_activity;
 
 	// PSn00bSDK: ResetGraph() (in InitDisplay) calls ResetCallback() and installs its VBlank/DMA handlers only if the
 	// callbacks were not set up yet: with ResetCallback() called first (PsyQ order), VSync() would never return
@@ -598,14 +606,18 @@ int main(void)
 
 	// Copy image data from ROM to RAM, because LoadImage doesn't work when loading directly from ROM ?!
 	// Images are placed in VRAM at the position stored in each TIM (see cartrom/tfs_tool.py)
-	for (i = 0; i < sizeof(tim_files) / sizeof(tim_files[0]); i++)
 	{
-		volatile uint8_t	*tim = ROM_GetFile(tim_files[i], &size);
+		int	size, i;
 
-		if (tim)
+		for (i = 0; i < sizeof(tim_files) / sizeof(tim_files[0]); i++)
 		{
-			memcpy((volatile uint8_t *)0x80010000, tim, size);
-			LoadTexture((uint32_t *)0x80010000);
+			volatile uint8_t	*tim = ROM_GetFile(tim_files[i], &size);
+
+			if (tim)
+			{
+				memcpy((volatile uint8_t *)0x80010000, tim, size);
+				LoadTexture((uint32_t *)0x80010000);
+			}
 		}
 	}
 
@@ -644,9 +656,10 @@ int main(void)
 	usb_ok = PrintUSBStatus();
 
 	Init_CRC8();	// Copy CRC8 lookup table in Data Cache
+	last_activity = VSync(-1);
 	while (1)
 	{
-		int		ret;
+		int		ret = USB_STATE_NONE;
 
 		// Start + Select held half a second: the disc is booted (again after a failure only once released). All the
 		// buttons "pressed" is a bad read: the boot started by itself with a single read.
@@ -700,6 +713,23 @@ int main(void)
 					BootDisc(0);
 				break;
 			}
+		}
+
+		// Screensaver: any pad or USB activity (not just idle polling, USB_STATE_NONE) wakes the screen and resets
+		// the idle timer; otherwise, once it's been idle long enough, the display is turned off.
+		if (((pad != 0) && (pad != 0xFFFF)) || (ret != USB_STATE_NONE))
+		{
+			last_activity = VSync(-1);
+			if (screensaver_on)
+			{
+				SetDispMask(1);
+				screensaver_on = false;
+			}
+		}
+		else if (!screensaver_on && (VSync(-1) - last_activity >= SCREENSAVER_IDLE_FRAMES))
+		{
+			SetDispMask(0);
+			screensaver_on = true;
 		}
     }
 

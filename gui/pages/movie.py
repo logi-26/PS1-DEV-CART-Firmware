@@ -27,6 +27,8 @@ from widgets import FileField, FileList, ImageView, ScrollFrame, labeled
 
 TESTER_TASK = "Video tester"
 STR_TYPES = [("STR movies", "*.str *.STR"), ("All files", "*.*")]
+# (read here only: STR movies and IKI ones, as The Legend of Dragoon's; the console's tester plays STR v2/v3)
+MOVIE_TYPES = [("Movies", "*.str *.STR *.iki *.IKI *.ik2 *.IK2"), ("All files", "*.*")]
 FMT_CHOICES = ["2336: video + XA sound (disc images: mkpsxiso \"str\")", "2048: video only (a plain data file)"]
 
 
@@ -409,7 +411,7 @@ class MoviePage(Page):
         self.tabs.add(tab, text="Inspect & preview")
         row = tb.Frame(tab)
         row.pack(fill="x")
-        self.inspect_file = FileField(row, self.app, "movie.inspect", "STR movie", filetypes=STR_TYPES)
+        self.inspect_file = FileField(row, self.app, "movie.inspect", "STR movie", filetypes=MOVIE_TYPES)
         self.inspect_file.pack(side="left", fill="x", expand=True)
         tb.Button(row, text="Open", bootstyle="primary", width=8, command=self.open_movie).pack(side="left", padx=6)
         self.info = tb.Label(tab, text="", wraplength=1000, justify="left")
@@ -470,7 +472,7 @@ class MoviePage(Page):
         text = "%s: %d sectors of %d bytes, %d frames %s, about %.1f fps, %.1f s at %dx, BS version %s" % (
             os.path.basename(path), m.count, m.fmt, len(m.frames),
             ", ".join("%dx%d" % s for s in sizes) or "-", fps, secs, speed,
-            "/".join(str(v) for v in sorted({f["version"] for f in m.frames})) or "-")
+            "/".join(str(v) for v in sorted({f["version"] for f in m.frames}, key=str)) or "-")
         text += (". Sound: XA %d Hz %s, %d sectors, 1 in %d" % (info[0], "stereo" if info[1] else "mono",
                                                                  len(m.audio), m.interleave()) if info else
                  ". No sound")
@@ -480,10 +482,12 @@ class MoviePage(Page):
         self.tree.delete(*self.tree.get_children())
         for i, f in enumerate(m.frames):
             self.tree.insert("", "end", iid=str(i), values=(f["number"], f["first"], f["sectors"], f["size"],
-                                                            f["scale"], f["version"], "%dx%d" % (f["w"], f["h"])))
+                                                            "per block" if f["scale"] is None else f["scale"], f["version"],
+                                                            "%dx%d" % (f["w"], f["h"])))
         self.frame_scale.configure(to=max(0, len(m.frames) - 1))
         self.fps_preview = fps or 15
-        self.test_file.set(path)
+        if not any(f["version"] == "iki" for f in m.frames):    # (the console's tester doesn't play IKI)
+            self.test_file.set(path)
         if m.frames:
             self._show_frame(0)
 
@@ -514,8 +518,8 @@ class MoviePage(Page):
             f = self.movie.frames[n]
             # Shown at the TV's shape (4:3): the PS1's pixels aren't square
             self.view.show(img.resize((int(img.height * 4 / 3), img.height)) if f["w"] <= 640 else img)
-            self.frame_label.configure(text="Frame %d / %d: %d bytes, quantization %d" % (
-                n + 1, len(self.movie.frames), f["size"], f["scale"]))
+            self.frame_label.configure(text="Frame %d / %d: %d bytes, quantization %s" % (
+                n + 1, len(self.movie.frames), f["size"], "per block" if f["scale"] is None else f["scale"]))
 
     def play_pc(self):
         """The frames at the movie's rate, with the sound (Windows: winsound)."""

@@ -311,6 +311,8 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
 - Firmware version and **device ID** (the USB serial number of the cartridge, so you know which
   console is which when several are connected).
 - Hold **X** at boot to initialise the CD drive.
+- **Screensaver**: after about 3 minutes with no pad or USB activity the menu turns the display off (a static image
+  can burn into a CRT); any button or command turns it back on.
 - **START + SELECT** boots the disc in the drive (or `ps1transfer -bootcd`). The CD drive is unlocked first (the
   "nocash unlock", as in Unirom), so burned and import discs boot without a modchip or disc swapping. Not on Japanese
   consoles, whose drive can't be unlocked (licensed discs still boot). The unlock stays when the lid is opened. The
@@ -673,7 +675,9 @@ interrupt handling (about 90 µs each). At each tick the sampler sends the progr
 pointer and the hardware state to the computer. Measured cost: about 4% of the program's time at 1000 samples a
 second (2% at 500). The sampler (hand scheduled MIPS assembly, 632 bytes) uses the debug monitor's RAM, so it can't
 be used during a `-gdb` session; it works with the link tty drivers (`-c sio`, `-c link`: link play). Statistical
-sampling attributes interrupt handlers' time to the code they interrupted.
+sampling attributes interrupt handlers' time to the code they interrupted. Programs that use the PCDRV file server
+while they're profiled (or captured by the Frame Inspector) need firmware 1.4 and its ps1transfer: before, a request
+of the program crossing a read of the computer's stalled both.
 
 ## ps1transfer
 

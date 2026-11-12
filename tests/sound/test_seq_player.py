@@ -83,6 +83,17 @@ class SynthTests(unittest.TestCase):
         body += ev(0, *TEMPO, 0x0F, 0x42, 0x40) + scale(4, first=80)              # 1 s per quarter note
         self.check(seq_file(body))
 
+    def test_tempo_changes_add_up(self):
+        # Many tempo changes inside frames, played again by an endless loop (as Alundra 2): the frame's ticks after
+        # each change at the new tempo, no part of a tick lost (it was: notes 5-14 ms late after 2 minutes)
+        body = loop_start(127)
+        for i in range(40):
+            us = (523417, 611111, 487213)[i % 3]
+            body += ev(7, *TEMPO, us >> 16, (us >> 8) & 255, us & 255) + ev(11, ON, 60 + i % 12, 100)
+            body += ev(13, OFF, 60 + i % 12, 0)
+        body += loop_end(5)
+        self.check(seq_file(body), horizon_ms=150000)
+
     def test_tempo_meta_running_status(self):
         # Sony: FF 51 ttt <delta> 51 ttt (a meta event again with running status), then a note with its own status
         body = ev(0, *TEMPO, 0x03, 0xD0, 0x90) + ev(480, 0x51, 0x0F, 0x42, 0x40) + scale(4)

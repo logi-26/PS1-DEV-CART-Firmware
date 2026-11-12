@@ -1,7 +1,8 @@
 """
 PS1 DEV CART GUI: PlayStation movies (STR): MDEC video frames, XA ADPCM sound, the sectors of an STR file (Movie Tools).
 
-- Video: each frame is a BS version 2 bitstream (what the MDEC decodes: the frames of STR movies). A frame (RGB, width
+- Video: each frame written is a BS version 2 bitstream (what the MDEC decodes: the frames of STR movies); versions 1,
+  3 and IKI (other games' movies) are read too, as psx-spx describes them. A frame (RGB, width
   and height multiples of 16) is cut into 16x16 macroblocks in column order (the MDEC outputs 16 pixel wide strips),
   each one into 6 blocks of 8x8 (Cr, Cb at half resolution, then the 4 Y blocks), through the DCT, the MDEC quantization
   table and the frame's quantization scale, then written as MPEG-1 run/level codes (table B.14; an escape code with a
@@ -165,9 +166,10 @@ def quantize_dct(coeffs, scale):
 
 
 def dequantize(q, scale, w, h):
-    """Quantized coefficients (zigzag order) -> RGB frame, as the MDEC decodes them (preview)."""
+    """Quantized coefficients (zigzag order) -> RGB frame, as the MDEC decodes them (preview). scale: the frame's, or
+    each block's (IKI)."""
     c = q.astype(np.float32).copy()
-    c[:, 1:] *= scale / 8.0
+    c[:, 1:] *= np.asarray(scale, np.float32).reshape(-1, 1) / 8.0
     natural = np.empty_like(c)
     natural[:, ZIGZAG] = c
     natural = natural.reshape(-1, 8, 8) * QUANT
@@ -253,24 +255,97 @@ _DECODE_LENS = sorted({len(c) for c in _DECODE})
 
 
 def bs_header(bs):
-    """(MDEC words, quantization scale, version) of a BS frame, or None if it isn't one."""
+    """(MDEC words, quantization scale, version) of a BS frame, or None if it isn't one. Versions 1, 2, 3 (one scale
+    for the frame), or "iki" (the header has the frame's width and height instead; each block has its own scale: the
+    scale given is None)."""
     if len(bs) < 8:
         return None
     words, magic, scale, version = struct.unpack_from("<HHHH", bs)
     if magic != 0x3800:
         return None
+    if version > 3 and scale > 63:                  # (a width and height: scales are 0-63, versions 0-3)
+        return words, None, "iki"
     return words, scale, version
 
 
+def gtzip(src, size):
+    """GT-ZIP data (Gran Turismo's LZ compression; the DC values of IKI frames) decompressed to size bytes: a flag
+    byte for each 8 items (bit 0 first): 0 a byte as it is, 1 a copy of (length + 3) bytes from (distance + 1) bytes
+    back (length a byte; distance a byte, or 15 bits in two when the first has bit 7)."""
+    out = bytearray()
+    i, n = 0, len(src)
+    while len(out) < size:
+        if i >= n:
+            raise ValueError("GT-ZIP data ends at %d of %d bytes" % (len(out), size))
+        flags = src[i]
+        i += 1
+        for _ in range(8):
+            if len(out) >= size:
+                break
+            if not flags & 1:
+                if i >= n:
+                    raise ValueError("GT-ZIP data ends early")
+                out.append(src[i])
+                i += 1
+            else:
+                if i + 2 > n:
+                    raise ValueError("GT-ZIP data ends early")
+                length, disp = src[i] + 3, src[i + 1]
+                i += 2
+                if disp >= 0x80:
+                    if i >= n:
+                        raise ValueError("GT-ZIP data ends early")
+                    disp = (disp - 0x80) * 0x100 + src[i]
+                    i += 1
+                if disp + 1 > len(out):
+                    raise ValueError("GT-ZIP copy from before the start")
+                for _ in range(length):
+                    out.append(out[-(disp + 1)])
+            flags >>= 1
+    return bytes(out[:size])
+
+
+# BS v3: the DC values as differences from the block before's (of the same kind: Cr, Cb or Y), coded as MPEG-1's
+# (the size codes, then the size's bits: the first one 0 for a negative difference), in steps of 4
+_DC_Y = {"100": 0, "00": 1, "01": 2, "101": 3, "110": 4, "1110": 5, "11110": 6, "111110": 7, "1111110": 8}
+_DC_C = {"00": 0, "01": 1, "10": 2, "110": 3, "1110": 4, "11110": 5, "111110": 6, "1111110": 7, "11111110": 8}
+BS_END = "1111111111"           # (the end of a frame, in place of a DC value)
+
+
+def _dc_v3(bits, pos, table):
+    """A v3 DC difference at pos: (difference, the next position)."""
+    for ln in range(2, 9):
+        size = table.get(bits[pos:pos + ln])
+        if size is not None:
+            pos += ln
+            if not size:
+                return 0, pos
+            raw = int(bits[pos:pos + size], 2)
+            diff = raw if bits[pos] == "1" else raw - (1 << size) + 1
+            return diff * 4, pos + size
+    raise ValueError("bad DC code at bit %d" % pos)
+
+
 def decode_bs(bs, w, h):
-    """BS v2 frame -> RGB frame (preview). ValueError if it can't be decoded (other versions, bad data)."""
+    """BS frame (version 1, 2, 3 or IKI) -> RGB frame (preview). ValueError if it can't be decoded (other versions,
+    bad data)."""
     head = bs_header(bs)
     if not head:
         raise ValueError("not a BS frame")
     _, scale, version = head
-    if version != 2:
-        raise ValueError("BS version %d (only version 2 is decoded here)" % version)
+    if version not in (1, 2, 3, "iki"):
+        raise ValueError("BS version %s (versions 1, 2, 3 and IKI are decoded here)" % version)
     data = bs[8:]
+    dcs = None
+    if version == "iki":
+        # IKI: width, height, the size of the GT-ZIP data (the DC value and scale of every block: the high bytes,
+        # then the low bytes), then the AC codes
+        w, h = struct.unpack_from("<HH", bs, 4)
+        zsize = struct.unpack_from("<H", bs, 8)[0] if len(bs) >= 10 else 0
+        nb = (w + 15) // 16 * ((h + 15) // 16) * 6
+        z = np.frombuffer(gtzip(bs[10:10 + zsize], nb * 2), np.uint8).astype(np.int32)
+        dcs = z[:nb] << 8 | z[nb:]
+        data = bs[10 + zsize:]
     if len(data) & 1:
         data += b"\0"
     swapped = bytes(np.frombuffer(data, np.uint8).reshape(-1, 2)[:, ::-1].tobytes())
@@ -278,14 +353,29 @@ def decode_bs(bs, w, h):
     pw, ph = -(-w // 16) * 16, -(-h // 16) * 16     # (whole macroblocks: a 640x200 frame is coded 640x208)
     nblocks = (pw // 16) * (ph // 16) * 6
     q = np.zeros((nblocks, 64), np.int32)
+    scales = np.full(nblocks, scale or 0, np.int32)
+    last = [0, 0, 0]                                # (v3: the DC before, of Cr, Cb and Y)
     pos = 0
     n = len(bits)
     for blk in range(nblocks):
-        if pos + 10 > n:
-            raise ValueError("frame data ends at block %d of %d" % (blk, nblocks))
-        dc = int(bits[pos:pos + 10], 2)
-        q[blk, 0] = dc - 1024 if dc >= 512 else dc
-        pos += 10
+        if dcs is not None:
+            dc = int(dcs[blk]) & 0x3FF
+            scales[blk] = int(dcs[blk]) >> 10
+            q[blk, 0] = dc - 1024 if dc >= 512 else dc
+        elif version == 3:
+            if bits.startswith(BS_END, pos):
+                raise ValueError("frame data ends at block %d of %d" % (blk, nblocks))
+            kind = min(blk % 6, 2)
+            diff, pos = _dc_v3(bits, pos, _DC_C if kind < 2 else _DC_Y)
+            last[kind] += diff
+            dc = last[kind] & 0x3FF                 # (a 10-bit value: newer encoders let it wrap)
+            q[blk, 0] = dc - 1024 if dc >= 512 else dc
+        else:
+            if pos + 10 > n:
+                raise ValueError("frame data ends at block %d of %d" % (blk, nblocks))
+            dc = int(bits[pos:pos + 10], 2)
+            q[blk, 0] = dc - 1024 if dc >= 512 else dc
+            pos += 10
         k = 1
         while True:
             if bits.startswith(EOB, pos):
@@ -312,7 +402,7 @@ def decode_bs(bs, w, h):
                 raise ValueError("block %d has more than 64 coefficients" % blk)
             q[blk, k] = lvl
             k += 1
-    return dequantize(q, scale, pw, ph)[:h, :w]
+    return dequantize(q, scales, pw, ph)[:h, :w]
 
 
 # ---------------------------------------------------------------------------------------------------- XA ADPCM

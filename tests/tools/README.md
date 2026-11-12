@@ -52,12 +52,15 @@ Each tool run as its page runs it, nothing written to the flash or a memory card
 ## Known
 
 - **Profiler and Frame Inspector on a program that keeps making file server requests** (e.g. the movie tester reading
-  its `@input` every few frames): the PC side now serves those requests while it waits for an answer, tells a file
-  close from the profiler's conflict packet, keeps up with the samples and returns from its reads in time, but the
-  console still leaves the profiler's or the capture's command unanswered (its debug monitor, busy with the program's
-  requests: the kernel hook reads the command's first byte as the acknowledgement of the program's request; the fix
-  needs room the kernel hook doesn't have). Programs that don't use the file server, or attached after it, work. The live test uses
-  the control tester for both.
+  its `@input` every few frames): fixed with firmware 1.4 and its ps1transfer. The kernel hook waits for a command
+  already waiting before it sends a request, and sends a request again when the computer's command came first (the
+  computer drops a request that comes while it waits for its answer). With an older firmware the profiler keeps going,
+  but the program gets an error for that request (the movie tester then stops reading its `@input`). Checked on the
+  console: the movie tester profiled for 2 minutes, a report every second and its requests answered all along. The
+  live test still uses the control tester for both. The USB link relay's exchange (`-link`, `-net`) has no such
+  recovery: its command has no `'Q'` before it, so a request coming first still fails it.
+- **`@input` and the standard input:** while a program reads `@input`, its lines go to the program. Only the end of a
+  piped standard input stops `-prof` / `-link` (the Manager writes `quit` then closes it), not a line.
 - **Code engine (kernel hook):** a serial code running past the 2 MB of RAM writes on (the kernel hook has no room
   left for the check). Nothing puts one in its table: the Manager leaves them out (`codeengine.safe_codes`), and since
   firmware 1.3 so does the cheat screen for cheats in the flash.

@@ -10,7 +10,7 @@ the 32-bit MinGW of `buildtools`. What it plays is compared with `seqref.py`, a 
 SEQ format description.
 
 ```
-python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py tests/sound/test_reverb.py -v
+python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py tests/sound/test_reverb.py tests/sound/test_sshd.py tests/sound/test_aad.py tests/sound/test_akao.py -v
 ```
 
 - `test_seq_player.py`
@@ -28,6 +28,30 @@ python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py
 - `test_reverb.py`
   - chaos echo's and delay's registers for each delay time and feedback, against libspu's SpuSetReverbModeParam
   - the voices sending to the reverb with "SEQ channels chosen"
+- `test_sshd.py`
+  - SQ → SEQ (Sony's later music format: Ape Escape, Alundra 2...): events, running status, the 1-byte pitch bend,
+    tempo, the loop, played by the console's player
+  - HD + BD → VAB: key splits, layers, drum kits, the tuning, the samples cut out of the BD
+  - finding the musics and their banks inside a game's files or disc image (`gui/sshd.py scan`); The Legend of
+    Dragoon's MRG archives: the bank in the music's own archive, a BD split over the archive's files, a music played
+    with a bank loaded before it; Arc the Lad III's BD before its HD (BD, SQ, HD), the BD nearest the HD on either
+    side
+  - a program of more than 16 tones of one key each (Arc the Lad III): the first 16 kept, the rest reported
+  - the real files of `PS1_SSHD_CORPUS` (folders of `name.sq` + `name.hd` + `name.bd`), each converted
+- `test_aad.py`
+  - Crystal Dynamics' SND bank + SMP samples → VAB (Gex 2's, Gex 3's, Akuji's and Soul Reaver's layouts), their
+    musics → SEQ: the loop (labels, loop commands), tracks looping apart (Soul Reaver: the SEQ's loop where they
+    start again together), a channel's transpose, running status, a note starting bent, played by the console's
+    player
+  - Gex's BIGFILE.DAT compression, archives found in ISO 9660 images (2048 and 2352-byte sectors), the samples paired
+    with their bank, disc images read in pieces (`gui/discimage.py`)
+  - the disc images or BIGFILE.DATs of `PS1_AAD_CORPUS` (folders): every bank converted, every music played (its
+    notes in the first 2 seconds counted within a frame: the player starts notes at frames)
+- `test_akao.py`
+  - Square's AKAO (Final Fantasy VII, VIII, Vagrant Story...): sequences (versions 1.0 and 3.x) read and played as the
+    driver plays them, sample sets, FF7's INSTR.ALL / INSTR.DAT, LZS, the SEQ + VAB made for the sound tester
+  - the disc images of `PS1_AKAO_CORPUS` (folders, `.cue` files searched in them): every music converted, each of its
+    notes with a tone
 - `test_converters.py`
   - MIDI → SEQ: notes and tempo map; loops from markers, CC 111, the whole music or a tick, played again as written
   - SEQ → MIDI → SEQ round trip
@@ -38,13 +62,19 @@ python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py
 
 The real files aren't in the repository (games' and SDKs' music). List their folders in `PS1_SOUND_CORPUS`,
 separated by `;`. A SEQ's bank is the VH + VB (or VAB) of the same name in its folder, else the folder's only one.
+The game discs go in `PS1_AAD_CORPUS` (folders of the `.bin` images) and `PS1_AKAO_CORPUS` (folders searched for
+`.cue` files); `PS1_SSHD_CORPUS` takes folders of extracted `.sq` + `.hd` + `.bd` files. For example, with the files
+in a `ps1usb` folder on the desktop:
 
 ```
-set PS1_SOUND_CORPUS=C:\ps1usb\Alundra;C:\ps1usb\Raw;C:\ps1usb\test-audio
+set PS1_SOUND_CORPUS=%USERPROFILE%\Desktop\ps1usb\Alundra;%USERPROFILE%\Desktop\ps1usb\Raw;%USERPROFILE%\Desktop\ps1usb\test-audio
+set PS1_AAD_CORPUS=%USERPROFILE%\Desktop\ps1usb\PSXSOUND\Gex - Enter the Gecko (USA);%USERPROFILE%\Desktop\ps1usb\PSXSOUND\Gex 3 - Deep Cover Gecko (USA);%USERPROFILE%\Desktop\ps1usb\PSXSOUND\Legacy of Kain - Soul Reaver (USA)
+set PS1_AKAO_CORPUS=%USERPROFILE%\Desktop\ps1usb\PSXSOUND\AKAO
 set SOUND_FUZZ=200                  (damaged copies of each file, default 40)
 ```
 
-Without `PS1_SOUND_CORPUS`, only the tests' own SEQs, MIDIs and sounds are used.
+The disc images are read in pieces (`gui/discimage.py`), never whole: about 300 MB of memory at most (AKAO).
+Without these, only the tests' own files are used (the corpus tests are skipped).
 
 ## With a console
 

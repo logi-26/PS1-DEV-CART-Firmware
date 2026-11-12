@@ -228,8 +228,10 @@ class SoundPage(Page):
         self.keys.bind("<B1-Motion>", self.key_drag)
         self.keys.bind("<ButtonRelease-1>", lambda e: self.release())
 
-        # Effects (kept in the settings, sent to the tester each time it starts)
+        # Effects (kept in the settings, sent to the tester each time it starts; the reverb starts Off each time
+        # the app starts and each time a music is loaded)
         fx = dict(FX_DEFAULTS, **(self.app.settings.get("sound.fx") or {}))
+        fx["reverb"] = FX_DEFAULTS["reverb"]
         box = self.section("Effects", left)
         box.pack(fill="x", pady=(0, 8), before=note_box)      # (between the SEQ music and the instrument)
         self.fx_controls = []
@@ -368,6 +370,9 @@ class SoundPage(Page):
             v.set(False)
         for v in self.rev_vars:
             v.set(True)
+        self.reverb_choice.current(FX_DEFAULTS["reverb"])     # (new music: no reverb until one is chosen)
+        self.app.settings.set("sound.fx", self.fx_values())
+        self.enable(False)
         self.editor.load()
         self.status.configure(text="Starting the console's sound tester...")
         self.app.run(self.args(), "Sound tester", long_running=True, stdin=True, cwd=os.path.dirname(files[0]),

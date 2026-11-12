@@ -9,6 +9,10 @@ PS1 DEV CART GUI: the Convert tab of the Sound Tools page: common audio files an
 - Audio -> XA: streamed CD music, several songs in one file (one per channel)
 And back (each tab's "From the PS1" part): VAG -> audio, VAB -> its samples and a list of its programs, SEQ -> MIDI,
 XA (or an STR movie's sound) -> audio, one file per channel. The results open with the computer's own programs.
+- Game music: Sony's later music format (SQ/HD: Ape Escape, Alundra 2, Legend of Dragoon...) as SEQ + VAB
+  (sshd.py): one music and its bank, or every music found in a game's disc image or archive (also Crystal
+  Dynamics' SND + SMP: Gex 3, Akuji..., aad.py), each played in the tester with one click. The image is read where
+  needed (discimage.py), never whole.
 
 The sounds other than WAV are read with FFmpeg (the one of the Movie Tools page: the same setting).
 
@@ -24,8 +28,12 @@ from tkinter import filedialog
 
 import ttkbootstrap as tb
 
+import aad
+import akao
 import audioconv
+import discimage
 import movieconv
+import sshd
 import strmovie
 from widgets import FileField, FileList, ScrollFrame
 
@@ -97,6 +105,17 @@ class ConvertTab(tb.Frame):
             box = tb.Labelframe(inner, text="From the PS1", padding=8)
             box.pack(fill="x", pady=(10, 0))
             back(box)
+        # Games' music in Sony's later format: made into SEQ + VAB (one way: the tester plays those)
+        scroll = ScrollFrame(self.tabs)
+        self.tabs.add(scroll, text="Game music")
+        inner = tb.Frame(scroll.inner, padding=8)
+        inner.pack(fill="both", expand=True)
+        box = tb.Labelframe(inner, text="Music and bank files", padding=8)
+        box.pack(fill="x")
+        self.build_sq(box)
+        box = tb.Labelframe(inner, text="Every music of a game", padding=8)
+        box.pack(fill="x", pady=(10, 0))
+        self.build_scan(box)
 
         bottom = tb.Frame(self)
         bottom.pack(fill="x", pady=(6, 0))
@@ -881,3 +900,229 @@ class ConvertTab(tb.Frame):
                 ch, os.path.basename(name), int(sec) // 60, int(sec) % 60) for ch, name, sec in written))
         self.run("Decoding the XA", lambda progress: audioconv.xa_to_audio(src, base, ext, ff, channel, progress),
                  done)
+
+    # ---------------------------------------------------------------- SQ / HD -> SEQ / VAB
+
+    def build_sq(self, tab):
+        tb.Label(tab, text="Sony SQ + HD + BD (Ape Escape, Alundra 2, The Legend of Dragoon) to SEQ + VAB.",
+                 bootstyle="secondary", wraplength=900, justify="left").pack(anchor="w", pady=(0, 6))
+        self.sq_src = FileField(tab, self.app, "sound.conv.sq.src", "Music (SQ)",
+                                filetypes=[("SQ", "*.sq"), ("All files", "*.*")])
+        self.sq_src.pack(fill="x", pady=2)
+        self.sq_hd = FileField(tab, self.app, "sound.conv.sq.hd", "Bank (HD)",
+                               filetypes=[("HD", "*.hd"), ("All files", "*.*")], on_change=lambda: self.sq_bd.set(""))
+        self.sq_hd.pack(fill="x", pady=2)
+        self.sq_bd = FileField(tab, self.app, "sound.conv.sq.bd", "Samples (BD)",
+                               filetypes=[("BD", "*.bd"), ("All files", "*.*")])
+        self.sq_bd.pack(fill="x", pady=2)
+        tb.Label(tab, text="(Samples empty: the HD's name with .bd)", bootstyle="secondary").pack(anchor="w")
+        self.sq_out = FileField(tab, self.app, "sound.conv.sq.out", "SEQ file", mode="save",
+                                filetypes=[("SEQ", "*.seq")])
+        self.sq_out.pack(fill="x", pady=2)
+        row = tb.Frame(tab)
+        row.pack(fill="x", pady=(6, 0))
+        tb.Button(row, text="Convert", bootstyle="success", command=self.convert_sq).pack(side="left")
+        self.sq_play = tb.Button(row, text="Play in the tester", bootstyle="info-outline", state="disabled",
+                                 command=lambda: self.play(self.sq_files))
+        self.sq_play.pack(side="left", padx=6)
+        self.sq_info = tb.Label(tab, text="", bootstyle="secondary", wraplength=900, justify="left")
+        self.sq_info.pack(anchor="w", pady=(8, 0))
+        self.sq_files = []
+
+    def convert_sq(self):
+        src, hd = self.sq_src.get(), self.sq_hd.get()
+        if not src or not hd:
+            return self.set_status("Choose the music (SQ) and its bank (HD).", True)
+        bd = self.sq_bd.get() or os.path.splitext(hd)[0] + ".bd"
+        out = self.out_path(self.sq_out, src, ".seq")
+        base = os.path.splitext(out)[0]
+        for f in (self.sq_src, self.sq_hd, self.sq_bd, self.sq_out):
+            if f.get():
+                f.remember()
+
+        def work(progress):
+            with open(src, "rb") as f:
+                sq = sshd.Ssq(f.read())
+            with open(hd, "rb") as f:
+                bank = sshd.Sshd(f.read())
+            with open(bd, "rb") as f:
+                vh, vb, vinfo = sshd.to_vab(bank, f.read())
+            data, info = sshd.to_seq(sq)
+            files = [base + ".vh", base + ".vb", out]
+            for path, b in zip(files, (vh, vb, data)):
+                with open(path, "wb") as f:
+                    f.write(b)
+            return files, info, vinfo, sshd._coverage(sq, bank)
+
+        def done(result):
+            self.sq_files, info, vinfo, coverage = result
+            self.sq_play.configure(state="normal")
+            self.set_status("%s, %s and %s written." % tuple(os.path.basename(f) for f in self.sq_files))
+            self.sq_info.configure(text=self.sq_text(info, vinfo, coverage))
+        self.run("Converting the music and its bank", self.sq_guard(work), done)
+
+    @staticmethod
+    def sq_guard(work):
+        """sshd's errors (a file of another kind, cut short) shown as the converters' own."""
+        def guarded(progress):
+            try:
+                return work(progress)
+            except (sshd.FormatError, aad.FormatError) as e:
+                raise audioconv.ConvertError(str(e))
+        return guarded
+
+    @staticmethod
+    def sq_text(info, vinfo, coverage):
+        minutes, seconds = divmod(int(round(info["seconds"])), 60)
+        loop = ("loop from tick %d to %d" % (info["loop"], info["loop_end"])) if info["loop"] is not None else \
+            "no loop"
+        lines = ["%d:%02d, %d notes on channels %s, %s, tempo %d." % (
+            minutes, seconds, info["notes"], ", ".join(str(c + 1) for c in info["channels"]), loop, info["tempo"]),
+            "Bank: programs %s, %d tones, %d samples; a tone for %.1f%% of the notes." % (
+                ", ".join(str(p) for p in vinfo["programs"]), vinfo["tones"], vinfo["samples"], coverage * 100)]
+        if vinfo["skipped"]:
+            lines.append("Not converted: " + "; ".join(vinfo["skipped"]) + ".")
+        return "\n".join(lines)
+
+    def build_scan(self, tab):
+        tb.Label(tab, text="Finds every music in a disc image (.bin, .cue, .iso, .ecm) or game archive, to SEQ + VAB:\n"
+                           "  • Sony SQ + HD + BD (Ape Escape, Alundra 2, The Legend of Dragoon)\n"
+                           "  • Crystal Dynamics SND + SMP music and SNF + SMF sound effects (Gex 2, Gex 3, "
+                           "Akuji, Soul Reaver)\n"
+                           "  • Square AKAO (Final Fantasy VII and VIII, Vagrant Story)\n"
+                           "Double-click a music to play it.", bootstyle="secondary", wraplength=900,
+                 justify="left").pack(anchor="w", pady=(0, 6))
+        self.scan_src = FileField(tab, self.app, "sound.conv.scan.src", "Game file",
+                                  filetypes=[("Disc images and archives", "*.bin *.cue *.img *.iso *.ecm *.dat *.mix *.pak"),
+                                             ("All files", "*.*")], on_change=lambda: self.scan_out.set(""))
+        self.scan_src.pack(fill="x", pady=2)
+        self.scan_out = FileField(tab, self.app, "sound.conv.scan.out", "Folder", mode="dir")
+        self.scan_out.pack(fill="x", pady=2)
+        row = tb.Frame(tab)
+        row.pack(fill="x", pady=(6, 0))
+        tb.Button(row, text="Find and convert", bootstyle="success", command=self.convert_scan).pack(side="left")
+        self.scan_play = tb.Button(row, text="Play in the tester", bootstyle="info-outline", state="disabled",
+                                   command=self.play_scan)
+        self.scan_play.pack(side="left", padx=6)
+        self.scan_open = self.open_button(row, "Open the folder", self.scan_out.get)
+        row = tb.Frame(tab)
+        row.pack(fill="both", expand=True, pady=(8, 0))
+        cols = (("name", "Music", 70), ("format", "Format", 110), ("length", "Length", 55), ("notes", "Notes", 55),
+                ("bank", "Bank", 220), ("cover", "Notes with a tone", 115), ("skipped", "Not converted", 300))
+        self.scan_tree = tb.Treeview(row, columns=[c[0] for c in cols], show="headings", height=10,
+                                     selectmode="browse")
+        for key, text, width in cols:
+            self.scan_tree.heading(key, text=text, anchor="w")
+            self.scan_tree.column(key, width=width, anchor="w", stretch=key == "skipped")
+        bar = tb.Scrollbar(row, orient="vertical", command=self.scan_tree.yview)
+        self.scan_tree.configure(yscrollcommand=bar.set)
+        self.scan_tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="left", fill="y")
+        self.scan_tree.bind("<<TreeviewSelect>>", lambda e: self.scan_play.configure(
+            state="normal" if self.scan_tree.selection() else "disabled"))
+        self.scan_tree.bind("<Double-1>", lambda e: self.play_scan())
+        self.scan_files = {}
+
+    def convert_scan(self):
+        src = self.scan_src.get()
+        if not src:
+            return self.set_status("Choose the game's disc image or archive file.", True)
+        out = self.scan_out.get()
+        if not out:
+            out = os.path.splitext(src)[0] + "_music"
+            self.scan_out.set(out)
+        self.scan_src.remember()
+        self.scan_out.remember()
+
+        def work(progress):
+            # (the game's file read where needed, never whole: a disc image is hundreds of MB)
+            with discimage.Image(src) as img:
+                musics = sshd.scan(img, lambda d, t: progress(d, t * 3))
+            banks = aad.scan(src, lambda d, t: progress(t + d, t * 3))
+            effects = aad.scan_sfx(src)
+            squares = akao.scan(src, lambda d, t: progress(2 * t + d, t * 3))
+            os.makedirs(out, exist_ok=True)
+            rows = []
+            for n, m in enumerate(musics):
+                base = os.path.join(out, "%02d" % n)
+                data, info = sshd.to_seq(m["sq"])
+                with open(base + ".seq", "wb") as f:
+                    f.write(data)
+                files, bank, skipped = [base + ".seq"], "none found", ""
+                vinfo = None
+                if m["hd"]:
+                    try:
+                        vh, vb, vinfo = sshd.to_vab(m["hd"], m["bd_bytes"])
+                    except sshd.FormatError as e:      # (one bank a VAB can't hold: the other musics still listed)
+                        bank = "not converted: %s" % e
+                if vinfo:
+                    with open(base + ".vh", "wb") as f:
+                        f.write(vh)
+                    with open(base + ".vb", "wb") as f:
+                        f.write(vb)
+                    files = [base + ".vh", base + ".vb", base + ".seq"]
+                    bank = "%d programs, %d samples (%d KB)" % (len(vinfo["programs"]), vinfo["samples"],
+                                                               len(vb) // 1024)
+                    skipped = "; ".join(vinfo["skipped"])
+                rows.append(("%02d" % n, "SQ/HD", info, bank, m["coverage"] if vinfo else None, skipped, files))
+            for n, b in enumerate(banks):
+                name = "snd%02d" % n
+                musics, vinfo = aad.write_bank(b, out, name)
+                bank = "none found"
+                if vinfo:
+                    bank = "%d programs, %d samples (%d KB)" % (len(vinfo["programs"]), vinfo["samples"],
+                                                               os.path.getsize(os.path.join(out, name + ".vb")) // 1024)
+                for k, path, info in musics:
+                    files = [os.path.join(out, name + ".vh"), os.path.join(out, name + ".vb"), path] if vinfo else \
+                        [path]
+                    rows.append(("%s_%d" % (name, k), "Crystal Dynamics", info, bank,
+                                 aad.coverage(b["snd"].sequences[k], b["snd"]) if vinfo else None,
+                                 "; ".join((vinfo["skipped"] if vinfo else []) + info["skipped"]), files))
+            for n, e in enumerate(effects):                     # (sound effects: each once, in a SEQ)
+                name = "sfx%03d" % n
+                path, info = aad.write_sfx(e, out, name)
+                rows.append((name, "Crystal Dynamics effects", dict(seconds=info["seconds"], notes=info["effects"]),
+                             "%d effects, %d samples" % (info["effects"], info["samples"]), 1.0, "",
+                             [os.path.join(out, name + ".vh"), os.path.join(out, name + ".vb"), path]))
+            for n, m in enumerate(squares):                     # (Square's AKAO: SEQ + VAB each)
+                name = "akao%03d" % n
+                if not m["arts"]:
+                    rows.append((name, "AKAO %s" % m["seq"].version, dict(seconds=0, notes=0), "none found", None,
+                                 "", []))
+                    continue
+                files, info = akao.write_music(m, out, name)
+                rows.append((name, "AKAO %s" % m["seq"].version, info, "%d programs, %d samples (%s)" % (
+                    info["programs"], info["samples"], m["sets"]), info["coverage"], "; ".join(info["skipped"]),
+                    files))
+            return rows
+
+        def done(rows):
+            self.scan_tree.delete(*self.scan_tree.get_children())
+            self.scan_files = {}
+            for name, kind, info, bank, coverage, skipped, files in rows:
+                minutes, seconds = divmod(int(round(info["seconds"])), 60)
+                item = self.scan_tree.insert("", "end", values=(
+                    name, kind, "%d:%02d" % (minutes, seconds), info["notes"], bank,
+                    "" if coverage is None else "%.1f%%" % (coverage * 100), skipped))
+                self.scan_files[item] = files
+            self.scan_open.configure(state="normal")
+            self.scan_play.configure(state="disabled")
+            if not rows:
+                return self.set_status("No music found in %s (formats known: SQ/HD, Crystal Dynamics' SND, AKAO)." %
+                                       os.path.basename(src), True)
+            alone = sum(1 for r in rows if r[4] is None)
+            self.set_status("%d musics written in %s%s." % (len(rows), out, (" (%d with no bank found: SEQ only)" %
+                                                                             alone) if alone else ""))
+        self.run("Looking for the musics (a disc image takes a few seconds)", self.sq_guard(work), done)
+
+    def play_scan(self):
+        sel = self.scan_tree.selection()
+        if not sel:
+            return self.set_status("Choose a music in the list.", True)
+        files = self.scan_files.get(sel[0], [])
+        if len(files) < 3:
+            return self.set_status("No bank was found for this music: the tester needs one to play it.", True)
+        missing = [f for f in files if not os.path.isfile(f)]
+        if missing:
+            return self.set_status("Not found: %s" % ", ".join(missing), True)
+        self.play(files)
