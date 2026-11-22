@@ -464,11 +464,13 @@ extern char *flash_backup_dir;
 // Functions
 
 // usbio.c
+#ifdef _WIN32	// (libftdi has its own ftdi_* functions on Linux)
 uint32_t	ftdi_read_data(UsbDevice *dev, void *data, uint32_t size);
 uint32_t	ftdi_write_data(UsbDevice *dev, uint8_t *data, uint32_t size);
 void	USB_Purge(UsbDevice *dev);
 void	ftdi_tcioflush(UsbDevice *dev);
 void	ftdi_free(UsbDevice *dev);
+#endif
 void	USB_SetLatency(void);
 bool	USB_OpenDevice(int deviceid, char *serial);
 void	USB_ListDevices(void);

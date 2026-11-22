@@ -427,7 +427,11 @@ extern volatile int vl_lobby, vl_paired;
 // Functions
 
 // usblink.c
+#ifdef _WIN32
 BOOL WINAPI	OnInterrupt(DWORD type);
+#else
+void	OnInterrupt(int sig);
+#endif
 bool	StopRequested(void);
 void	NetSleepMs(int ms);
 sock_t	NetConnect(const char *host_port);
@@ -438,7 +442,11 @@ bool	NetSendAll(sock_t s, const uint8_t *buf, uint32_t n);
 uint32_t	VlMs(void);
 uint64_t	VlUs(void);
 uint32_t	VlPatience(VlEnd *e, uint32_t now);
+#ifdef _WIN32
 DWORD WINAPI	VlThreadMain(LPVOID arg);
+#else
+void	*VlThreadMain(void *arg);
+#endif
 bool	VlStart(VlEnd *e);
 void	VlTraceWrite(void);
 void	VlTimePrint(VlEnd *e);
