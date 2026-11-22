@@ -31,6 +31,11 @@
 #define	MON_REASON_SIO_SETUP	8	// Serial port / USB link tty driver ("-c sio", "-c link"; regs = 1: USB link) installed
 #define	MON_REASON_SIO_UPDATE	9	// Its work at each exception (kernel_hook/siotty.h: the driver is in the monitor)
 #define	MON_REASON_CD_SETUP	10	// Disc booted by the firmware: Load and LoadExec of "cdrom:" files by the monitor (see below)
+#define	MON_REASON_TTY_SETUP	11	// The USB tty driver (printf to the computer) installed (version 15: moved from the hook)
+#define	MON_REASON_DEBUG_SETUP	12	// Debug session: the exception vectors installed (version 15: moved from the hook)
+
+// The monitor's stack in the kernel hook (mon_stack), the register save area (mon_regs) right after it
+#define	MON_STACK_SIZE		512	// Measured use about 230 bytes (MonitorEntry, MonReceive, USB_GetData; -fstack-usage)
 
 // Execute command param (tty mode byte): debug session, the hook installs the exception vectors
 #define	EXEC_DEBUG			0x80
@@ -71,7 +76,9 @@
 // program is stopped (MON_CMD_EXCHANGE: the relay of a debug session, ps1transfer -gdb -relay); 13 = Load and LoadExec
 // of "cdrom:" files for a disc the firmware booted (MON_REASON_CD_SETUP, see below)
 // 14 = a disc's BIOS Load kept at MON_DISC_LOAD_ADRS (pad_orig: the remote pad of a disc booted by the firmware)
-#define	MONITOR_VERSION		14
+// 15 = the USB tty driver, the debug vectors' setup and the register save of a stop (MonSave) moved from the kernel
+// hook to make room there (MON_REASON_TTY_SETUP, MON_REASON_DEBUG_SETUP; the hook keeps the 0x80 vector's check)
+#define	MONITOR_VERSION		15
 
 // Disc booted by the firmware (MON_REASON_CD_SETUP, before it executes the game): the BIOS CD driver isn't there
 // (PSn00bSDK removes it, and the firmware reads the disc with polled drive commands, see cdread.h), so a game loading

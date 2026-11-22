@@ -70,6 +70,8 @@ SECTIONS {
         *(.text.hot .text.hot.*)
         *(.text .stub .text.* .gnu.linkonce.t.*)
 
+        /* Code only the debug monitor uses (linked after the hook with its symbols), e.g. MonBreakVector */
+        KEEP(*(.text.monitor_used))
         . = ALIGN(4);	/* Was 16, kernel space is small and no constructors are used */
         KEEP(*(.init))
         . = ALIGN(4);	/* Was 16, kernel space is small and no constructors are used */

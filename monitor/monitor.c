@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include "monitor.h"
 #include "common/psxlibc/device.h"		// (nugget: the BIOS File and Device structures)
+#include "common/syscalls/syscalls.h"	// (nugget: the BIOS calls of ReplaceTTY)
 #include "../kernel_hook/siotty.h"
 
 #define	MON_STR(_x_)	#_x_
@@ -40,7 +41,6 @@ extern MonitorState	mon_state;
 extern SioBuffers	sio_buf;				// Serial port / USB link tty driver: its buffers and state (kernel_hook/siotty.h)
 extern SioState		sio_state;
 extern bool			is_sio_tty_enabled;
-void	ReplaceTTY(struct Device *dev);
 int		USB_tty_dummy(void);
 _Static_assert(offsetof(MonitorState, pad_buf) == MON_STATE_PAD_BUF, "MON_STATE_PAD_BUF");
 _Static_assert(offsetof(MonitorState, pad_orig) == MON_STATE_PAD_ORIG, "MON_STATE_PAD_ORIG");
@@ -795,6 +795,157 @@ static void	ProfSetVector(bool on)
 	FlushCache();
 }
 
+/****************************************/
+// Debug session (monitor version 15, moved from the kernel hook's debugmon.h): the exception vectors, and the register
+// save of a stop. 0x80000080 jumps to the kernel hook's MonBreakVector (RAM: it sees every exception, a break comes
+// on to MonSave here, anything else goes to the BIOS handler), 0x80000040 (COP0 hardware breakpoints) to
+// MonDebugVector here.
+
+extern uint32_t	mon_save_adrs;		// Kernel hook (debugmon.h): MonSave's address for MonBreakVector
+void			MonBreakVector(void);	// Kernel hook
+void			MonDebugVector(void);
+void			MonSave(void);
+
+static void	WriteJump(volatile uint32_t *vector, void (*target)(void))
+{
+	uint32_t	adrs = (uint32_t)target;
+
+	vector[0] = 0x3C1A0000 | ((adrs + 0x8000) >> 16);	// lui   k0, hi
+	vector[1] = 0x275A0000 | (adrs & 0xFFFF);			// addiu k0, k0, lo
+	vector[2] = 0x03400008;								// jr    k0
+	vector[3] = 0;										// nop
+}
+
+// MON_REASON_DEBUG_SETUP: the vectors installed at the program's first exception
+static void	DebugSetup(void)
+{
+	volatile uint32_t	*v80 = (uint32_t *)0x80000080;
+	int					i;
+
+	mon_save_adrs = (uint32_t)MonSave;
+	if (v80[0] != (0x3C1A0000 | (((uint32_t)MonBreakVector + 0x8000) >> 16)))	// Not installed yet
+		for (i = 0; i < 4; i++)
+			mon_state.chain80[i] = v80[i];
+	WriteJump(v80, MonBreakVector);
+	WriteJump((uint32_t *)0x80000040, MonDebugVector);
+	mon_state.debug = 1;
+	FlushCache();
+}
+
+// MonSave: the program's registers saved in mon_regs (MON_REG_* layout), the monitor called on its stack, then the
+// registers restored (the computer may have changed them) and the program resumed. k1: reason (MonBreakVector: 1,
+// MonDebugVector: 2). Only k0/k1 can be used before the registers are saved.
+__asm__(
+	".set push\n"
+	".set noreorder\n"
+	".set noat\n"
+	".text\n"
+	".global MonDebugVector\n"
+	"MonDebugVector:\n"				// From 0x80000040: COP0 hardware breakpoint
+	"	li		$k1, 2\n"			// MON_REASON_DEBUG
+	".global MonSave\n"
+	"MonSave:\n"
+	// Hardware breakpoints off before any memory access (a watchpoint could trigger again), DCIC status bits
+	// (which breakpoint triggered) kept in k1: reason | status << 8
+	"	mfc0	$k0, $7\n"
+	"	mtc0	$0, $7\n"
+	"	andi	$k0, $k0, 0x3F\n"
+	"	sll		$k0, $k0, 8\n"
+	"	or		$k1, $k1, $k0\n"
+	"	lui		$k0, %hi(mon_regs)\n"
+	"	addiu	$k0, $k0, %lo(mon_regs)\n"
+	"	sw		$0, 0($k0)\n"
+	"	sw		$1, 4($k0)\n"
+	"	sw		$2, 8($k0)\n"
+	"	sw		$3, 12($k0)\n"
+	"	sw		$4, 16($k0)\n"
+	"	sw		$5, 20($k0)\n"
+	"	sw		$6, 24($k0)\n"
+	"	sw		$7, 28($k0)\n"
+	"	sw		$8, 32($k0)\n"
+	"	sw		$9, 36($k0)\n"
+	"	sw		$10, 40($k0)\n"
+	"	sw		$11, 44($k0)\n"
+	"	sw		$12, 48($k0)\n"
+	"	sw		$13, 52($k0)\n"
+	"	sw		$14, 56($k0)\n"
+	"	sw		$15, 60($k0)\n"
+	"	sw		$16, 64($k0)\n"
+	"	sw		$17, 68($k0)\n"
+	"	sw		$18, 72($k0)\n"
+	"	sw		$19, 76($k0)\n"
+	"	sw		$20, 80($k0)\n"
+	"	sw		$21, 84($k0)\n"
+	"	sw		$22, 88($k0)\n"
+	"	sw		$23, 92($k0)\n"
+	"	sw		$24, 96($k0)\n"
+	"	sw		$25, 100($k0)\n"
+	"	sw		$28, 112($k0)\n"
+	"	sw		$29, 116($k0)\n"
+	"	sw		$30, 120($k0)\n"
+	"	sw		$31, 124($k0)\n"
+	"	mfc0	$8, $14\n"			// EPC
+	"	mfc0	$9, $12\n"			// SR
+	"	mfc0	$10, $13\n"			// Cause
+	"	srl		$11, $k1, 8\n"		// DCIC status bits
+	"	mfhi	$12\n"
+	"	mflo	$13\n"
+	"	sw		$8, 128($k0)\n"		// MON_REG_EPC
+	"	sw		$12, 132($k0)\n"	// MON_REG_HI
+	"	sw		$13, 136($k0)\n"	// MON_REG_LO
+	"	sw		$9, 140($k0)\n"		// MON_REG_SR
+	"	sw		$10, 144($k0)\n"	// MON_REG_CAUSE
+	"	lui		$8, %hi(mon_state)\n"
+	"	sw		$11, %lo(mon_state + 36)($8)\n"	// dcic_stop (the breakpoints are set again when resuming)
+	"	lw		$9, %lo(mon_state + 4)($8)\n"	// MON_STATE_ENTRY
+	"	lui		$sp, %hi(mon_stack + 512)\n"	// (MON_STACK_SIZE)
+	"	addiu	$sp, $sp, %lo(mon_stack + 512)\n"
+	"	andi	$a0, $k1, 0xFF\n"
+	"	jalr	$9\n"
+	"	move	$a1, $k0\n"
+	"	lui		$k0, %hi(mon_regs)\n"
+	"	addiu	$k0, $k0, %lo(mon_regs)\n"
+	"	lw		$8, 132($k0)\n"
+	"	lw		$9, 136($k0)\n"
+	"	mthi	$8\n"
+	"	mtlo	$9\n"
+	"	lw		$1, 4($k0)\n"
+	"	lw		$2, 8($k0)\n"
+	"	lw		$3, 12($k0)\n"
+	"	lw		$4, 16($k0)\n"
+	"	lw		$5, 20($k0)\n"
+	"	lw		$6, 24($k0)\n"
+	"	lw		$7, 28($k0)\n"
+	"	lw		$8, 32($k0)\n"
+	"	lw		$9, 36($k0)\n"
+	"	lw		$10, 40($k0)\n"
+	"	lw		$11, 44($k0)\n"
+	"	lw		$12, 48($k0)\n"
+	"	lw		$13, 52($k0)\n"
+	"	lw		$14, 56($k0)\n"
+	"	lw		$15, 60($k0)\n"
+	"	lw		$16, 64($k0)\n"
+	"	lw		$17, 68($k0)\n"
+	"	lw		$18, 72($k0)\n"
+	"	lw		$19, 76($k0)\n"
+	"	lw		$20, 80($k0)\n"
+	"	lw		$21, 84($k0)\n"
+	"	lw		$22, 88($k0)\n"
+	"	lw		$23, 92($k0)\n"
+	"	lw		$24, 96($k0)\n"
+	"	lw		$25, 100($k0)\n"
+	"	lw		$28, 112($k0)\n"
+	"	lw		$29, 116($k0)\n"
+	"	lw		$30, 120($k0)\n"
+	"	lw		$31, 124($k0)\n"
+	"	lw		$k0, 128($k0)\n"	// EPC (may have been changed by the computer)
+	"	nop\n"
+	"	jr		$k0\n"
+	"	rfe\n"
+	".set pop\n"
+);
+_Static_assert(MON_STACK_SIZE == 512, "MonSave: the monitor's stack top (mon_stack + 512)");
+
 // MON_CMD_GPU_INFO: the drawing state of the GPU (GP1 10h: the answer in GPUREAD), for the frame capture
 static void	GpuInfo(void)
 {
@@ -1156,6 +1307,78 @@ error:
 	return (-1);
 }
 
+/****************************************/
+// The USB tty driver: printf of a program redirected to the computer (the default tty mode). From the kernel hook's
+// ttyhook.h (PS1USB firmware by OrionSoft [2024]), moved here in monitor version 15 to make room in the kernel area.
+
+int		USB_tty_dummy(void)
+{
+	return (0);
+}
+
+static int	USB_tty_open(struct File *file, const char *filename, int mode)
+{
+	return (file->deviceId);
+}
+
+static int	USB_tty_action(struct File *file, enum FileAction action)
+{
+	int					i;
+	volatile uint8_t	*buf8 = (volatile uint8_t *)file->buffer;
+
+	// Reads: no tty input comes from the computer (ps1transfer sends none), only its commands, read by the kernel
+	// hook. A read returns at once without bytes: it used to wait for bytes (5,000,000 polls each) and took the
+	// commands' bytes, so a program reading this tty (e.g. a link game left on it) couldn't be reached any more
+	if (action != PSXWRITE)
+		return (0);
+	// The byte is dropped if the USB FIFO is full (no ps1transfer -c reading), it was reported as
+	// not written and the BIOS retried forever with interrupts disabled: programs printing a lot froze
+	for (i = 0; i < file->count; i++)
+		USB_SendByteTimeout(buf8[i], 0);
+	return (file->count);
+}
+
+// (the BIOS copies it in its device table: it can be in flash)
+static const struct Device	USB_tty_dev =
+{
+	"tty",
+	PSXDTTYPE_CHAR | PSXDTTYPE_CONS,
+	0,
+	"PS1 DEV CART USB tty",
+	(device_init)USB_tty_dummy,
+	USB_tty_open,
+	USB_tty_action,
+	(device_close)USB_tty_dummy,
+	(device_ioctl)USB_tty_dummy,
+	(device_read)USB_tty_dummy,
+	(device_write)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(device_firstFile)USB_tty_dummy,
+	(device_nextFile)USB_tty_dummy,
+	(device_format)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(void *)USB_tty_dummy,
+	(device_deinit)USB_tty_dummy,
+	(void *)USB_tty_dummy
+};
+
+// Replace the TTY device (stdin/stdout) by one of ours (USB, serial port or USB link)
+static void	ReplaceTTY(struct Device *dev)
+{
+	syscall_close(0);					// Close stdin/stdout handles
+	syscall_close(1);
+	{
+		register int n asm("t1") = 0x48;	// B(48h) RemoveDevice, not in syscalls.h
+		__asm__ volatile("" : "=r"(n) : "r"(n));
+		((int (*)(const char *))0xB0)(dev->name);	// Remove default TTY device
+	}
+	syscall_addDevice(dev);				// Add our own TTY device
+	syscall_open(dev->name, PSXF_READ);	// Reopen stdin/stdout
+	syscall_open(dev->name, PSXF_WRITE);
+}
+
+/****************************************/
 // The tty device (the BIOS copies it in its device table: it can be in flash)
 static const struct Device	SIO_tty_dev =
 {
@@ -1653,6 +1876,16 @@ void	MonitorEntry(int reason, uint32_t *regs)
 	if (reason == MON_REASON_SIO_SETUP)
 	{
 		SioSetup(regs != NULL);
+		return;
+	}
+	if (reason == MON_REASON_TTY_SETUP)		// (the program's first exception, default tty mode)
+	{
+		ReplaceTTY((struct Device *)&USB_tty_dev);
+		return;
+	}
+	if (reason == MON_REASON_DEBUG_SETUP)	// (the program's first exception, debug session)
+	{
+		DebugSetup();
 		return;
 	}
 
