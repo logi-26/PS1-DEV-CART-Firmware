@@ -827,6 +827,16 @@ happens, it can be repaired with the flasher CD image (below).
 - `make`, Python 3 (menu images, GUI), a host C compiler for `ps1transfer` and `cartrom/rom_rounder`.
 - Copy `config/Makefile.conf.example` to `config/Makefile.conf` and set `PSN00BSDK` and `PSXDIR`.
 
+**Windows in one go** (Git Bash): `sh ci/setup_buildtools.sh` downloads the tools above (and a 32-bit MinGW) into
+`buildtools/` and writes `config/Makefile.conf`; then `sh ci/build_firmware.sh` (firmware and ROM) and
+`sh ci/build_ps1transfer.sh`. `python ci/check_sizes.py` shows the room left in the flash, the kernel hook and the
+firmware's RAM.
+
+**Continuous integration**: each push runs `.github/workflows/ci.yml` on GitHub: ps1transfer built for Windows and
+Linux, the firmware and the ROM built (a part that outgrows its place stops the build), the room left in the job's
+summary, and the tests that need no console (`tests/tools`, `tests/sound`, `tests/movie`). The ROM and
+`ps1transfer.exe` built are kept as the run's artifacts.
+
 **Build steps**
 
     make                            firmware (ps1devcart.ps-exe), kernel hook, debug monitor

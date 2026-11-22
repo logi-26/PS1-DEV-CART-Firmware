@@ -1,0 +1,91 @@
+# PS1 DEV CART: builds ps1transfer (Windows and Linux) and the cartridge ROM, reports the firmware's room left, runs
+# the tests that need no console (tests/tools, tests/sound, tests/movie). The Windows tools are the ones of
+# buildtools/README.txt, downloaded by ci/setup_buildtools.sh (cached between runs).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows - build, room left, tests
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build tools (cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            buildtools/mingw32
+            buildtools/psn00bsdk
+            buildtools/nolibgs_hello_worlds
+          key: buildtools-${{ hashFiles('ci/setup_buildtools.sh') }}
+
+      - name: Build tools
+        run: sh ci/setup_buildtools.sh
+
+      - name: Python packages and FFmpeg
+        run: |
+          python -m pip install --quiet numpy pillow av ttkbootstrap
+          command -v ffmpeg || choco install ffmpeg -y --no-progress
+
+      - name: ps1transfer's build lists
+        run: python ci/check_build_lists.py
+
+      - name: Build ps1transfer
+        run: sh ci/build_ps1transfer.sh
+
+      - name: Build the firmware and the ROM
+        run: sh ci/build_firmware.sh
+
+      - name: Room left (ROM, monitor, kernel hook, firmware RAM)
+        run: python ci/check_sizes.py
+
+      - name: Tool tests
+        run: python -m unittest discover -s tests/tools -p "test_*.py" -v
+
+      - name: Sound tests
+        run: >-
+          python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py tests/sound/test_reverb.py
+          tests/sound/test_sshd.py tests/sound/test_aad.py tests/sound/test_akao.py -v
+
+      - name: Movie tests
+        run: python -m unittest tests/movie/test_movie_player.py tests/movie/test_movie_convert.py -v
+
+      - name: Keep the builds
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: builds
+          path: |
+            cartrom/ps1devcart.rom
+            ps1transfer/ps1transfer.exe
+          if-no-files-found: ignore
+
+  linux:
+    name: Linux - ps1transfer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: libftdi and libusb
+        run: sudo apt-get update -q && sudo apt-get install -y -q libftdi1-dev libusb-1.0-0-dev
+
+      - name: Build ps1transfer
+        run: make -C ps1transfer
+
+      - name: Memory card image tools (no cartridge needed)
+        run: |
+          ps1transfer/ps1transfer -mcformat /tmp/card.mcd
+          ps1transfer/ps1transfer -mclist /tmp/card.mcd
