@@ -680,14 +680,18 @@ def textures_in_use(ram, vram, progress=None):
         if nx != 0xFFFFFF and (words[nx >> 2] >> 24) > 16:        # (the next one: a tag too)
             continue
         packets[int(i)] = cmds
-    # Sprites: the draw mode before them in the drawing order (a packet's predecessor: the tag pointing at it)
-    prev = {}
+    # Sprites: the draw mode before them in the drawing order (a packet's predecessor: the tag pointing at it). Code
+    # or data can hold a word that looks like a tag pointing at a packet: a tag of a packet found is preferred to
+    # another word (e.g. an ordering table's empty entry), which is only used when no packet points there
+    prev, weak = {}, {}
     ptr = np.flatnonzero(((lens <= 16) & (nxt < len(ram)) & ((nxt & 3) == 0)))
     targets = set(packets)
     for i in ptr:
         t = int(nxt[i]) >> 2
         if t in targets and t != i:
-            prev.setdefault(t, int(i))
+            (prev if int(i) in targets else weak).setdefault(t, int(i))
+    for t, i in weak.items():
+        prev.setdefault(t, i)
 
     def mode_before(i):
         for _ in range(256):
