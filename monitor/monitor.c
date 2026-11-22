@@ -23,7 +23,6 @@
 #include <stdbool.h>
 #include "monitor.h"
 #include "common/psxlibc/device.h"		// (nugget: the BIOS File and Device structures)
-#include "common/syscalls/syscalls.h"	// (nugget: the BIOS calls of ReplaceTTY)
 #include "../kernel_hook/siotty.h"
 
 #define	MON_STR(_x_)	#_x_
@@ -41,6 +40,7 @@ extern MonitorState	mon_state;
 extern SioBuffers	sio_buf;				// Serial port / USB link tty driver: its buffers and state (kernel_hook/siotty.h)
 extern SioState		sio_state;
 extern bool			is_sio_tty_enabled;
+void	ReplaceTTY(struct Device *dev);	// Kernel hook (ttyhook.h)
 int		USB_tty_dummy(void);
 _Static_assert(offsetof(MonitorState, pad_buf) == MON_STATE_PAD_BUF, "MON_STATE_PAD_BUF");
 _Static_assert(offsetof(MonitorState, pad_orig) == MON_STATE_PAD_ORIG, "MON_STATE_PAD_ORIG");
@@ -1307,78 +1307,6 @@ error:
 	return (-1);
 }
 
-/****************************************/
-// The USB tty driver: printf of a program redirected to the computer (the default tty mode). From the kernel hook's
-// ttyhook.h (PS1USB firmware by OrionSoft [2024]), moved here in monitor version 15 to make room in the kernel area.
-
-int		USB_tty_dummy(void)
-{
-	return (0);
-}
-
-static int	USB_tty_open(struct File *file, const char *filename, int mode)
-{
-	return (file->deviceId);
-}
-
-static int	USB_tty_action(struct File *file, enum FileAction action)
-{
-	int					i;
-	volatile uint8_t	*buf8 = (volatile uint8_t *)file->buffer;
-
-	// Reads: no tty input comes from the computer (ps1transfer sends none), only its commands, read by the kernel
-	// hook. A read returns at once without bytes: it used to wait for bytes (5,000,000 polls each) and took the
-	// commands' bytes, so a program reading this tty (e.g. a link game left on it) couldn't be reached any more
-	if (action != PSXWRITE)
-		return (0);
-	// The byte is dropped if the USB FIFO is full (no ps1transfer -c reading), it was reported as
-	// not written and the BIOS retried forever with interrupts disabled: programs printing a lot froze
-	for (i = 0; i < file->count; i++)
-		USB_SendByteTimeout(buf8[i], 0);
-	return (file->count);
-}
-
-// (the BIOS copies it in its device table: it can be in flash)
-static const struct Device	USB_tty_dev =
-{
-	"tty",
-	PSXDTTYPE_CHAR | PSXDTTYPE_CONS,
-	0,
-	"PS1 DEV CART USB tty",
-	(device_init)USB_tty_dummy,
-	USB_tty_open,
-	USB_tty_action,
-	(device_close)USB_tty_dummy,
-	(device_ioctl)USB_tty_dummy,
-	(device_read)USB_tty_dummy,
-	(device_write)USB_tty_dummy,
-	(void *)USB_tty_dummy,
-	(void *)USB_tty_dummy,
-	(device_firstFile)USB_tty_dummy,
-	(device_nextFile)USB_tty_dummy,
-	(device_format)USB_tty_dummy,
-	(void *)USB_tty_dummy,
-	(void *)USB_tty_dummy,
-	(device_deinit)USB_tty_dummy,
-	(void *)USB_tty_dummy
-};
-
-// Replace the TTY device (stdin/stdout) by one of ours (USB, serial port or USB link)
-static void	ReplaceTTY(struct Device *dev)
-{
-	syscall_close(0);					// Close stdin/stdout handles
-	syscall_close(1);
-	{
-		register int n asm("t1") = 0x48;	// B(48h) RemoveDevice, not in syscalls.h
-		__asm__ volatile("" : "=r"(n) : "r"(n));
-		((int (*)(const char *))0xB0)(dev->name);	// Remove default TTY device
-	}
-	syscall_addDevice(dev);				// Add our own TTY device
-	syscall_open(dev->name, PSXF_READ);	// Reopen stdin/stdout
-	syscall_open(dev->name, PSXF_WRITE);
-}
-
-/****************************************/
 // The tty device (the BIOS copies it in its device table: it can be in flash)
 static const struct Device	SIO_tty_dev =
 {
@@ -1876,11 +1804,6 @@ void	MonitorEntry(int reason, uint32_t *regs)
 	if (reason == MON_REASON_SIO_SETUP)
 	{
 		SioSetup(regs != NULL);
-		return;
-	}
-	if (reason == MON_REASON_TTY_SETUP)		// (the program's first exception, default tty mode)
-	{
-		ReplaceTTY((struct Device *)&USB_tty_dev);
 		return;
 	}
 	if (reason == MON_REASON_DEBUG_SETUP)	// (the program's first exception, debug session)

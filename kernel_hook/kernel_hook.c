@@ -7,6 +7,7 @@
 #define SCREEN_HEIGHT	240
 
 #include "../usb.h"
+#include "ttyhook.h"
 #include "debugmon.h"
 #include "siotty.h"
 
@@ -113,13 +114,15 @@ void	ReturnFromExceptionHook(void)
 		ApplyCheats();
 
 		// TTY device is replaced by the USB one (default), the serial port one (Net Yaroze like) or kept (BIOS one).
-		// The drivers and the debug vectors' setup are in the debug monitor (flash), to keep the kernel area free
+		// The USB one stays here in RAM: a program's printf must never run code from the cartridge flash, which the
+		// flasher erases and writes while it prints its progress (the serial port driver and the debug vectors'
+		// setup are in the debug monitor: neither is used by the flasher)
 		if (!is_tty_enabled)
 		{
 			uint8_t	mode = kernel_hook_params.tty_mode & ~EXEC_DEBUG;
 
 			if (mode == EXEC_TTY_MODE_USB)
-				MonitorSetup(MON_REASON_TTY_SETUP);
+				SetupTTYhook();
 			else if (mode >= EXEC_TTY_MODE_SIO)	// Serial port or USB link tty driver
 				SetupSIOtty(mode == EXEC_TTY_MODE_LINK);
 			// Debug session ("ps1transfer -gdb"): breakpoints are handled by the monitor
