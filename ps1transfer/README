@@ -144,7 +144,11 @@ Parameters:
    reset and the flash is read back and compared. Exit code 0 only if the readback is identical.
    The cartridge's cheats and its device ID/settings sector are read first and kept when the ROM's areas are empty
    (a release ROM): -flashcheats writes the ROM's cheats area as it is (the Manager's Cheats page), -flashall the
-   whole ROM as it is.
+   whole ROM as it is (any cartridge ROM; without it only a PS1 DEV CART ROM is accepted).
+   Before anything is erased the whole flash is saved: -flashbackup DIR (or none), by default flash_backups in the
+   Manager's settings folder (%APPDATA%\ps1devcart-gui on Windows, ~/.config/ps1devcart-gui elsewhere); nothing is
+   flashed if it can't be saved. The ROM image and the flasher are read back from the console's RAM and compared
+   before the flasher starts, and the flasher refuses a damaged upload or a ROM without the cartridge boot header.
 -bootcd Boot the disc in the drive, like START + SELECT on the menu: the CD drive is unlocked first (burned and
    import discs, no modchip; not on Japanese consoles), then SYSTEM.CNF and the game are loaded as the BIOS does.
    A program running is reset first. The messages are on the TV.

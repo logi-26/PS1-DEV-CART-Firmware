@@ -187,7 +187,8 @@ static void	DrawInfoLine(void)
 	DrawInfo(1, device_id[0] ? device_id : "--------");
 }
 
-static void	LoadDeviceId(void)
+// The device ID, and the settings unless in safe mode (the defaults then, the saved ones left as they are)
+static void	LoadDeviceId(bool settings)
 {
 	volatile uint8_t	*sector = (volatile uint8_t *)DEVICE_ID_FLASH;
 	int					i;
@@ -196,7 +197,7 @@ static void	LoadDeviceId(void)
 		for (i = 0; i < DEVICE_ID_LEN; i++)
 			device_id[i] = sector[4 + i];
 	sector += SAVER_FLASH_OFS;
-	if ((sector[0] == 'S') && (sector[1] == 'S') && (sector[2] == 'V') && (sector[3] == 'R'))
+	if (settings && (sector[0] == 'S') && (sector[1] == 'S') && (sector[2] == 'V') && (sector[3] == 'R'))
 	{
 		saver_cfg[SAVER_MENU] = sector[4];
 		saver_cfg[SAVER_PICO] = sector[5];
@@ -924,7 +925,8 @@ int main(void)
 	uint32_t	pad;
 	int		boot_hold = 0;	// Start + Select held since this VSync count + 1, -1 until released
 	int		pico_hold = 0;	// L2 + R2 held (the PicoStation's own menu), the same
-	int		last_activity;
+	int		last_activity, i;
+	bool	safe_mode;
 	// Started again by the PicoStation menu (the game mounted): read and cleared first, a failed boot isn't retried
 	bool	chain = (chain_boot[0] == CHAIN_BOOT_MAGIC) && (chain_boot[1] == ~CHAIN_BOOT_MAGIC);
 
@@ -968,8 +970,21 @@ int main(void)
 	DrawSync(0);
 	VSync(0);
 
-	LoadDeviceId();
+	// Safe mode: L1 + R1 held at power on (or reset). The saved settings aren't used (the defaults, the saved ones kept)
+	// and nothing is booted by itself (the PicoStation's game): to get back to a working menu, then flash or change the
+	// settings from the computer. The kernel hook stays (ps1transfer needs it, e.g. -flash). The BIOS reads the pads at
+	// VBlank: a few frames first; all the buttons "pressed" is a bad read.
+	for (i = 0; i < 4; i++)
+		VSync(0);
+	pad = PadRead(1) & 0xFFFF;
+	safe_mode = ((pad & (PADL1 | PADR1)) == (PADL1 | PADR1)) && (pad != 0xFFFF);
+	if (safe_mode)
+		chain = false;
+
+	LoadDeviceId(!safe_mode);
 	MenuDraw();
+	if (safe_mode)
+		PrintConsoleColor("SAFE MODE: default settings", UI_YELLOW);
 
 	// Enable CD IRQs (with X held, for CdInit() below)
 	// Otherwise they are not enabled after CdInit() which will hang

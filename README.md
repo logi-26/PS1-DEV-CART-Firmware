@@ -311,6 +311,10 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
 - Firmware version and **device ID** (the USB serial number of the cartridge, so you know which
   console is which when several are connected).
 - Hold **X** at boot to initialise the CD drive.
+- **Safe mode**: hold **L1 + R1** while the console starts (power on or RESET) and the menu starts with the default
+  settings (the saved ones are kept, not used) and boots nothing by itself (no PicoStation game): "SAFE MODE" on the
+  menu. Everything else works, flashing included. Cheats set by the code engine never survive a reset anyway. If the
+  menu doesn't start at all, use the cartridge switch and the flasher CD (see [Installing the firmware](#installing-the-firmware)).
 - **Screensaver**: after about 3 minutes with no pad or USB activity the menu turns the display off (a static image
   can burn into a CRT); any button or command turns it back on.
 - **Buttons from the computer**: the menu, the cheat screen and the PicoStation screen also take buttons written to
@@ -427,6 +431,12 @@ PlayStation's RAM: your program keeps all its RAM.
   The GUI asks you to type the cartridge's name before it writes anything. The cartridge's cheats, device ID and
   settings (screensavers, options) are read first and kept (`-flashcheats`: the ROM file's cheats area as it is, as
   the Cheats page does; `-flashall`: the whole ROM file as it is).
+- Before anything is erased: the whole flash is saved on the computer (`flash_backups` in the Manager's settings
+  folder, e.g. `%APPDATA%\ps1devcart-gui\flash_backups\CARTRIDGE_date-time.rom`; `-flashbackup DIR` or `none`; nothing
+  is flashed if the backup can't be saved), only a PS1 DEV CART ROM is accepted (`-flashall` for any cartridge ROM),
+  the versions are shown, and the ROM image and the flasher are read back from the console's RAM and compared. The
+  flasher refuses a damaged upload (it never flashes its built-in ROM in its place) and a ROM without the cartridge
+  boot header. To go back, flash the backup (`-flashall`).
 - **Settings** page of the GUI: the `ps1transfer` program to use and the theme (dark by default).
 
 ## Tools run on the PlayStation

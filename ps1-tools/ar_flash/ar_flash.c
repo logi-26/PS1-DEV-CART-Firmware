@@ -106,26 +106,54 @@ typedef struct
 	uint8_t		data[ROM_SIZE];
 } RomImage;
 
-static uint8_t	*UploadedRom(void)
+// The ROM uploaded by ps1transfer, NULL if none; *damaged: one was uploaded but its size or sum is wrong (it is never
+// flashed, nor the built-in ROM in its place)
+static uint8_t	*UploadedRom(bool *damaged)
 {
 	RomImage	*img = (RomImage *)ROM_IMAGE_ADRS;
 	uint32_t	sum = 0;
 	int			i;
 
-	if (memcmp(img->magic, "PS1 DEV CART ROM", 16) || (img->size != ROM_SIZE))
+	*damaged = false;
+	if (memcmp(img->magic, "PS1 DEV CART ROM", 16))
 		return (NULL);
 	memset(img->magic, 0, sizeof(img->magic));
+	if (img->size != ROM_SIZE)
+	{
+		*damaged = true;
+		return (NULL);
+	}
 	for (i = 0; i < ROM_SIZE; i++)
 		sum += img->data[i];
-	return ((sum == img->sum) ? img->data : NULL);
+	*damaged = (sum != img->sum);
+	return (*damaged ? NULL : img->data);
+}
+
+// A cartridge ROM: the BIOS only starts one with this text in its header (cartrom/rom.s)
+static bool	RomHeaderOk(const uint8_t *rom)
+{
+	return (!memcmp(rom + 0x84, "Licensed by Sony Computer Entertainment Inc.", 44));
+}
+
+// An error before anything is erased: shown and reported, then nothing more (the console is reset by the computer)
+static void	StopNothingWritten(int y, const char *text, const char *report)
+{
+	title_right = "ERROR";
+	result = -1;
+	DrawText(0, y + 8, (char *)text);
+	DrawText(0, y + 16, "Nothing written");
+	printf("FLASH ERROR: %s, nothing written\n%c", report, EOT);
+	while (1)
+		VSync(0);
 }
 
 int main(void)
 {
 	int	i, size, y = 0;
 	volatile uint8_t *arptr;
-	uint8_t *ptr, *rom = UploadedRom();
-	bool	uploaded = (rom != NULL);
+	bool	damaged;
+	uint8_t *ptr, *rom = UploadedRom(&damaged);
+	bool	uploaded = (rom != NULL) || damaged;	// (damaged: stopped below, the built-in ROM not offered)
 
 	if (!rom)
 		rom = _binary_ps1devcart_rom_start;
@@ -137,6 +165,13 @@ int main(void)
 
 	DrawText(0, y += 8, uploaded ? "ROM uploaded by ps1transfer" : "ROM built in the flasher");
 	printf("FLASH: %s\n", uploaded ? "ROM uploaded by ps1transfer" : "ROM built in the flasher");
+
+	// Checked before anything is erased: a damaged upload is never flashed (nor the built-in ROM in its place), and the
+	// ROM must have the cartridge boot header (without it the console would not start the cartridge any more)
+	if (damaged)
+		StopNothingWritten(y, "Uploaded ROM damaged", "the ROM uploaded is damaged (size or sum)");
+	if (!RomHeaderOk(rom))
+		StopNothingWritten(y, "Not a cartridge ROM", "the ROM has no cartridge boot header");
 
 	// From a CD (or an optical drive emulator in the parallel port, swapped for the cartridge once booted): nothing on
 	// the parallel port is touched before START, released first
