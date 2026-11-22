@@ -1,0 +1,5 @@
+# Net Play lobby firewall image (netplay.sh builds it as netplay-firewall:latest): iptables and the rules script
+FROM alpine:3.20
+RUN apk add --no-cache iptables iptables-legacy
+COPY firewall.sh /firewall.sh
+ENTRYPOINT ["/bin/sh", "/firewall.sh"]

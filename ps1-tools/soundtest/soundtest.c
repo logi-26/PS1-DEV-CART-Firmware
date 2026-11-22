@@ -1,6 +1,7 @@
 /*
 * PS1 DEV CART sound tester
-* Uploaded and executed by "ps1transfer -snd file [-snd file ...]" (VH + VB, VAB, SEQ, VAG)
+* Uploaded and executed by "ps1transfer -snd file [-snd file ...]" (VH + VB, VAB, SEQ, VAG; Sony's later SQ + HD + BD
+* played as they are: see LoadHd, SeqParse)
 *
 * ps1transfer uploads a data block at TESTER_DATA_ADRS (header + files) before executing this program.
 * - VAB sound bank (VH + VB files, or one VAB file): play the instruments (programs) with the controller
@@ -155,7 +156,10 @@ enum
 	FILE_VB,
 	FILE_VAB,	// VH followed by VB
 	FILE_SEQ,
-	FILE_VAG
+	FILE_VAG,
+	FILE_SQ,	// Sony's later format (1999: Ape Escape, Alundra 2...), as the game has it: music "SSsq" (SeqParse),
+	FILE_HD,	// bank "SShd" (LoadHd) and its samples
+	FILE_BD
 };
 
 typedef struct
@@ -328,8 +332,12 @@ static int	PitchCents(int rate, int cents)
 static VabHdr		*vab;
 static ProgAtr		*prog_atr;
 static VagAtr		*tone_atr;
-static uint32_t		vag_adrs[256];		// SPU RAM address of each VAG (1..vs)
+#define	VAG_MAX			1024
+static uint32_t		vag_adrs[VAG_MAX];	// SPU RAM address of each VAG (1..vs)
 static int16_t		prog_block[128];	// Tone block of each program (-1: no tones)
+static int16_t		prog_first[128];	// Its first tone in tone_atr (a VAB: block * 16; an HD: any)
+static int			bank_hd;			// The bank is an HD (no VH: nothing for the VAB editor)
+static const uint8_t	*hd_velocity;	// An HD's velocity table (128 values), NULL: velocities as they are
 static int16_t		programs[128];		// Program numbers with tones
 static int			n_programs;
 static uint8_t		*vag_data;			// VAG sample without VAB
@@ -424,6 +432,7 @@ static int	LoadVab(uint8_t *vh, uint8_t *vb)
 		prog_block[i] = -1;
 		if (prog_atr[i].tones && (block < vab->ps))
 		{
+			prog_first[i] = block * 16;
 			prog_block[i] = block++;
 			programs[n_programs++] = i;
 		}
@@ -447,7 +456,7 @@ static VagAtr	*FindTone(int prog, int note, int from, int *next)
 
 	if (!vab || (prog < 0) || (prog > 127) || (prog_block[prog] < 0))
 		return (NULL);
-	t = tone_atr + prog_block[prog] * 16;
+	t = tone_atr + prog_first[prog];
 	for (i = from; i < prog_atr[prog].tones; i++)
 		if ((note >= t[i].min) && (note <= t[i].max))
 		{
@@ -455,6 +464,146 @@ static VagAtr	*FindTone(int prog, int note, int from, int *next)
 			return (&t[i]);
 		}
 	return (NULL);
+}
+
+/****************************************/
+// Sony's later bank, as the game has it (1999: Ape Escape, Alundra 2, The Legend of Dragoon...): HD "SShd" + BD.
+// Its programs and tones are read into a VAB's tone records (the voices play them as a VAB's), the BD uploaded whole
+// (each tone's sample: its place in the BD). The layout and values are gui/sshd.py's (Sshd, to_vab): HD sizes, "SShd"
+// at 12, data offsets at 16 (0 programs, 1 velocity table); a program: type (bit 7 layered, FFh drum kit), volume, pan,
+// -, bend range, breath, a kit's first and last notes, then its tones (16 bytes: key range, root, fine tune in 1/16
+// semitones (signed, added), sample (BD offset / 8, FFFFh none), ADSR registers, -, volume, pan, bend range, breath,
+// flags: 1 priority, 2 noise, 16 the program's bend range, 32 modulation, 64 the program's breath, 128 reverb).
+// Unlike a VAB, a program has any number of tones (a drum kit: one a note), and the velocity table is used. Not played:
+// the noise and the modulation (breath waves): the tone's sample, as the conversion to a VAB.
+
+#define	HD_TONES_MAX	1024
+
+static VabHdr	hd_vab;
+static ProgAtr	hd_progs[128];
+static VagAtr	hd_tones[HD_TONES_MAX];
+
+static uint32_t	Le32(const uint8_t *p)
+{
+	return (p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24));
+}
+
+static int	Le16(const uint8_t *p)
+{
+	return (p[0] | (p[1] << 8));
+}
+
+static int	LoadHd(uint8_t *hd, uint8_t *bd, uint32_t bd_size)
+{
+	uint32_t	size, programs_at, velocity_at, po, adpcm;
+	int			count, n, t, ntones, first, kit, n_tones = 0, n_vags = 0, i;
+
+	if (memcmp(hd + 12, "SShd", 4))
+		return (0);
+	size = Le32(hd);
+	programs_at = Le32(hd + 16);
+	velocity_at = Le32(hd + 20);
+	if ((programs_at == 0xFFFFFFFF) || (programs_at + 2 > size))
+		return (0);
+	memset(&hd_vab, 0, sizeof(hd_vab));
+	memcpy(hd_vab.form, "pBAV", 4);
+	hd_vab.mvol = 127;
+	hd_vab.pan = 64;
+	memset(hd_progs, 0, sizeof(hd_progs));
+	hd_velocity = NULL;
+	if ((velocity_at != 0xFFFFFFFF) && (velocity_at + 130 <= size))
+		for (i = 0; i < 128; i++)
+			if (hd[velocity_at + 2 + i] != i)	// (1:1: not needed)
+			{
+				hd_velocity = hd + velocity_at + 2;
+				break;
+			}
+	for (i = 0; i < 128; i++)
+		prog_block[i] = -1;
+	count = Le16(hd + programs_at) + 1;
+	for (n = 0; (n < count) && (n < 128) && (programs_at + 4 + n * 2 <= size); n++)
+	{
+		uint8_t	*p;
+
+		if ((po = Le16(hd + programs_at + 2 + n * 2)) == 0xFFFF)
+			continue;
+		if (programs_at + po + 8 > size)
+			continue;
+		p = hd + programs_at + po;
+		kit = (p[0] == 0xFF);
+		ntones = kit ? ((p[7] >= p[6]) ? p[7] - p[6] + 1 : 0) : (p[0] & 0x7F) + 1;
+		first = n_tones;
+		for (t = 0; (t < ntones) && (n_tones < HD_TONES_MAX) && (p + 8 + t * 16 + 16 <= hd + size); t++)
+		{
+			uint8_t	*q = p + 8 + t * 16;
+			VagAtr	*a = &hd_tones[n_tones];
+			int		center = q[2], shift = (int8_t)q[3] * 8, bend = (q[15] & 16) ? p[4] : q[13];
+
+			if ((adpcm = Le16(q + 4)) == 0xFFFF)	// (an empty tone: a kit's note with no drum)
+				continue;
+			if ((adpcm *= 8) >= bd_size)
+				continue;
+			while (shift < 0)		// (a VAB's shift only raises: a tone tuned down has the key above as center)
+			{
+				center++;
+				shift += 128;
+			}
+			while (shift > 127)
+			{
+				center--;
+				shift -= 128;
+			}
+			memset(a, 0, sizeof(VagAtr));
+			a->prior = (q[15] & 1) ? 127 : 0;
+			a->mode = (q[15] & 128) ? 4 : 0;		// (reverb)
+			a->vol = Clamp(q[11], 0, 127);
+			a->pan = Clamp(q[12], 0, 127);
+			a->center = Clamp(center, 0, 127);
+			a->shift = shift;
+			a->min = kit ? Clamp(p[6] + t, 0, 127) : Clamp(q[0], 0, 127);
+			a->max = kit ? Clamp(p[6] + t, 0, 127) : Clamp(q[1], 0, 127);
+			a->pbmin = a->pbmax = Clamp(bend, 0, 127);
+			a->adsr1 = Le16(q + 6);
+			a->adsr2 = Le16(q + 8);
+			a->prog = n;
+			for (i = 1; (i <= n_vags) && (vag_adrs[i] != SPU_DATA_ADRS + adpcm); i++)	// (each sample once)
+				;
+			if (i > n_vags)
+			{
+				if (n_vags + 1 >= VAG_MAX)
+					continue;
+				vag_adrs[i = ++n_vags] = SPU_DATA_ADRS + adpcm;
+			}
+			a->vag = i;
+			n_tones++;
+		}
+		if (n_tones > first)
+		{
+			hd_progs[n].tones = Clamp(n_tones - first, 0, 255);
+			hd_progs[n].mvol = Clamp(p[1], 0, 127);
+			hd_progs[n].mpan = Clamp(p[2], 0, 127);
+			prog_first[n] = first;
+			prog_block[n] = 0;
+			programs[n_programs++] = n;
+		}
+	}
+	if (!n_programs)
+		return (0);
+	hd_vab.ps = n_programs;
+	hd_vab.ts = n_tones;
+	hd_vab.vs = n_vags;
+	vab = &hd_vab;
+	prog_atr = hd_progs;
+	tone_atr = hd_tones;
+	bank_hd = 1;
+	if (SPU_DATA_ADRS + bd_size > 0x80000)
+		bd_size = 0x80000 - SPU_DATA_ADRS;	// (too big for the SPU RAM: the end is lost)
+	SpuUpload(SPU_DATA_ADRS, bd, bd_size);
+	samples_end = SPU_DATA_ADRS + bd_size;
+	if (!quiet_load)
+		printf("HD: %d programs, %d tones, %d samples, %d bytes in SPU RAM\n", n_programs, n_tones, n_vags,
+			(int)bd_size);
+	return (1);
 }
 
 /****************************************/
@@ -642,9 +791,11 @@ static void	NoteOn(int channel, int prog, int note, int velocity)
 	VagAtr	*tone;
 	int		v, next = 0;
 
+	if (hd_velocity)		// (an HD's velocity table: the velocity a note plays with)
+		velocity = hd_velocity[velocity & 127];
 	while ((tone = FindTone(prog, PlayedNote(channel, note), next, &next)) != NULL)
 	{
-		if ((tone->vag < 1) || (tone->vag >= 256))
+		if ((tone->vag < 1) || (tone->vag >= VAG_MAX))
 			continue;
 		v = FreeVoice();
 		SPU_KEY_OFF(v);
@@ -745,6 +896,14 @@ static uint32_t	seq_tempo, seq_wait, seq_acc, seq_ticks, seq_loops, seq_loop_tic
 static uint32_t	seq_us, seq_loop_us, seq_len_us;	// Position (us, from the start), at the loop start, music length
 static int		seq_paused;			// Paused: time stopped, notes released
 static int		seq_seeking;		// Read through up to a time: no notes played, loop ends read on
+static int		seq_sq;				// The music is an SQ (SeqParse): its delta times after the events (none before
+									// the first), a 1-byte pitch bend, the tempo in beats per minute (FF 51, 16 bits),
+									// a meta event keeps the running status; the channels' program, volume, pan in its
+									// header
+static uint8_t	*seq_sq_head;
+
+// An SQ's tempo (beats per minute) in us per quarter note (rounded, as gui/sshd.py's SEQ)
+#define	SQ_TEMPO(_bpm_)	((60000000 + (_bpm_) / 2) / (_bpm_))
 static uint32_t	frame_us;
 
 // Ticks to us and back at a tempo (us per quarter note) and resolution (ticks per quarter note), without overflow
@@ -800,6 +959,18 @@ static void	SeqStart(void)
 		channels[i].bend = 0;
 		channels[i].sustain = 0;
 	}
+	if (seq_sq)		// An SQ: each channel's program, volume and pan from its header (16 bytes a channel)
+		for (i = 0; i < 16; i++)
+		{
+			uint8_t	*h = seq_sq_head + 16 + i * 16;
+
+			if (h[2] != 0xFF)
+			{
+				channels[h[1] & 15].prog = h[2] & 127;
+				channels[h[1] & 15].volume = Clamp(h[3], 0, 127);
+				channels[h[1] & 15].pan = Clamp(h[4], 0, 127);
+			}
+		}
 	seq_resolution = seq_tracks[seq_index].resolution;
 	seq_tempo = seq_tracks[seq_index].tempo;
 	if (!seq_resolution)
@@ -817,7 +988,7 @@ static void	SeqStart(void)
 	seq_ticks = 0;			// (bars counted from the start of the music, at each loop too)
 	seq_us = seq_loop_us = 0;
 	seq_notes = 0;
-	seq_wait = SeqVarLen();
+	seq_wait = seq_sq ? 0 : SeqVarLen();	// (an SQ: no delta time before its first event)
 }
 
 static void	SeqStop(void)
@@ -851,9 +1022,22 @@ static int	SeqEvent(void)
 		if (seq_ptr >= seq_end)
 			return (0);
 		type = *seq_ptr++;
-		seq_status = 0xFF;			// (running status: a meta event again)
+		if (!seq_sq)
+			seq_status = 0xFF;		// (running status: a meta event again; an SQ: the last channel event's kept)
 		if (type == 0x2F)			// End of track
 			return (0);
+		if (seq_sq)					// An SQ: only its tempo, 16 bits, beats per minute
+		{
+			int	bpm;
+
+			if ((type != 0x51) || (seq_ptr + 2 > seq_end))
+				return (0);
+			bpm = seq_ptr[0] | (seq_ptr[1] << 8);
+			if (bpm)
+				seq_tempo = SQ_TEMPO(bpm);
+			seq_ptr += 2;
+			return (1);
+		}
 		if (type == 0x51)			// Tempo: 3 bytes, us per quarter note
 		{
 			if (seq_ptr + 3 > seq_end)
@@ -867,7 +1051,8 @@ static int	SeqEvent(void)
 		seq_ptr += SeqVarLen();		// (other meta events: none in Sony's SEQ, a MIDI file's length taken)
 		return (1);
 	}
-	if (seq_ptr + ((((status & 0xF0) == 0xC0) || ((status & 0xF0) == 0xD0)) ? 1 : 2) > seq_end)
+	if (seq_ptr + ((((status & 0xF0) == 0xC0) || ((status & 0xF0) == 0xD0) ||
+					(seq_sq && ((status & 0xF0) == 0xE0))) ? 1 : 2) > seq_end)	// (an SQ's bend: 1 byte)
 		return (0);
 	seq_status = status;
 	c = status & 15;
@@ -950,9 +1135,14 @@ static int	SeqEvent(void)
 		case 0xC0:	// Program change
 			channels[c].prog = d1;
 			break;
-		case 0xE0:	// Pitch bend
-			d2 = *seq_ptr++;
-			channels[c].bend = ((d2 << 7) | d1) - 8192;
+		case 0xE0:	// Pitch bend (an SQ: 1 byte, 0-127, 64 the centre)
+			if (seq_sq)
+				channels[c].bend = ((d1 & 127) << 7) - 8192;
+			else
+			{
+				d2 = *seq_ptr++;
+				channels[c].bend = ((d2 << 7) | d1) - 8192;
+			}
 			for (v = 0; v < VOICES - 1; v++)	// (the notes sounding only: see VoicePitch)
 				if (voices[v].on && (voices[v].channel == c))
 				{
@@ -1037,7 +1227,7 @@ static void	SeqScan(void)
 {
 	uint8_t		*end = seq_tracks[seq_index].end, status = 0, s, type;
 	uint32_t	res = seq_tracks[seq_index].resolution, tempo = seq_tracks[seq_index].tempo, frac = 0;
-	int			n;
+	int			n, first = seq_sq;	// (an SQ: no delta time before its first event)
 
 	if (!res)
 		res = 480;
@@ -1049,7 +1239,8 @@ static void	SeqScan(void)
 	seq_end = end;					// (SeqVarLen's limit)
 	for (n = 0; (n < 500000) && (seq_ptr + 4 <= end); n++)	// (4: a delta time and FF 2F 00 at least; "<" left a last wait out of the length)
 	{
-		seq_len_us += TicksUsFrac(SeqVarLen(), tempo, res, &frac);
+		seq_len_us += TicksUsFrac(first ? 0 : SeqVarLen(), tempo, res, &frac);
+		first = 0;
 		if (seq_ptr + 2 > end)		// (no event left: status and data, or meta type)
 			break;
 		s = *seq_ptr;
@@ -1059,9 +1250,19 @@ static void	SeqScan(void)
 			s = status;
 		if (s == 0xFF)
 		{
-			status = 0xFF;
+			if (!seq_sq)
+				status = 0xFF;
 			if ((type = *seq_ptr++) == 0x2F)
 				break;
+			if (seq_sq)				// (an SQ: its tempo only, 16 bits, beats per minute)
+			{
+				if ((type != 0x51) || (seq_ptr + 2 > end))
+					break;
+				if (seq_ptr[0] | seq_ptr[1])
+					tempo = SQ_TEMPO(seq_ptr[0] | (seq_ptr[1] << 8));
+				seq_ptr += 2;
+				continue;
+			}
 			if ((type == 0x51) && (seq_ptr + 3 > end))
 				break;
 			if ((type == 0x51) && (seq_ptr[0] | seq_ptr[1] | seq_ptr[2]))
@@ -1077,8 +1278,11 @@ static void	SeqScan(void)
 					seq_channels |= 1 << (s & 15);
 				seq_ptr += 2;
 				break;
-			case 0x80:	case 0xA0:	case 0xB0:	case 0xE0:
+			case 0x80:	case 0xA0:	case 0xB0:
 				seq_ptr += 2;
+				break;
+			case 0xE0:
+				seq_ptr += seq_sq ? 1 : 2;
 				break;
 			case 0xC0:	case 0xD0:
 				seq_ptr++;
@@ -1105,6 +1309,19 @@ static int	SeqParse(uint8_t *file, uint32_t size)
 	uint32_t	len;
 	int			n = 0, head;
 
+	seq_sq = 0;
+	if ((size >= 0x110) && !memcmp(file + 12, "SSsq", 4))	// An SQ: volume, ticks per quarter note, beats per
+	{														// minute (16 bits each), channels at 16, events at 0x110
+		int	bpm = file[4] | (file[5] << 8);
+
+		seq_sq = 1;
+		seq_sq_head = file;
+		seq_tracks[0].resolution = file[2] | (file[3] << 8);
+		seq_tracks[0].tempo = bpm ? SQ_TEMPO(bpm) : 500000;
+		seq_tracks[0].data = file + 0x110;
+		seq_tracks[0].end = end;
+		return (1);
+	}
 	if ((size < 16) || (memcmp(file, "SEQp", 4) && memcmp(file, "pQES", 4)))
 		return (0);
 	if ((BigEndian(file + 4, 4) == 1) || (BigEndian(file + 4, 2) == 1))	// A SEQ (32-bit version, or 16-bit)
@@ -1254,8 +1471,8 @@ static void	BankReload(SoundSync *live, int paused)
 	live->vab_ps = vab ? vab->ps : 0;
 	live->vab_ts = vab ? vab->ts : 0;
 	live->vab_vs = vab ? vab->vs : 0;
-	live->vh_adrs = vab ? (uint32_t)vab : 0;
-	live->vh_size = vab ? VhSize(vab) : 0;
+	live->vh_adrs = (vab && !bank_hd) ? (uint32_t)vab : 0;	// (an HD: no VH to edit)
+	live->vh_size = (vab && !bank_hd) ? VhSize(vab) : 0;
 	live->samples_end = samples_end;
 }
 
@@ -1275,9 +1492,12 @@ static void	SeqPause(int on)
 
 static void	LoadSounds(TesterData *td)
 {
-	uint8_t	*vh = NULL, *vb = NULL, *seq = NULL;
-	int		i;
+	uint8_t		*vh = NULL, *vb = NULL, *seq = NULL, *hd = NULL, *bd = NULL;
+	uint32_t	bd_size = 0;
+	int			i;
 
+	bank_hd = 0;
+	hd_velocity = NULL;
 	for (i = 0; (i < td->count) && (i < TESTER_MAX_FILES); i++)
 	{
 		uint8_t	*p = (uint8_t *)td->files[i].adrs;
@@ -1288,11 +1508,14 @@ static void	LoadSounds(TesterData *td)
 			case FILE_VB:	vb = p;	break;
 			case FILE_VAB:	vh = p; vb = p + VhSize((VabHdr *)p);	break;
 			case FILE_SEQ:	seq = p;	seq_size = td->files[i].size;	break;
+			case FILE_SQ:	seq = p;	seq_size = td->files[i].size;	break;
 			case FILE_VAG:	vag_data = p;	break;
+			case FILE_HD:	hd = p;	break;
+			case FILE_BD:	bd = p;	bd_size = td->files[i].size;	break;
 		}
 	}
 
-	if (vh && vb && LoadVab(vh, vb))
+	if ((vh && vb && LoadVab(vh, vb)) || (hd && bd && LoadHd(hd, bd, bd_size)))
 	{
 		if (seq && (seq_count = SeqParse(seq, seq_size)))
 		{
@@ -1301,7 +1524,7 @@ static void	LoadSounds(TesterData *td)
 			SeqScan();
 			SeqStart();
 			if (!quiet_load)
-				printf("SEQ: resolution %d, tempo %d us\n", seq_resolution, (int)seq_tempo);
+				printf("%s: resolution %d, tempo %d us\n", seq_sq ? "SQ" : "SEQ", seq_resolution, (int)seq_tempo);
 		}
 	}
 	else if (vag_data)
@@ -1360,7 +1583,7 @@ static void	SyncInit(SoundSync *live)
 	}
 	for (i = 0; i < n_programs; i++)
 		live->prog_map[programs[i] >> 3] |= 1 << (programs[i] & 7);
-	if (vab)
+	if (vab && !bank_hd)	// (an HD: no VH to edit)
 	{
 		live->vh_adrs = (uint32_t)vab;
 		live->vh_size = VhSize(vab);
@@ -1650,7 +1873,8 @@ int	main(void)
 		UiProgress(176, 77, 120, 6, master_volume, 127);
 		if (vab)
 		{
-			FntPrint(fnt_data, "VAB  %d PROGRAMS %d TONES %d VAGS\n", vab->ps, vab->ts, vab->vs);
+			FntPrint(fnt_data, "%s  %d PROGRAMS %d TONES %d %s\n", bank_hd ? "HD" : "VAB", vab->ps, vab->ts, vab->vs,
+				bank_hd ? "SAMPLES" : "VAGS");
 			if (seq_data && (seq_count > 1))	// (a SEP: its SEQ chosen, Select for the next one)
 				FntPrint(fnt_data, "SEQ  %d/%d ", seq_index + 1, seq_count);
 			else

@@ -1573,7 +1573,8 @@ int	CdLoad(const char *name, MonExe *hdr)
 	int					lba, i;
 
 	if (!CD_DevicePrefix(name))		// Another device: the BIOS Load
-		return (mon_state.pad_orig ? ((int (*)(const char *, MonExe *))mon_state.pad_orig)(name, hdr) : 0);
+		return (*(volatile uint32_t *)MON_DISC_LOAD_ADRS ?
+			((int (*)(const char *, MonExe *))*(volatile uint32_t *)MON_DISC_LOAD_ADRS)(name, hdr) : 0);
 	if (((lba = CD_FindFile(name, &size, sec)) <= 0) || (size <= CD_SECTOR) || !CD_ReadSectors(lba, sec, CD_SECTOR))
 		return (0);
 	for (i = 0; i < 8; i++)
@@ -1607,7 +1608,7 @@ void	CdLoadExec(const char *name, uint32_t stack_base, uint32_t stack_offset)
 static void	CdSetup(void)
 {
 	if (A0_TABLE[0x42] != (void *)CdLoad)
-		mon_state.pad_orig = (uint32_t)A0_TABLE[0x42];
+		*(volatile uint32_t *)MON_DISC_LOAD_ADRS = (uint32_t)A0_TABLE[0x42];
 	A0_TABLE[0x42] = (void *)CdLoad;
 	A0_TABLE[0x51] = (void *)CdLoadExec;
 }

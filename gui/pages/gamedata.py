@@ -11,6 +11,9 @@ PS1 DEV CART GUI: Asset Extractor page. What a disc or a running game holds, wit
   textured polygon or sprite: its texture page, CLUT and UV area) and cut from VRAM with their own colors, outlined on
   the VRAM; the RAM and SPU RAM are scanned too: sound banks (put together with their samples from SPU RAM), music,
   samples, TIMs and models as the game keeps them. A snapshot of the disc reader (no game) is pointed out.
+  Any other part of the VRAM (a picture copied to the screen, textures not drawn in that frame) can be cut by hand: an
+  area dragged on the VRAM, its colors (4, 8 or 16 bits) and, for 4 and 8 bits, its palette (CLUT) picked on the VRAM
+  or among the game's; a texture page with textures found starts with their colors and palette.
 - Assets found: the files the scanner found (assetscan.py), saved or opened in the other pages.
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -497,13 +500,49 @@ class GameDataPage(Page):
         self.vram_canvas = tk.Canvas(body, width=w, height=h, background="#000000", highlightthickness=0,
                                      cursor="hand2")
         self.vram_canvas.pack(side="left", anchor="n")
-        self.vram_canvas.bind("<Button-1>", self.vram_click)
+        self.vram_canvas.bind("<ButtonPress-1>", self.vram_press)
+        self.vram_canvas.bind("<B1-Motion>", self.vram_drag)
+        self.vram_canvas.bind("<ButtonRelease-1>", self.vram_release)
         self.vram_canvas.bind("<Motion>", self.vram_motion)
+        self.drag_start = None      # (x, y) in VRAM units, where the button was pressed
+        self.manual = None          # The area cut by hand: dict(rect (x, y, w, h in VRAM units)), None: none
+        self.picking_clut = False   # The next click on the VRAM sets the palette
 
         side = tb.Frame(body, padding=(10, 0, 0, 0))
         side.pack(side="left", fill="both", expand=True)
         tb.Label(side, text="The VRAM: the yellow outlines are the textures the game draws (from its drawing commands "
-                 "in RAM). Click one.", wraplength=270, justify="left").pack(anchor="w")
+                 "in RAM). Click one, or drag over any other part to cut it out (a picture, textures not drawn in "
+                 "that frame).", wraplength=270, justify="left").pack(anchor="w")
+        box = tb.Labelframe(side, text="Any area (dragged on the VRAM)", padding=6)
+        box.pack(fill="x", pady=(6, 0))
+        row = tb.Frame(box)
+        row.pack(fill="x")
+        tb.Label(row, text="Colors").pack(side="left")
+        self.man_bits = tk.IntVar(value=16)
+        for bits in (4, 8, 16):
+            tb.Radiobutton(row, text="%d-bit" % bits, value=bits, variable=self.man_bits,
+                           command=self.manual_changed).pack(side="left", padx=(6, 0))
+        row = tb.Frame(box)
+        row.pack(fill="x", pady=(4, 0))
+        self.man_xywh = []
+        for name, top in (("X", 1023), ("Y", 511), ("W", 1024), ("H", 512)):     # (in VRAM units: exact edges)
+            tb.Label(row, text=name).pack(side="left", padx=(0 if name == "X" else 4, 2))
+            var = tk.IntVar(value=0)
+            box_ = tb.Spinbox(row, from_=0 if name in "XY" else 1, to=top, width=5, textvariable=var,
+                              command=self.manual_typed)
+            box_.pack(side="left")
+            box_.bind("<Return>", lambda e: self.manual_typed())
+            box_.bind("<FocusOut>", lambda e: self.manual_typed())
+            self.man_xywh.append(var)
+        row = tb.Frame(box)
+        row.pack(fill="x", pady=(4, 0))
+        tb.Label(row, text="Palette").pack(side="left")
+        self.man_clut = tb.Combobox(row, width=12, values=[])
+        self.man_clut.pack(side="left", padx=6)
+        self.man_clut.bind("<<ComboboxSelected>>", lambda e: self.manual_changed())
+        self.man_clut.bind("<Return>", lambda e: self.manual_changed())
+        tb.Button(box, text="Pick a palette on the VRAM", bootstyle="secondary-outline",
+                  command=self.pick_clut).pack(anchor="w", pady=(4, 0))
         self.tex_label = tb.Label(side, text="", wraplength=270, justify="left")
         self.tex_label.pack(anchor="w", pady=(6, 0))
         self.pos_label = tb.Label(side, text="", bootstyle="secondary")
@@ -573,6 +612,7 @@ class GameDataPage(Page):
                 pass
         self.snapshot = snap
         self.textures, self.tex_sel = [], None
+        self.manual = None
         if snap.program == "game":
             text = "Snapshot of %s." % snap.game
         elif snap.program == "disc reader":
@@ -629,6 +669,16 @@ class GameDataPage(Page):
         if self.tex_sel is not None:
             x, y, w, h = self.tex_rect(self.textures[self.tex_sel])
             c.create_rectangle(x * s - 1, y * s - 1, (x + w) * s + 1, (y + h) * s + 1, outline="#ff6b6b", width=3)
+        if self.manual:
+            x, y, w, h = self.manual["rect"]
+            c.create_rectangle(x * s - 1, y * s - 1, (x + w) * s + 1, (y + h) * s + 1, outline="#3bc9db", width=3)
+            clut = self.manual_clut() if self.man_bits.get() < 16 else None
+            if clut:
+                n = 16 if self.man_bits.get() == 4 else 256
+                c.create_rectangle(clut[0] * s - 1, clut[1] * s - 2, (clut[0] + n) * s + 1, (clut[1] + 1) * s + 2,
+                                   outline="#f06595", width=2)
+        cluts = sorted({(cl[1], cl[2]) for cl in (assetscan.tim_at(t.data, 0)[3] for t in self.textures) if cl})
+        self.man_clut.configure(values=["%d,%d" % c_ for c_ in cluts])
 
     @staticmethod
     def tex_rect(asset):
@@ -656,19 +706,137 @@ class GameDataPage(Page):
             else ""))
 
     def vram_click(self, event):
-        i = self.texture_at(*self.vram_xy(event))
+        x, y = self.vram_xy(event)
+        if self.picking_clut:           # The palette: its row from a multiple of 16 (as the GPU's CLUT position)
+            self.picking_clut = False
+            self.vram_canvas.configure(cursor="hand2")
+            self.man_clut.set("%d,%d" % (x & ~15, y))
+            self.manual_changed()
+            return
+        i = self.texture_at(x, y)
         if i is None:
             return
         self.tex_sel = i
+        self.manual = None
         t = self.textures[i]
         self.tex_label.configure(text=t.info)
         self.texture.show(assetscan.tim_image(t.data))
         self.draw_vram()
 
+    # Any area cut by hand: dragged on the VRAM, its colors and palette chosen
+
+    def vram_press(self, event):
+        self.drag_start = self.vram_xy(event)
+
+    def vram_drag(self, event):
+        if not self.drag_start or self.picking_clut:
+            return
+        (x0, y0), (x1, y1) = self.drag_start, self.vram_xy(event)
+        s = VRAM_SCALE
+        self.vram_canvas.delete("drag")
+        self.vram_canvas.create_rectangle(min(x0, x1) * s, min(y0, y1) * s, (max(x0, x1) + 1) * s,
+                                          (max(y0, y1) + 1) * s, outline="#3bc9db", width=2, tags="drag")
+
+    def vram_release(self, event):
+        start, self.drag_start = self.drag_start, None
+        x1, y1 = self.vram_xy(event)
+        if not start or self.picking_clut or (abs(x1 - start[0]) < 3 and abs(y1 - start[1]) < 3):
+            self.vram_click(event)      # (a click, not a drag)
+            return
+        x0, y0 = start
+        rect = (min(x0, x1), min(y0, y1), abs(x1 - x0) + 1, abs(y1 - y0) + 1)
+        self.manual = dict(rect=rect)
+        for var, v in zip(self.man_xywh, rect):
+            var.set(v)
+        self.tex_sel = None
+        # Its colors and palette: as a texture found on the same texture page, if any (most likely right)
+        page = (rect[0] // 64, rect[1] // 256)
+        same = [t for t in self.textures if (self.tex_rect(t)[0] // 64, self.tex_rect(t)[1] // 256) == page]
+        if same:
+            _, mode, _, clut = assetscan.tim_at(same[0].data, 0)
+            self.man_bits.set({0: 4, 1: 8}.get(mode & 7, 16))
+            if clut:
+                self.man_clut.set("%d,%d" % (clut[1], clut[2]))
+        self.manual_changed()
+
+    def manual_typed(self):
+        """The area's X, Y, W, H typed or stepped (VRAM units): the area cut moved there."""
+        try:
+            x, y, w, h = (int(v.get()) for v in self.man_xywh)
+        except (tk.TclError, ValueError):
+            return
+        if not self.snapshot or w < 1 or h < 1:
+            return
+        x, y = max(0, min(assetscan.VRAM_W - 1, x)), max(0, min(assetscan.VRAM_H - 1, y))
+        w, h = min(w, assetscan.VRAM_W - x), min(h, assetscan.VRAM_H - y)
+        if self.manual and self.manual["rect"] == (x, y, w, h):
+            return
+        self.manual = dict(rect=(x, y, w, h))
+        self.tex_sel = None
+        self.manual_changed()
+
+    def pick_clut(self):
+        if not self.snapshot or not self.snapshot.vram:
+            return self.app.error("Take a snapshot first.")
+        self.picking_clut = True
+        self.vram_canvas.configure(cursor="crosshair")
+        self.pos_label.configure(text="Click the palette's row on the VRAM (its first color).")
+        return None
+
+    def manual_clut(self):
+        """The palette chosen (x, y), None if not a valid one."""
+        try:
+            x, y = (int(v) for v in self.man_clut.get().replace(" ", "").split(",")[:2])
+        except ValueError:
+            return None
+        n = 16 if self.man_bits.get() == 4 else 256
+        if not (0 <= y < assetscan.VRAM_H and 0 <= x and x + n <= assetscan.VRAM_W):
+            return None
+        return x, y
+
+    def manual_asset(self):
+        """The area cut by hand as a texture asset (TIM and PNG), None if not ready (a palette missing)."""
+        if not self.manual or not self.snapshot or not self.snapshot.vram:
+            return None
+        bits, rect = self.man_bits.get(), self.manual["rect"]
+        clut = self.manual_clut() if bits < 16 else (0, 0)
+        if clut is None:
+            return None
+        vram = self.snapshot.vram
+        tim = assetscan.texture_tim(vram, bits, rect, clut)
+        x, y, w, h = rect
+        info = "%dx%d %d-bit, at %d,%d in VRAM (page %d)%s, cut by hand" % (
+            w * {4: 4, 8: 2, 16: 1}[bits], h, bits, x, y, x // 64 + (y // 256) * 16,
+            (", CLUT %d,%d" % clut) if bits < 16 else "")
+        a = assetscan.Asset("Texture", "VRAM", y * assetscan.VRAM_W + x, tim, info, ".tim")
+        a.parts = {".png": assetscan._png(assetscan.texture_rgb(vram, bits, rect, clut))}
+        return a
+
+    def manual_changed(self):
+        if not self.manual:
+            self.draw_vram()
+            return
+        a = self.manual_asset()
+        if a is None:
+            self.tex_label.configure(text="%d-bit: choose its palette (Pick a palette on the VRAM, or one of the "
+                                     "game's)." % self.man_bits.get())
+            self.texture.show(None)
+        else:
+            self.tex_label.configure(text=a.info)
+            self.texture.show(assetscan.tim_image(a.data))
+        self.draw_vram()
+
+    def selected_texture(self):
+        """The texture chosen: a found one, or the area cut by hand; None."""
+        if self.manual:
+            return self.manual_asset()
+        return self.textures[self.tex_sel] if self.tex_sel is not None else None
+
     def save_texture(self, kind):
-        if self.tex_sel is None:
-            return self.app.error("Click a texture (a yellow outline) on the VRAM first.")
-        t = self.textures[self.tex_sel]
+        t = self.selected_texture()
+        if t is None:
+            return self.app.error("Click a texture (a yellow outline) on the VRAM first, or drag over an area (for 4 "
+                                  "and 8 bits: with its palette).")
         path = filedialog.asksaveasfilename(defaultextension="." + kind, parent=self,
                                             filetypes=[("PNG image" if kind == "png" else "TIM image", "*." + kind)],
                                             initialdir=self.app.settings.field("gamedata.assets", ""),

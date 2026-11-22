@@ -56,14 +56,14 @@ PS1_EXE_TYPES = [("PS1 executables", "*.exe *.ps-exe *.psx *.cpe"), ("All files"
 class FileField(tb.Frame):
     """Label, editable combobox with the recent files, browse button. mode: open, save or dir."""
 
-    def __init__(self, master, app, key, label, mode="open", filetypes=None, width=60, on_change=None):
+    def __init__(self, master, app, key, label, mode="open", filetypes=None, width=60, on_change=None, label_width=14):
         super().__init__(master)
         self.app = app
         self.key = key
         self.mode = mode
         self.filetypes = filetypes or [("All files", "*.*")]
         self.var = tk.StringVar(value=app.settings.field(key))
-        tb.Label(self, text=label, width=14, anchor="w").pack(side="left")
+        tb.Label(self, text=label, width=label_width, anchor="w").pack(side="left")
         self.combo = tb.Combobox(self, textvariable=self.var, values=app.settings.recent(key), width=width)
         self.combo.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self.browse_button = tb.Button(self, text="Browse...", bootstyle="secondary-outline", command=self.browse)

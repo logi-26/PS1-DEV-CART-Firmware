@@ -306,13 +306,16 @@ enum
 	CMD_SYNTH,
 	CMD_CARD_LIVE,
 	CMD_RELAY,
+	CMD_VLINK,
 	CMD_NET,
 	CMD_PROF,
 	CMD_SPU,
 	CMD_BOOT_DISC,
 	CMD_DISC,
 	CMD_SNAPSHOT,
-	CMD_TIMING_TEST
+	CMD_TIMING_TEST,
+	CMD_XSERVE,
+	CMD_SAVER
 };
 
 /****************************************/
@@ -598,6 +601,8 @@ void	USB_DetectPacketSize(void)
 #define	FEATURE_DEVICE_ID		(1 << 1)
 #define	FEATURE_BOOT_DISC		(1 << 3)	// 'C' command at the menu: the CD drive unlocked and the disc booted
 #define	FEATURE_DISC_ID			(1 << 4)	// The booted disc's executable at DISC_ID_ADRS ("game=" of -info)
+#define	FEATURE_SCREENSAVER		(1 << 6)	// 'S' command at the menu: the screensavers' settings (-saver)
+#define	SAVER_FLASH_ADRS		0x1F01F020	// Where the menu saves them: "SSVR", the menu's, the PicoStation screen's
 #define	DISC_ID_ADRS			0x8000DEE0	// (see usb.h: DiscId)
 #define	DISC_ID_MAGIC			0x43534944
 #define	DEVICE_ID_SIZE			16
@@ -748,6 +753,9 @@ bool	USB_ReadData(uint8_t *data, uint32_t size)
 // USB link relay: "exchange" command 'X' of the kernel hook, on a given cartridge (thread safe, the
 // relay drives each cartridge from its own thread): writes wsize bytes at adrs, then reads the rsize bytes that
 // follow, in one transfer (both sizes up to MAX_PACKET_SIZE)
+// -vlink: a cartridge not answering is waited for (BEN's USB went silent for over 5 s while its menu video played: the
+// relay gave up although the console was fine); a disconnected one still fails (the read itself fails)
+volatile int		usb_patient;
 static bool	USB_ReadFrom(void *handle, uint8_t *data, uint32_t size)
 {
 	time_t	last = time(NULL);
@@ -768,7 +776,7 @@ static bool	USB_ReadFrom(void *handle, uint8_t *data, uint32_t size)
 			size -= n;
 			last = time(NULL);
 		}
-		else if (time(NULL) - last > USB_READ_TIMEOUT)
+		else if ((time(NULL) - last > USB_READ_TIMEOUT) && !(usb_patient && !LinkStopFlag()))
 			return (false);
 	}
 	return (true);
@@ -786,6 +794,7 @@ static bool	USB_WriteTo(void *handle, uint8_t *data, uint32_t size)
 void	PC_FileServer(void);
 
 volatile uint32_t	link_crc_errors;	// Exchange packets received wrong (USB link relay, see ExchangeCmd)
+
 
 // letter: 'X' (the kernel hook's), or MON_CMD_EXCHANGE for the relay of a debug session (also answered by the debug
 // monitor while the program is stopped). served: what arrives before the answer is handled, not taken for it: a stop
@@ -882,6 +891,75 @@ static bool	ExchangeCmd(void *handle, char letter, bool served, uint32_t adrs, u
 bool	USB_Exchange(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize)
 {
 	return (ExchangeCmd(handle, 'X', false, adrs, wdata, wsize, rdata, rsize));
+}
+
+// The exchange in two halves, so that the next one can be sent before this one's answer is read (-vlink: one always on
+// its way, the cartridge takes them from its USB FIFO in order): the command with its written packet, then the answer
+// (wdata: what was sent, for the CRC check). The program's text before an answer is skipped, as USB_Exchange does.
+bool	USB_ExchangeSend(void *handle, uint32_t adrs, uint8_t *wdata, uint32_t wsize, uint32_t rsize)
+{
+	uint8_t		out[1+4+4+1 + MAX_PACKET_SIZE + 2];
+	uint32_t	size = (wsize << 16) | rsize, tail = 0;
+
+	if ((wsize > MAX_PACKET_SIZE) || (rsize > MAX_PACKET_SIZE))
+		return (false);
+	out[0] = 'X';
+	out[1] = adrs >> 24;
+	out[2] = adrs >> 16;
+	out[3] = adrs >> 8;
+	out[4] = adrs;
+	out[5] = size >> 24;
+	out[6] = size >> 16;
+	out[7] = size >> 8;
+	out[8] = size;
+	out[9] = CRC8_Compute(out, 1+4+4);
+	if (wsize)
+	{
+		memcpy(out + 10, wdata, wsize);
+		out[10 + wsize + tail++] = 'N';
+	}
+	if (rsize)
+		out[10 + wsize + tail++] = 'N';
+	return (USB_WriteTo(handle, out, 10 + wsize + tail));
+}
+
+bool	USB_ExchangeRecv(void *handle, uint8_t *wdata, uint32_t wsize, uint8_t *rdata, uint32_t rsize)
+{
+	uint8_t		in[MAX_PACKET_SIZE], ack, crc;
+	int			n;
+
+	for (n = 0; ; n++)
+	{
+		if (!USB_ReadFrom(handle, &ack, 1) || (ack == 'B') || (n > 65536))
+			return (false);
+		if (ack == 'G')
+			break;
+		if (ack == 16)
+		{
+			if (!USB_ReadFrom(handle, &ack, 1) || (ack == 'b'))
+				return (false);
+			if (ack == 'g')
+				break;
+			if (ack != 'q')
+				return (false);
+		}
+	}
+	if (wsize)
+	{
+		if (!USB_ReadFrom(handle, &crc, 1))
+			return (false);
+		if (crc != CRC8_Compute(wdata, wsize))
+			link_crc_errors++;
+	}
+	if (!rsize)
+		return (true);
+	if (!USB_ReadFrom(handle, in, rsize) || !USB_ReadFrom(handle, &ack, 1))
+		return (false);
+	if (ack != CRC8_Compute(in, rsize))
+		link_crc_errors++;
+	else
+		memcpy(rdata, in, rsize);
+	return (true);
 }
 
 // The relay of a debug session (gdbserver.c): the debugged cartridge's exchange, the stop notifications kept
@@ -1692,7 +1770,8 @@ bool	UploadNetYarozeLibrary(char *filename, uint32_t exe_adrs, uint32_t exe_size
 #define	AUTO_MAX_DATA		256
 #define	AUTO_MAX_DEPTH		4
 #define	RAM_USER_START		0x80010000
-#define	RAM_FIRMWARE		0x801EF000	// PS1 DEV CART firmware (receives the files): data must stay below
+#define	RAM_FIRMWARE		0x801EC800	// PS1 DEV CART firmware's stack (8KB), the firmware above it (0x801EF000, receives
+									// the files): data must stay below
 
 typedef struct
 {
@@ -2128,7 +2207,10 @@ enum
 	SOUND_VB,
 	SOUND_VAB,	// VH followed by VB
 	SOUND_SEQ,
-	SOUND_VAG
+	SOUND_VAG,
+	SOUND_SQ,	// Sony's later format (1999: Ape Escape, Alundra 2...): music "SSsq", bank "SShd" + its samples (BD),
+	SOUND_HD,	// played as they are by the tester
+	SOUND_BD
 };
 
 // Type from the file header ("pBAV" VH/VAB, "pQES"/"SEQp" SEQ or SEP, "VAGp" VAG), VB files have no header: ".vb" extension
@@ -2147,8 +2229,14 @@ int	SoundFileType(char *name, uint8_t *data, int size)
 		return (SOUND_SEQ);															// way round)
 	if ((size >= 48) && !memcmp(data, "VAGp", 4))
 		return (SOUND_VAG);
+	if ((size >= 0x110) && !memcmp(data + 12, "SSsq", 4))
+		return (SOUND_SQ);
+	if ((size >= 0x80) && !memcmp(data + 12, "SShd", 4))
+		return (SOUND_HD);
 	if (ext && ((!strcmp(ext, ".vb")) || (!strcmp(ext, ".VB")) || (!strcmp(ext, ".Vb"))))
 		return (SOUND_VB);
+	if (ext && ((!strcmp(ext, ".bd")) || (!strcmp(ext, ".BD")) || (!strcmp(ext, ".Bd"))))	// (no header either)
+		return (SOUND_BD);
 	return (0);
 }
 
@@ -2718,7 +2806,7 @@ out:
 
 bool	UploadSoundData(char **files, int count)
 {
-	static const char	*type_names[] = {"?", "VH", "VB", "VAB", "SEQ", "VAG"};
+	static const char	*type_names[] = {"?", "VH", "VB", "VAB", "SEQ", "VAG", "SQ", "HD", "BD"};
 	uint8_t				*block, *file;
 	uint32_t			*header, offset = TESTER_HEADER_SIZE;
 	int					i, size, type;
@@ -2736,7 +2824,7 @@ bool	UploadSoundData(char **files, int count)
 			goto out;
 		if (!(type = SoundFileType(files[i], file, size)))
 		{
-			printf("'%s' is not a VH, VB, VAB, SEQ or VAG file !\n", files[i]);
+			printf("'%s' is not a VH, VB, VAB, SEQ, VAG, SQ, HD or BD file !\n", files[i]);
 			free(file);
 			goto out;
 		}
@@ -3944,6 +4032,42 @@ out:
 /****************************************/
 // "-info" prints the cartridge state as key=value lines (for the GUI and scripts)
 
+/****************************************/
+// The menu's screensavers (-saver, FEATURE_SCREENSAVER): a byte each (the menu's, the PicoStation screen's): bits 0-1
+// the timeout (0: 3 minutes, 1: 5, 2: 10), bit 2 the bouncing logo (else the display off), bit 3 off. As text: "off",
+// or the minutes and ",logo" / ",blank" ("5,logo"; the minutes alone: blank).
+
+#define	SAVER_LOGO	0x04
+#define	SAVER_OFF	0x08
+// Then the menu's options (a third byte): -picodetails off sets OPT_NO_DETAILS (the PicoStation screen's list without
+// its discs and cheats counts: faster, nothing more read from the SD card)
+#define	OPT_NO_DETAILS	0x01
+
+static int	SaverParse(const char *text)
+{
+	static const int	minutes[] = {3, 5, 10};
+	int					m = atoi(text), i;
+	const char			*style = strchr(text, ',');
+
+	if (!strcmp(text, "off"))
+		return (SAVER_OFF);
+	for (i = 0; (i < 3) && (minutes[i] != m); i++)
+		;
+	if ((i == 3) || (style && strcmp(style, ",logo") && strcmp(style, ",blank")))
+		return (-1);
+	return (i | ((style && !strcmp(style, ",logo")) ? SAVER_LOGO : 0));
+}
+
+static void	SaverText(uint8_t c, char *out)
+{
+	static const int	minutes[] = {3, 5, 10, 10};
+
+	if (c & SAVER_OFF)
+		strcpy(out, "off");
+	else
+		sprintf(out, "%d,%s", minutes[c & 3], (c & SAVER_LOGO) ? "logo" : "blank");
+}
+
 void	PrintInfoTo(FILE *out);
 
 static void	PrintInfo(void)
@@ -3985,6 +4109,23 @@ void	PrintInfoTo(FILE *out)
 	fprintf(out, "monitor=%d\n", (have_state && *(uint32_t *)(state + 4)) ? 1 : 0);
 	fprintf(out, "monitor_version=%d\n", have_state ? state[14] : 0);
 	fprintf(out, "escaped_answers=%d\n", (USB_EscapedAnswers() > 0) ? 1 : 0);
+	// The screensavers' settings (at the menu: the flash read; none saved: the default, 3 minutes, display off)
+	if (!params[0] && (params[3] & FEATURE_SCREENSAVER))
+	{
+		uint8_t	saver[8];
+		char	text[2][16];
+
+		if (USB_Process('D', saver, SAVER_FLASH_ADRS, sizeof(saver)))
+		{
+			if (memcmp(saver, "SSVR", 4))
+				saver[4] = saver[5] = saver[6] = 0;
+			SaverText(saver[4], text[0]);
+			SaverText(saver[5], text[1]);
+			fprintf(out, "saver_menu=%s\nsaver_pico=%s\n", text[0], text[1]);
+			// The PicoStation screen's list: the discs and cheats counts shown (0xFF: saved before this option)
+			fprintf(out, "pico_details=%s\n", ((saver[6] != 0xFF) && (saver[6] & OPT_NO_DETAILS)) ? "off" : "on");
+		}
+	}
 	// The game booted from its disc: its executable (the disc's serial number, e.g. SLES_015.42)
 	if (params[0] && (params[3] & FEATURE_DISC_ID))
 	{
@@ -4255,10 +4396,16 @@ int main(int argc, char *argv[])
 	int			disc_count = 0;					// -disc: the words of the command
 	char		**disc_words = NULL;
 	char		*snapshot_dir = NULL;			// -snapshot: the folder
+	int			saver_set[2] = {-1, -1};		// -saver: the menu's, the PicoStation screen's (-1: kept)
+	int			pico_details = -1;				// -picodetails: 1 on, 0 off (-1: kept)
 	char		*timing_report = "timingtest-report.txt";	// -timingtest: the report
 	char		*snapshot_parts = NULL;			// -snapshot: the parts (NULL: all)				// Memory card command on a card slot (argv index)
 	bool		card_start = true;				// The card tool must be started (server mode)
 	char		*relay_serial = NULL;			// -relay: the other cartridge of the USB link
+	char		*vlink_net = NULL;				// -vlinkhost PORT / -vlinkjoin HOST:PORT
+	int			vlink_net_host = 0;
+	int			xserve_port = 0;
+	int			vlink_ret = 0;					// -vlink: 2 when a console's driver went (exit code)
 	char		*rename_arg = NULL;			// -rename NAME, -renamerestore FILE (rename.c)
 	int			rename_mode = 0;			// 1: -renameinfo, 2: -rename, 3: -renamerestore
 	int			exit_code = 0;					// EXIT_FAILURE after an error (used by the GUI and scripts)
@@ -4632,6 +4779,17 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'p':	// PCDRV path
+					if (!strcmp(argv[i], "-picodetails"))	// on/off: the PicoStation screen's discs and cheats counts
+					{
+						if ((i + 1 >= argc) || (strcmp(argv[i + 1], "on") && strcmp(argv[i + 1], "off")))
+						{
+							printf("-picodetails needs on or off\n");
+							goto usage;
+						}
+						pico_details = !strcmp(argv[++i], "on");
+						cmd = CMD_SAVER;
+						break;
+					}
 					if (!strcmp(argv[i], "-pad"))	// Remote pad: a port driven from the computer (-memlive, -frame)
 					{
 						remote_pad = true;
@@ -4706,6 +4864,48 @@ int main(int argc, char *argv[])
 				break;
 
 				case 'v':	// VRAM x y w h
+					// -vlink's settings (the GUI can't pass environment variables): the symmetric exchange's
+					// instructions ("adrs:orig:new,...", see usblink.c VlSym), the live settings file
+					// Net Play between two computers: this cartridge's half of the link, waiting for the other
+					// player on a port, or joining one (usblink.c VlinkNet)
+					if ((!strcmp(argv[i], "-vlinkhost") || !strcmp(argv[i], "-vlinkjoin") ||
+						!strcmp(argv[i], "-vlinklobby")) && (i + 1 < argc))
+					{
+						vlink_net_host = !strcmp(argv[i], "-vlinkhost") ? 1 : !strcmp(argv[i], "-vlinklobby") ? 2 : 0;
+						vlink_net = argv[++i];
+						cmd = CMD_VLINK;
+						break;
+					}
+					{
+						// Net Play settings for the relay (usblink.c), passed as environment variables
+						static const char	*opts[][2] = {{"-vlinksym", "VLINK_SYM_WORDS"}, {"-vlinktune", "VLINK_TUNE"},
+							{"-vlinkname", "VLINK_NAME"}, {"-vlinkgame", "VLINK_GAME"},
+							{"-vlinkauto", "VLINK_AUTO_STEPS"}, {"-vlinkhostauto", "VLINK_HOST_STEPS"}, {"-vlinkwatch", "VLINK_WATCH"}, {"-vlinkkeep", "VLINK_KEEP_STEPS"}, {"-vlinkdisc", "VLINK_DISC"},
+							{"-vlinkinfo", "VLINK_INFO"}};
+						static char	env[sizeof(opts) / sizeof(opts[0])][1200];
+						int			k, found = -1;
+
+						for (k = 0; k < (int)(sizeof(opts) / sizeof(opts[0])); k++)
+							if (!strcmp(argv[i], opts[k][0]))
+								found = k;
+						if ((found >= 0) && (i + 1 < argc))
+						{
+							snprintf(env[found], sizeof(env[found]), "%s=%s", opts[found][1], argv[++i]);
+							putenv(env[found]);
+							break;
+						}
+					}
+					if (!strcmp(argv[i], "-vlink"))	// Red Alert's virtual link cable with another cartridge (usblink.c)
+					{
+						if (i + 1 >= argc)
+						{
+							printf("Serial number of the other cartridge needed following -vlink\n");
+							goto usage;
+						}
+						relay_serial = argv[++i];
+						cmd = CMD_VLINK;
+						break;
+					}
 					if ((i + 1 < argc) && !strcmp(argv[i + 1], "auto"))	// The screen on the TV (PS1 DEV CART tools)
 					{
 						vram_auto = true;
@@ -4739,6 +4939,19 @@ int main(int argc, char *argv[])
 				break;
 
 				case 's':	// size (size of download in decimal)
+					if (!strcmp(argv[i], "-saver"))	// -saver MENU PICO: the menu's screensavers ("off", "5,logo"...)
+					{
+						if ((i + 2 >= argc) || ((saver_set[0] = SaverParse(argv[i + 1])) < 0) ||
+							((saver_set[1] = SaverParse(argv[i + 2])) < 0))
+						{
+							printf("-saver needs 2 settings (the menu's, the PicoStation screen's): off, or 3, 5 or 10 "
+								"(minutes) and ,logo or ,blank (e.g. -saver 5,logo off)\n");
+							goto usage;
+						}
+						i += 2;
+						cmd = CMD_SAVER;
+						break;
+					}
 					if (!strcmp(argv[i], "-snapshot"))	// RAM, VRAM and SPU RAM of the running program to a folder
 					{
 						if (i + 1 >= argc)
@@ -4814,6 +5027,14 @@ int main(int argc, char *argv[])
 					i++;
 				break;
 				
+				case 'x':	// -xserve PORT: the kernel hook's exchange served to a program on this computer (pad play)
+					if (!strcmp(argv[i], "-xserve") && (i + 1 < argc))
+					{
+						xserve_port = atoi(argv[++i]);
+						cmd = CMD_XSERVE;
+					}
+				break;
+
 				case 'z':	// set device id (only relevant when using multiple PS1 DEV CART devices)
 					if (i + 1 >= argc)
 					{
@@ -4953,8 +5174,9 @@ int main(int argc, char *argv[])
 	if (!filename && !reset && (cmd != CMD_CRASH) && (cmd != CMD_PEEK) && (cmd != CMD_POKE) && (cmd != CMD_HOT) &&
 		(cmd != CMD_MEMLIVE) &&
 		(cmd != CMD_INFO) && (cmd != CMD_FLASH_ROM) && (cmd != CMD_SYNTH) &&
-		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_SPU) &&
-		(cmd != CMD_BOOT_DISC) && (cmd != CMD_DISC) && (cmd != CMD_SNAPSHOT) && (cmd != CMD_TIMING_TEST))
+		(cmd != CMD_CARD_LIVE) && (cmd != CMD_RELAY) && (cmd != CMD_VLINK) && (cmd != CMD_XSERVE) && (cmd != CMD_NET) && (cmd != CMD_PROF) && (cmd != CMD_SPU) &&
+		(cmd != CMD_BOOT_DISC) && (cmd != CMD_DISC) && (cmd != CMD_SNAPSHOT) && (cmd != CMD_TIMING_TEST) &&
+		(cmd != CMD_SAVER))
 	{
 		printf("No file specified.\n");
 		goto usage;
@@ -5331,6 +5553,36 @@ int main(int argc, char *argv[])
 			PrintInfo();
 		break;
 
+		case CMD_SAVER:	// The menu saves them in the cartridge flash (when they change): those not given kept
+		{
+			uint8_t	set[3] = {0, 0, 0}, now[8];
+
+			if (!(fw_features & FEATURE_SCREENSAVER))
+			{
+				printf("The cartridge's firmware has no screensaver settings: flash a newer one.\n");
+				goto failed;
+			}
+			if (ps1_program_running)
+			{
+				printf("The screensaver settings are sent to the menu: reset the PS1 first (-r).\n");
+				goto failed;
+			}
+			if (!USB_Process('D', now, SAVER_FLASH_ADRS, sizeof(now)))
+				goto failed;
+			if (!memcmp(now, "SSVR", 4))
+				memcpy(set, now + 4, 3);
+			if (set[2] == 0xFF)	// (saved before the options)
+				set[2] = 0;
+			if (saver_set[0] >= 0)
+				set[0] = saver_set[0], set[1] = saver_set[1];
+			if (pico_details >= 0)
+				set[2] = pico_details ? (set[2] & ~OPT_NO_DETAILS) : (set[2] | OPT_NO_DETAILS);
+			if (!USB_Process('S', set, 0, sizeof(set)))
+				goto failed;
+			printf("saver=ok\n");
+		}
+		break;
+
 		case CMD_BOOT_DISC:
 			// After a reset (a program was running): the menu answers a few seconds later
 			for (i = 0; reset && !(fw_features & FEATURE_BOOT_DISC) && (i < 10); i++)
@@ -5387,6 +5639,23 @@ int main(int argc, char *argv[])
 				goto failed;
 			}
 			if (UsbRelay(serial ? serial : "first cartridge", relay_serial))
+				goto failed;
+		break;
+
+		case CMD_XSERVE:
+			if (XServe(serial ? serial : "PS1", xserve_port))
+				goto failed;
+		break;
+
+		case CMD_VLINK:
+			vlink_ret = vlink_net ? VlinkNet(serial ? serial : "PS1", vlink_net, vlink_net_host) :
+				VlinkRelay(serial ? serial : "first cartridge", relay_serial);
+			if (vlink_ret == 2)		// (a console's driver gone: usb_link.py installs it again)
+			{
+				exit_code = 2;
+				goto done;
+			}
+			if (vlink_ret)
 				goto failed;
 		break;
 
@@ -5565,6 +5834,10 @@ usage:
 	printf("\t-flash rom.rom Flash a cartridge ROM (ar_flash.ps-exe next to ps1transfer), then read it back to check\n");
 	printf("\t-bootcd Boot the disc in the drive (the CD drive unlocked first: burned and import discs, no modchip)\n");
 	printf("\t   Same as START + SELECT on the menu. Not on Japanese consoles (licensed discs still boot).\n");
+	printf("\t-saver MENU PICO The menu's and the PicoStation screen's screensavers: off, or 3, 5 or 10 (minutes) and ,logo "
+		"(the bouncing logo) or ,blank (e.g. -saver 5,logo off), saved in the cartridge\n");
+	printf("\t-picodetails on|off The PicoStation screen's discs and cheats counts (off: faster scrolling), saved in "
+		"the cartridge\n");
 	printf("\t-info Cartridge state as key=value lines (device, state: menu/running/stopped/crashed, firmware...)\n");
 	printf("\t-rename NAME With -n SERIAL: renames the cartridge (its USB serial number, 1-15 letters/digits),\n");
 	printf("\t   nothing else changed: its USB chip's EEPROM saved first, read back after (written back if wrong)\n");
@@ -5598,6 +5871,7 @@ usage:
 	printf("\t-link [yaroze] Link cable tester (run it on both consoles, e.g. with -n serial): serial port used like\n");
 	printf("\t   a PsyQ game (libcomb, \"sio:\"), or with \"yaroze\" like a Net Yaroze game (\"tty:\" driver, as -c sio)\n");
 	printf("\t   \"usb\": no cable, the consoles are linked through their cartridges and this computer (-relay)\n");
+	printf("\t-vlink SERIAL2 Red Alert Retaliation's virtual link cable between -n and SERIAL2 (ps1-linkplay/virtual)\n");
 	printf("\t-relay SERIAL2 USB link relay between the cartridge of -n and SERIAL2 (both run -link usb), until stopped\n");
 	printf("\t-net host:port Connects the USB link of the running program (psxcomb USB link, or -c link) to a TCP\n");
 	printf("\t   server, until stopped; with -e -f program.ps-exe: executes it first (printf kept on the BIOS device)\n");

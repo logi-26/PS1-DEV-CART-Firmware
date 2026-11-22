@@ -65,7 +65,9 @@ static int	CheatFind(const char *serial, const volatile uint8_t **cheats, char *
 
 		for (i = 0; i < CHEAT_DB_SERIAL; i++)
 		{
-			if (g[i] != (uint8_t)serial[i])
+			// (case not significant: some discs name it "slus_005.94")
+			if ((g[i] | ((g[i] >= 'A') && (g[i] <= 'Z') ? 32 : 0)) !=
+				((uint8_t)serial[i] | ((serial[i] >= 'A') && (serial[i] <= 'Z') ? 32 : 0)))
 				same = 0;
 			if (!serial[i])
 				break;
@@ -127,36 +129,49 @@ static void	CheatDraw(const volatile uint8_t **cheats, int n, const uint8_t *on,
 	if (top + CHEAT_ROWS < n)
 		DrawTextColor(SCREEN_WIDTH - 16, CHEAT_LIST_Y + (CHEAT_ROWS - 1) * CHEAT_ROW_H, "v", TEXT_DIM);
 	FillRect(0, UI_HELP_Y, SCREEN_WIDTH, UI_HELP_H, UI_PANEL);
-	DrawTextColor(8, UI_HELP_Y + 3, "X: ON/OFF   START: BOOT   O: BACK", TEXT_DIM);
+	DrawTextIcons(8, UI_HELP_Y + 3, ICON_CROSS "ON/OFF   " ICON_START "BOOT   " ICON_CIRCLE "BACK", TEXT_DIM);
 }
 
-// The cheat screen: 1 to boot (the cheats chosen in the code engine's table), 0 to go back to the menu
+static const volatile uint8_t	*cheat_list[CHEATS_SHOWN];	// The cheats listed (records as in the flash)
+static uint8_t					cheat_on[CHEATS_SHOWN];		// Ticked (the screen starts with them)
+static int	CheatScreen(int n, const char *title);
+
+// The cheat screen for a disc (BootDisc): 1 to boot (the cheats chosen in the code engine's table), 0 to go back
 int	CheatMenu(const char *serial)
 {
-	static const volatile uint8_t	*cheats[CHEATS_SHOWN];
-	static uint8_t					on[CHEATS_SHOWN];
-	char							title[CHEAT_DB_TITLE + 8];
-	RECT							screen = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
-	int								n, i, cursor = 0, top = 0, held = 0, redraw = 1;
-	uint32_t						pad, old;
+	char	title[CHEAT_DB_TITLE + 8];
+	int		n;
 
 	strcpy(title, "CHEATS: ");
-	if (!(n = CheatFind(serial, cheats, title + 8)))
+	if (!(n = CheatFind(serial, cheat_list, title + 8)))
 	{
 		PrintConsole("No cheats for it in the cartridge");
 		return (1);
 	}
-	memset(on, 0, sizeof(on));
+	memset(cheat_on, 0, sizeof(cheat_on));
+	return (CheatScreen(n, title));
+}
+
+// The cheat screen: cheat_list's n cheats, cheat_on ticked at first. 1 to boot (the cheats chosen in the code
+// engine's table), 0 to go back (the screen as it was)
+static int	CheatScreen(int n, const char *title)
+{
+	const volatile uint8_t	**cheats = cheat_list;
+	uint8_t					*on = cheat_on;
+	RECT					screen = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
+	int						i, cursor = 0, top = 0, held = 0, redraw = 1;
+	uint32_t				pad, old;
+
 	MoveImage(&screen, 0, CHEAT_SAVE_Y);
 	DrawSync(0);
-	old = PadRead(1) & 0xFFFF;				// (Select + Triangle still held: only new presses count)
+	old = MenuPad();				// (Select + Triangle still held: only new presses count)
 	while (1)
 	{
 		VSync(0);
 		// The computer answered meanwhile, as on the menu (e.g. a live screenshot: ps1transfer -v ... -live)
 		if (!(USB_STATUS & USB_STATUS_MASK_USB_READY))
 			USB_Process(0, 0, NULL, 0, NULL);
-		pad = PadRead(1) & 0xFFFF;
+		pad = MenuPad();
 		if (pad == 0xFFFF)					// (a bad read)
 			continue;
 		// Up/down: once, then repeated while held

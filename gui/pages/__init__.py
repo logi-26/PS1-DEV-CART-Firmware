@@ -1,4 +1,6 @@
 """PS1 DEV CART GUI pages, in sidebar order."""
+import os
+
 from pages.run import RunPsxPage, RunYarozePage
 from pages.console import ConsolePage
 from pages.controller import ControllerPage
@@ -25,3 +27,9 @@ from pages.settings_page import SettingsPage
 PAGES = [RunPsxPage, RunYarozePage, ConsolePage, ControllerPage, MemoryPage, ProfilerPage, HotReloadPage, ScreenPage,
          DebugPage, FramePage, ViewersPage, TimPage, SpuPage, SoundPage, TrackerPage, SynthPage, MoviePage, GameDataPage, CardPage,
          LinkTestPage, CheatsPage, FirmwarePage, SettingsPage]
+
+# Experimental pages, still in development: hidden unless the environment variable PS1DEVCART_EXPERIMENTAL is set
+# (e.g. "set PS1DEVCART_EXPERIMENTAL=1" before starting the Manager). Imported only then.
+if os.environ.get("PS1DEVCART_EXPERIMENTAL"):
+    from pages.netplay import NetPlayPage
+    PAGES.insert(PAGES.index(LinkTestPage) + 1, NetPlayPage)

@@ -177,7 +177,8 @@ void	InitConsole(void)
 	ConsoleCurLine = CONSOLE_OFFSET_Y;
 }
 
-void	PrintConsole(char *text)
+// A line of the activity log in a color (sprite tint, 128 = the font as it is: white)
+void	PrintConsoleColor(char *text, int r, int g, int b)
 {
 	if (ConsoleCurLine >= (CONSOLE_OFFSET_Y + CONSOLE_HEIGHT))
 	{
@@ -190,6 +191,8 @@ void	PrintConsole(char *text)
 			UI_PANEL);
 		ConsoleCurLine -= FONT_CHAR_H;
 	}
-	DrawText(CONSOLE_OFFSET_X, ConsoleCurLine, text);
+	DrawTextColor(CONSOLE_OFFSET_X, ConsoleCurLine, text, r, g, b);
 	ConsoleCurLine += FONT_CHAR_H;
 }
+
+#define	PrintConsole(_text_)	PrintConsoleColor(_text_, TEXT_WHITE)

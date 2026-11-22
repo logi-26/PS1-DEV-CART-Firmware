@@ -70,15 +70,17 @@
 // 11 = remote pad devices: mouse, NeGcon, analog pads, GunCon (PadDevice); 12 = the USB link exchange also while the
 // program is stopped (MON_CMD_EXCHANGE: the relay of a debug session, ps1transfer -gdb -relay); 13 = Load and LoadExec
 // of "cdrom:" files for a disc the firmware booted (MON_REASON_CD_SETUP, see below)
-#define	MONITOR_VERSION		13
+// 14 = a disc's BIOS Load kept at MON_DISC_LOAD_ADRS (pad_orig: the remote pad of a disc booted by the firmware)
+#define	MONITOR_VERSION		14
 
 // Disc booted by the firmware (MON_REASON_CD_SETUP, before it executes the game): the BIOS CD driver isn't there
 // (PSn00bSDK removes it, and the firmware reads the disc with polled drive commands, see cdread.h), so a game loading
 // another executable through the BIOS (Load A(42h), LoadExec A(51h), e.g. Fighting Force after its loading screen)
 // got garbage. The monitor points both A0 table entries to its own code (in flash): a "cdrom:" file is read the
-// firmware's way, then LoadExec goes on to the BIOS Exec; another device goes to the BIOS Load, kept in
-// MonitorState.pad_orig (the remote pad's: only set up for an executable the computer runs, never for a disc). The
-// hooks stay for the executables that follow.
+// firmware's way, then LoadExec goes on to the BIOS Exec; another device goes to the BIOS Load, kept at
+// MON_DISC_LOAD_ADRS (version 14; before: MonitorState.pad_orig, now the disc's remote pad's too). The hooks stay
+// for the executables that follow.
+#define	MON_DISC_LOAD_ADRS	0x8000DFF8	// (the end of the kernel's unused area, see ps1devcart.c: PICO_GAME_ADRS)
 
 // Profiler ("ps1transfer -prof"). A root counter not used by the program interrupts it (rate set by the computer):
 // the exception vector goes to the monitor's sampler (copied to RAM), which sends a sample to the computer at each tick, without waiting (dropped if the USB FIFO is full), between
@@ -185,7 +187,7 @@ typedef struct
 	uint32_t	prof_gpustat;	// GPUSTAT at the last SPU voices packet (monitor version 7, 0: not known)
 	// Remote pad (monitor version 8, EXEC_PAD)
 	uint32_t	pad_buf;		// Pad buffer of port 1 given to InitPAD by the program, 0: not called yet
-	uint32_t	pad_orig;		// The BIOS InitPAD; for a disc booted by the firmware: the BIOS Load (MON_REASON_CD_SETUP)
+	uint32_t	pad_orig;		// The BIOS InitPAD (a program executed with EXEC_PAD, or a disc booted by the firmware)
 } MonitorState;
 
 // Remote pad device (monitor version 11): in MonitorState.ram_lo... (the profiler's RAM scan, unused meanwhile)

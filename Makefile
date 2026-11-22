@@ -23,11 +23,18 @@ OBJS = $(TARGET).o $(TARGET_DEP).o
 ifeq ($(RAMTEST),1)
 # Test in RAM ("make RAMTEST=1", executed with ps1transfer): the debug monitor is copied to RAM
 TLOAD_ADDR = 0x801D0000
+# Its stack at the top of RAM (s_addr 0x801FFF00 in the exe header, little endian, as printf's octal escapes)
+STACK_BYTES = \000\377\037\200
 CFLAGS += -DMONITOR_IN_RAM -DTFS_RAM_ADRS=0x80140000
 OBJS += monitor_ram.o
 else
 # Release in ROM (the debug monitor is in the cartridge flash, see cartrom/rom.s)
 TLOAD_ADDR = 0x801EF000
+# Its stack: 8KB under it and its header copy (rom.s: 0x800 bytes under TLOAD_ADDR), s_addr 0x801EE800 in the exe
+# header (the BIOS sets it). At the top of RAM (0x801FFF00) only about 1KB was left above the firmware's data: the
+# PicoStation screen's views overflowed it. Games and programs are loaded under FW_STACK_BOTTOM.
+STACK_BYTES = \000\350\036\200
+CFLAGS += -DFW_STACK_BOTTOM=0x801EC800
 endif
 # The profiler's RAM fill (Execute) stops under the firmware
 CFLAGS += -DFW_LOAD_ADDR=$(TLOAD_ADDR)
@@ -47,8 +54,8 @@ $(TARGET).elf: $(OBJS) $(TARGET).ld
 
 $(TARGET).ps-exe: $(TARGET).elf
 	$(ELF2X) -q $< $@
-	# Stack at the top of RAM in the header (s_addr = 0x801FFF00, like the PsyQ build; elf2x leaves 0)
-	printf '\000\377\037\200' | dd of=$@ bs=1 seek=48 conv=notrunc 2> /dev/null
+	# The stack in the header (s_addr: STACK_BYTES above; elf2x leaves 0)
+	printf '$(STACK_BYTES)' | dd of=$@ bs=1 seek=48 conv=notrunc 2> /dev/null
 
 # Run make inside $(TARGET_DEP) folder everytime, a bit hacky but works
 # https://stackoverflow.com/questions/26226106/how-can-i-force-make-to-execute-a-recipe-all-the-time

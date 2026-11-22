@@ -998,6 +998,9 @@ class ConvertTab(tb.Frame):
         self.scan_src.pack(fill="x", pady=2)
         self.scan_out = FileField(tab, self.app, "sound.conv.scan.out", "Folder", mode="dir")
         self.scan_out.pack(fill="x", pady=2)
+        self.scan_original = tb.BooleanVar(value=True)
+        tb.Checkbutton(tab, text="Also keep Sony's SQ + HD + BD musics as the game has them (NN.sq, NN.hd, NN.bd)",
+                       variable=self.scan_original, bootstyle="round-toggle").pack(anchor="w", pady=(4, 0))
         row = tb.Frame(tab)
         row.pack(fill="x", pady=(6, 0))
         tb.Button(row, text="Find and convert", bootstyle="success", command=self.convert_scan).pack(side="left")
@@ -1033,6 +1036,7 @@ class ConvertTab(tb.Frame):
             self.scan_out.set(out)
         self.scan_src.remember()
         self.scan_out.remember()
+        original = self.scan_original.get()
 
         def work(progress):
             # (the game's file read where needed, never whole: a disc image is hundreds of MB)
@@ -1045,6 +1049,8 @@ class ConvertTab(tb.Frame):
             rows = []
             for n, m in enumerate(musics):
                 base = os.path.join(out, "%02d" % n)
+                if original:                    # (the game's own files, not changed)
+                    sshd.write_original(m, base)
                 data, info = sshd.to_seq(m["sq"])
                 with open(base + ".seq", "wb") as f:
                     f.write(data)
@@ -1064,6 +1070,8 @@ class ConvertTab(tb.Frame):
                     bank = "%d programs, %d samples (%d KB)" % (len(vinfo["programs"]), vinfo["samples"],
                                                                len(vb) // 1024)
                     skipped = "; ".join(vinfo["skipped"])
+                if original and m["hd"]:        # (played as the game has them: the tester plays SQ + HD + BD)
+                    files = [base + ".hd", base + ".bd", base + ".sq"]
                 rows.append(("%02d" % n, "SQ/HD", info, bank, m["coverage"] if vinfo else None, skipped, files))
             for n, b in enumerate(banks):
                 name = "snd%02d" % n

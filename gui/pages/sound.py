@@ -24,7 +24,7 @@ from pages.audioconvert import ConvertTab
 from pages.vabedit import VabEditor
 from widgets import FileList, ScrollFrame
 
-SOUND_TYPES = [("Sound files", "*.vh *.vb *.vab *.seq *.sep *.vag"), ("All files", "*.*")]
+SOUND_TYPES = [("Sound files", "*.vh *.vb *.vab *.seq *.sep *.vag *.sq *.hd *.bd"), ("All files", "*.*")]
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 PROTOCOL = ("SNDLIVE", "SNDINFO", "SNDPROGS", "SNDSTATE", "SNDVAB", "SNDWROTE", "SNDVH", "SNDSPU", "SNDFX",
             "SNDCHAN", "SNDPOS")                                            # Answers of

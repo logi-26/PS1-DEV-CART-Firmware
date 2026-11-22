@@ -152,15 +152,26 @@ entry:
 #	jal		_96_init				# Initialize the CD
 #	nop
 
+	# The firmware is packed (see Makefile): its header copied, under its load address, then the rest unpacked
 	la		$a1,psexe		# src
 	lw		$a0,0x18($a1)		# Where we'll write to
-	la		$a2,psexe_end
+	li		$a2,0x800		# The header
 	addiu		$a0,$a0,-0x800		# header
-	subu		$a2,$a1
 	move		$s0,$a0
 	addiu		$t2, $0, 0xA0
 	jal		$t2
 	addiu		$t1, $0, 0x2A		# memcpy
+
+	la		$t0,psexe
+	lw		$a2,0x800($t0)		# Unpacked size
+	la		$a0,psexe+0x800+4+16	# (after the size and the version text)
+	addiu		$a1,$s0,0x800		# The load address
+	jal		unpack
+	addu		$a2,$a1,$a2		# (delay slot) The end
+
+	addiu		$t2, $0, 0xA0
+	jal		$t2
+	addiu		$t1, $0, 0x44		# FlushCache: the code written as data
 
 	jal		EnterCriticalSection	# Disable interrupt handling
 	nop
@@ -173,10 +184,11 @@ entry:
 	addiu		$sp,12
 
 .include "bios.inc"
+.include "unpack.inc"
 
 	.balign 4
 psexe:
-	.incbin	"../ps1devcart.ps-exe"
+	.incbin	"ps1devcart.pak"	# The firmware: header, size, version text, packed (see Makefile)
 psexe_end:
 	# Cheats of games (cheatmenu.h: CHEAT_DB_ROM, 20KB), written by the computer (the Manager's Cheats page): empty here.
 	# The build fails ("attempt to move .org backwards") if the firmware reaches it

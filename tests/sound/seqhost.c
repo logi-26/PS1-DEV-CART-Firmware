@@ -5,6 +5,7 @@
 *
 *	seqhost [options] FILE.SEQ
 *	--vh FILE --vb FILE		the bank (else no voices: the notes are still read and reported)
+*	--hd FILE --bd FILE		or Sony's later bank as the game has it (LoadHd); FILE.SEQ may then be an SQ
 *	--track N				the SEQ of a SEP (0...)
 *	--frame-us N			a frame (16683 NTSC, 20000 PAL)
 *	--play-ms N				time played (default: to the music's end or 10 minutes)
@@ -151,8 +152,8 @@ static uint8_t	*ReadFile_(const char *path, uint32_t *size, int guard)
 
 int	main(int argc, char **argv)
 {
-	const char	*vh_path = NULL, *vb_path = NULL, *seq_path = NULL;
-	uint32_t	size, vh_size, vb_size, play_ms = 600000, i;
+	const char	*vh_path = NULL, *vb_path = NULL, *seq_path = NULL, *hd_path = NULL, *bd_path = NULL;
+	uint32_t	size, vh_size, vb_size, hd_size, bd_size, play_ms = 600000, i;
 	int			track = 0, seek = -1, guard = 0, was_playing;
 	uint8_t		*seq, *vh, *vb;
 
@@ -164,6 +165,8 @@ int	main(int argc, char **argv)
 
 		if (!strcmp(a, "--vh"))				vh_path = argv[++i];
 		else if (!strcmp(a, "--vb"))		vb_path = argv[++i];
+		else if (!strcmp(a, "--hd"))		hd_path = argv[++i];
+		else if (!strcmp(a, "--bd"))		bd_path = argv[++i];
 		else if (!strcmp(a, "--track"))		track = atoi(v), i++;
 		else if (!strcmp(a, "--frame-us"))	frame_us = atoi(v), i++;
 		else if (!strcmp(a, "--play-ms"))	play_ms = atoi(v), i++;
@@ -215,6 +218,13 @@ int	main(int argc, char **argv)
 		vb = ReadFile_(vb_path, &vb_size, 0);
 		if (!LoadVab(vh, vb))
 			printf("ERROR not a VH\n");
+	}
+	else if (hd_path && bd_path)
+	{
+		uint8_t	*hd = ReadFile_(hd_path, &hd_size, 0), *bd = ReadFile_(bd_path, &bd_size, 0);
+
+		if (!LoadHd(hd, bd, bd_size))
+			printf("ERROR not an HD\n");
 	}
 	seq = ReadFile_(seq_path, &size, guard);
 	seq_size = size;

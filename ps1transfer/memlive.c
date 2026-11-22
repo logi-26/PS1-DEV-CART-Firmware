@@ -142,18 +142,34 @@ static void	Write(void)
 		printf("MEMERR USB error\n");
 }
 
-// Remote pad: the buttons of the selected port the monitor adds to its pad buffer (prof_target), on (prof_seq bit 0)
+// Remote pad: the buttons of the selected port the monitor adds to its pad buffer (prof_target), on (prof_seq bit 0).
+// Monitor version 14: the monitor is only called at each exception (prof_on) while buttons are pressed from here (or
+// while another device than a digital pad is emulated: its axes, its mouse motion), so a game runs as usual the rest
+// of the time (the monitor runs from the cartridge's flash: called at every interrupt, it delayed the game's
+// interrupts, e.g. its CD's); a game booted from its disc by the cartridge has the pad hook set up, prof_on 0.
 bool	RemotePad(char *arg)
 {
-	uint16_t	bits;
-	uint8_t		on;
+	MonitorState	ms;
+	uint16_t		bits;
+	uint8_t			on, prof_on, type;
 
 	if (!arg)
 		return (false);
 	on = strcmp(arg, "off") ? 1 : 0;
 	bits = on ? strtoul(arg, NULL, 16) : 0;
-	return (USB_Process('U', (uint8_t *)&bits, MONITOR_STATE_ADRS + offsetof(MonitorState, prof_target), 2) &&
-		USB_Process('U', &on, MONITOR_STATE_ADRS + offsetof(MonitorState, prof_seq), 1));
+	if (!USB_Process('U', (uint8_t *)&bits, MONITOR_STATE_ADRS + offsetof(MonitorState, prof_target), 2) ||
+		!USB_Process('U', &on, MONITOR_STATE_ADRS + offsetof(MonitorState, prof_seq), 1))
+		return (false);
+	if (USB_Process('D', (uint8_t *)&ms, MONITOR_STATE_ADRS, sizeof(ms)) && (ms.magic == MONITOR_MAGIC) &&
+		(ms.version >= 14) && (ms.prof_armed == PROF_ARMED_PAD) && ms.pad_orig)
+	{
+		type = ((uint8_t *)&ms)[offsetof(MonitorState, ram_lo) + offsetof(PadDevice, type)];	// (PadDevice.type)
+		prof_on = (on && (bits || (type && (type != PAD_DIGITAL)))) ? 0xFF : 0;
+		if ((ms.prof_on != prof_on) &&
+			!USB_Process('U', &prof_on, MONITOR_STATE_ADRS + offsetof(MonitorState, prof_on), 1))
+			return (false);
+	}
+	return (true);
 }
 
 // Port driven from the computer: 0 (port 1) or 1 (port 2, needs monitor version 9: pad_port reuses prof_frames,
@@ -298,7 +314,8 @@ void	RemotePadState(void)
 	else if ((ms.magic != MONITOR_MAGIC) || (ms.version < 8))
 		printf("MEMPAD 0 0 0 0\n");
 	else
-		printf("MEMPAD %d %08X %08X %d\n", (ms.prof_on && (ms.prof_armed == PROF_ARMED_PAD)) ? 1 : 0, ms.pad_buf,
+		printf("MEMPAD %d %08X %08X %d\n", ((ms.prof_on || ((ms.version >= 14) && ms.pad_orig)) &&
+			(ms.prof_armed == PROF_ARMED_PAD)) ? 1 : 0, ms.pad_buf,
 			(ms.version >= 9) ? ms.prof_draw : 0, ms.version);
 }
 

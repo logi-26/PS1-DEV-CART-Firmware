@@ -10,6 +10,9 @@ kernel_hook.bin
 monitor_ram.bin
 monitor_rom.bin
 ps1devcart.ps-exe
+cartrom/ps1devcart.pak
+cartrom/rom_packer/rom_packer
+cartrom/rom_packer/rom_packer.exe
 cartrom/rom_rounder/rom_rounder
 cartrom/rom_rounder/rom_rounder.exe
 ps1-tools/ar_flash/ar_flash.bin
@@ -47,3 +50,36 @@ tests/sound/build/
 tests/movie/build/
 tests/tools/build/
 __pycache__/
+
+# Cartridge ROM experiments (local): layout probes and test ROMs
+cartrom/rom_probe.s
+cartrom/empty_probe.bin
+cartrom/ps1devcart_cheats.rom
+cartrom/cheats_sd_games.bin
+# Demos: the PCSX-Redux settings and memory cards of the multi-emulator demos (.redux1, .redux2...)
+demos/*/.redux*/
+
+# Link play / net play research (ps1-linkplay): files from game discs, emulator states and RAM dumps (game data, not
+# published), and the traces, logs and captures of the test runs (large, local)
+ps1-linkplay/**/disc/
+ps1-linkplay/**/.*/
+ps1-linkplay/research/ra_link_module.asm
+*.sst
+*.ram
+*.raw
+*.pkl
+*.bak
+*.log
+*.out
+ps1-linkplay/virtual/*_test*.txt
+ps1-linkplay/virtual/*_msgs.txt
+ps1-linkplay/virtual/new_layout.txt
+ps1-linkplay/virtual/vlink_trace.txt
+ps1-linkplay/virtual/vlink_tune.txt
+ps1-linkplay/virtual/vlink_hw_before_*.json
+ps1-linkplay/virtual/vlink_hw_prev.json
+ps1-linkplay/virtual/a2b_*.bin
+ps1-linkplay/virtual/b2a_*.bin
+ps1-linkplay/research/real_trace/vlink_trace_*.txt
+ps1-linkplay/research/redux_trace/b020.txt
+ps1-linkplay/research/redux_trace/in2.txt

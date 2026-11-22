@@ -478,6 +478,7 @@ int		USB_ProcessSend(uint8_t cmd, uint32_t param, uint8_t *data, uint32_t size, 
 #define	FEATURE_BOOT_DISC	(1 << 3)	// 'C' command (menu): the CD drive unlocked and the disc booted, see ps1devcart.c
 #define	FEATURE_DISC_ID		(1 << 4)	// The disc booted: its executable at DISC_ID_ADRS while the game runs (cheats)
 #define	FEATURE_CHEATS		(1 << 5)	// Code engine: the cheat table at CHEAT_TABLE_ADRS applied by the kernel hook
+#define	FEATURE_SCREENSAVER	(1 << 6)	// 'S' command (menu): the screensavers' settings (2 bytes, saver.h), saved in the flash
 
 // Code engine (kernel hook): the cheats of the table applied at every interrupt while a program runs, like a cheat
 // cartridge. Written by the computer (the Manager's Cheats page) or the menu; cleared at the menu. In the kernel
@@ -520,6 +521,8 @@ typedef struct
 #define	DEVICE_ID_SIZE		16
 extern uint8_t	device_id_rx[];		// 'I' command data, see ps1devcart.c
 void	DeviceIdReceived(void);
+extern uint8_t	saver_rx[];			// 'S' command data, see saver.h
+void	SaverSettingsReceived(void);
 void	ProfFillRam(bool fill);		// Execute: profiler state reset, free RAM filled for the profiler, see ps1devcart.c
 void	PadRemoteSetup(void);		// Execute with EXEC_PAD: the remote pad set up by the monitor, see ps1devcart.c
 #endif
@@ -636,7 +639,7 @@ int		USB_ProcessReceive(void)
 #ifndef HOOK
 	if (!((USB_cmd[0] == 'D') || (USB_cmd[0] == 'U') || (USB_cmd[0] == 'E') || (USB_cmd[0] == 'F') || (USB_cmd[0] == 'R') ||
 		(USB_cmd[0] == 'd') || (USB_cmd[0] == 'u') || (USB_cmd[0] == 'V') || (USB_cmd[0] == 'I') ||
-		(USB_cmd[0] == 'C')))
+		(USB_cmd[0] == 'C') || (USB_cmd[0] == 'S')))
 #else
 	// While a program runs: reset, and memory access for live debugging (FEATURE_LIVE_ACCESS), exchange (USB link).
 	// Live screenshots ('V') go through the monitor service ('M', monitor version 2): kernel space for the USB link.
@@ -733,6 +736,12 @@ int		USB_ProcessReceive(void)
 		if (size > DEVICE_ID_SIZE)
 			size = DEVICE_ID_SIZE;
 	}
+	if (USB_cmd[0] == 'S')	// Screensavers' settings and options (FEATURE_SCREENSAVER, saver.h): the same
+	{
+		ptr = saver_rx;
+		if (size > 3)
+			size = 3;
+	}
 
 	{
 		uint32_t	exp1_timing = EXP1_DELAY_SIZE;
@@ -754,6 +763,11 @@ int		USB_ProcessReceive(void)
 	if (USB_cmd[0] == 'I')	// Device ID: shown on the menu (no "Transfer Successful" message)
 	{
 		DeviceIdReceived();
+		return (USB_STATE_NONE);
+	}
+	if (USB_cmd[0] == 'S')
+	{
+		SaverSettingsReceived();
 		return (USB_STATE_NONE);
 	}
 	if (USB_cmd[0] == 'E')	// Execute

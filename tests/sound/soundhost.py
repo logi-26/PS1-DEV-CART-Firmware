@@ -82,12 +82,15 @@ class HostResult:
         return None
 
 
-def run(seq_path, vh=None, vb=None, timeout=60, **opts):
-    """seqhost on a SEQ file: opts track, frame_us, play_ms, seek, repeat, tempo, transpose, mute, guard."""
+def run(seq_path, vh=None, vb=None, timeout=60, hd=None, bd=None, **opts):
+    """seqhost on a SEQ (or SQ) file: opts track, frame_us, play_ms, seek, repeat, tempo, transpose, mute, guard; the
+    bank: vh + vb, or hd + bd (Sony's later bank as the game has it)."""
     exe = build_host.build()
     cmd = [exe]
     if vh and vb:
         cmd += ["--vh", vh, "--vb", vb]
+    elif hd and bd:
+        cmd += ["--hd", hd, "--bd", bd]
     for key, value in opts.items():
         if key == "guard":
             if value:

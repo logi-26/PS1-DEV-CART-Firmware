@@ -40,6 +40,7 @@ Some of its musics have notes for programs their bank lacks (a second bank the g
 
     python sshd.py info in.hd|in.sq
     python sshd.py scan game.bin out_folder     (every music found: NN.seq, NN.vh, NN.vb)
+    python sshd.py extract game.bin out_folder  (every music found as the game has it: NN.sq, NN.hd, NN.bd)
     python sshd.py vab in.hd in.bd out.vh       (and out.vb; or out.vab: one file)
     python sshd.py seq in.sq out.seq
 
@@ -630,6 +631,19 @@ def scan(d, progress=None):
     return found
 
 
+def write_original(m, base):
+    """A music found by scan() as the game has it: base.sq, and its bank base.hd + base.bd (not changed: a BD split
+    over an archive's files put back together, a music played with a bank loaded before it given that bank).
+    [(path, size)] written."""
+    files = [(base + ".sq", m["sq_bytes"])]
+    if m["hd"]:
+        files += [(base + ".hd", m["hd_bytes"]), (base + ".bd", m["bd_bytes"])]
+    for path, data in files:
+        with open(path, "wb") as f:
+            f.write(data)
+    return [(p, len(d)) for p, d in files]
+
+
 # ---------------------------------------------------------------------------------------------------- command line
 
 def main():
@@ -694,6 +708,15 @@ def main():
                         len(vinfo["programs"]), vinfo["samples"], len(vb) // 1024, m["coverage"] * 100,
                         "".join("; not converted: " + s for s in vinfo["skipped"]))
                 print("%02d at 0x%08X: %5.1f s, %5d notes; %s" % (n, m["at"], info["seconds"], info["notes"], text))
+            print("%d musics in %s" % (len(musics), args[2]))
+            return 0
+        if len(args) == 3 and args[0] == "extract":
+            os.makedirs(args[2], exist_ok=True)
+            musics = scan(args[1])
+            for n, m in enumerate(musics):
+                files = write_original(m, os.path.join(args[2], "%02d" % n))
+                print("%02d at 0x%08X: %s" % (n, m["at"], ", ".join("%s %d bytes" % (os.path.basename(p), s)
+                                                                    for p, s in files)))
             print("%d musics in %s" % (len(musics), args[2]))
             return 0
         if len(args) == 3 and args[0] == "seq":

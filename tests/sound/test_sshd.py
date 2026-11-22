@@ -26,7 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import seqref                                                           # noqa: E402
-from soundhost import run_bytes, vabmod                                 # noqa: E402
+from soundhost import run as run_sound, run_bytes, vabmod                 # noqa: E402
 
 import audioconv                                                        # noqa: E402  (gui, added by soundhost)
 import sshd                                                             # noqa: E402
@@ -389,6 +389,127 @@ class DragoonTests(unittest.TestCase):
         music = [f for f in sshd.scan(mrg([alone, battle, copy], sectors=True)) if f["sq_bytes"] == t.SQ]
         self.assertEqual(1, len(music))
         self.check(music[0], t.OTHER)
+
+
+class ExtractTests(unittest.TestCase):
+    """The musics written as the game has them (sshd.py extract, the Sound Tools' "keep the originals")."""
+
+    T = ScanTests
+
+    def extract(self, d):
+        import tempfile
+        out = []
+        with tempfile.TemporaryDirectory() as folder:
+            for n, m in enumerate(sshd.scan(d)):
+                base = os.path.join(folder, "%02d" % n)
+                written = sshd.write_original(m, base)
+                files = {}
+                for path, size in written:
+                    with open(path, "rb") as f:
+                        files[os.path.splitext(path)[1]] = f.read()
+                    self.assertEqual(size, len(files[os.path.splitext(path)[1]]))
+                out.append(files)
+        return out
+
+    def test_unchanged(self):
+        t = self.T
+        d = t.JUNK + t.pad(t.SQ) + t.pad(t.HD2) + t.BD2 + t.JUNK
+        self.assertEqual([{".sq": t.SQ, ".hd": t.HD2, ".bd": t.BD2}], self.extract(d))
+
+    def test_split_bd_put_together(self):
+        t = self.T
+        hd = t.HD2[:4] + struct.pack("<I", len(t.BD2)) + t.HD2[8:]
+        group = mrg([b"\x00\x00", t.pad(t.SQ), t.pad(hd), t.BD2[:0x30]])
+        archive = mrg([group, t.BD2[0x30:0x50], b"", t.BD2[0x50:]], sectors=True)
+        self.assertEqual([{".sq": t.SQ, ".hd": hd, ".bd": t.BD2}], self.extract(archive))
+
+    def test_no_bank(self):
+        t = self.T
+        self.assertEqual([{".sq": t.SQ}], self.extract(t.JUNK + t.SQ + t.JUNK))
+
+
+class NativeTests(unittest.TestCase):
+    """The console's player on SQ + HD + BD as the game has them (soundtest.c LoadHd, SeqParse's SQ): what it plays
+    is what it plays from the same music converted to SEQ + VAB (sshd.to_seq, to_vab), and more where a VAB can't hold
+    it (a drum kit's notes after its 16th, the velocity table)."""
+
+    MUSIC = sq_file([((0x90, 50, 100), 120), ((0x80, 50, 0), 0), ((0x90, 70, 90), 60), ((0xE0, 90), 60),
+                     ((0x80, 70, 0), 0), ((0x91, 60, 110), 120), ((0x81, 60, 0), 0),
+                     ((0xFF, 0x51, 96, 0), 0), ((0x92, 36, 100), 60), ((0x82, 36, 0), 0), ((0x92, 37, 100), 60),
+                     ((37, 0), 0), ((0x92, 38, 80), 60), ((38, 0), 0),
+                     ((0xB0, 99, 20), 0), ((0xB0, 6, 2), 0), ((0x90, 52, 70), 90), ((0x80, 52, 0), 0),
+                     ((0xB0, 99, 30), 30)], programs=(0, 3, 5))
+
+    @staticmethod
+    def lines(h):
+        return [l for l in h.raw.splitlines() if l.split(" ")[0] in ("SCAN", "NOTE", "VOICE", "STOP", "DONE")]
+
+    def play(self, sq, hd, bd, **kw):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            paths = []
+            for name, data in (("m.sq", sq), ("m.hd", hd), ("m.bd", bd)):
+                paths.append(os.path.join(folder, name))
+                with open(paths[-1], "wb") as f:
+                    f.write(data)
+            return run_sound(paths[0], hd=paths[1], bd=paths[2], **kw)
+
+    def converted(self, sq, hd, bd, **kw):
+        import tempfile
+        vh, vb, _ = sshd.to_vab(hd, bd)
+        seq, _ = sshd.to_seq(sq)
+        with tempfile.TemporaryDirectory() as folder:
+            paths = []
+            for name, data in (("m.seq", seq), ("m.vh", vh), ("m.vb", vb)):
+                paths.append(os.path.join(folder, name))
+                with open(paths[-1], "wb") as f:
+                    f.write(data)
+            return run_sound(paths[0], vh=paths[1], vb=paths[2], **kw)
+
+    def test_same_as_converted(self):
+        for frame_us in (16683, 20000):
+            with self.subTest(frame_us=frame_us):
+                native = self.play(self.MUSIC, HD, BD, play_ms=4000, repeat=0, frame_us=frame_us)
+                conv = self.converted(self.MUSIC, HD, BD, play_ms=4000, repeat=0, frame_us=frame_us)
+                self.assertIsNone(native.problem())
+                self.assertIsNone(conv.problem())
+                self.assertEqual(self.lines(conv), self.lines(native))
+                # The notes of each kind of program: a split, layers (two voices), a kit (37: no drum)
+                voices = [tuple(int(x) for x in l.split()[1:4]) for l in self.lines(native) if l.startswith("VOICE")]
+                self.assertIn((1, 60, 3), voices)
+                self.assertEqual(2, voices.count((1, 60, 3)))
+                self.assertNotIn((2, 37, 5), voices)
+
+    def test_running_status_after_tempo(self):
+        sq = sq_file([((0x90, 60, 100), 240), ((60, 0), 0), ((0xFF, 0x51, 100, 0), 0), ((62, 90), 120),
+                      ((62, 0), 0)], programs=(0,))
+        native = self.play(sq, HD, BD, play_ms=2000, repeat=0)
+        self.assertEqual([60, 62], [n[3] for n in native.notes])
+        self.assertEqual(self.lines(self.converted(sq, HD, BD, play_ms=2000, repeat=0)), self.lines(native))
+
+    def test_large_kit_every_note(self):
+        hd = hd_file({0: (0xFF, [tone(0, 0, 60, 0, 0)] * 20, 40, 59)}, len(BD))
+        sq = sq_file([((0x90, k, 100), 30) for k in range(40, 60)], programs=(0,))
+        native = self.play(sq, hd, BD, play_ms=2000, repeat=0)
+        keyed = sorted({int(l.split()[2]) for l in self.lines(native) if l.startswith("VOICE")})
+        self.assertEqual(list(range(40, 60)), keyed)            # (a VAB: 40-55 only)
+
+    def test_velocity_table(self):
+        sq = sq_file([((0x90, 70, 100), 120), ((0x80, 70, 0), 0)], programs=(0,))
+        halved = HD[:-128] + bytes(v // 2 for v in range(128))
+        vol = lambda h: [int(l.split()[7]) for l in self.lines(h) if l.startswith("VOICE")][0]
+        full, half = vol(self.play(sq, HD, BD, play_ms=500, repeat=0)), vol(self.play(sq, halved, BD, play_ms=500,
+                                                                                      repeat=0))
+        self.assertAlmostEqual(full / 2, half, delta=2)         # (velocity 100 played as 50)
+
+    def test_damaged_files(self):
+        for name, sq, hd, bd in (("SQ cut", self.MUSIC[:0x118], HD, BD), ("SQ no end", self.MUSIC[:-3], HD, BD),
+                                 ("HD cut", self.MUSIC, HD[:0x90], BD), ("BD short", self.MUSIC, HD, BD[:0x20]),
+                                 ("bad event", self.MUSIC[:0x110] + b"\xF3\x00\x00", HD, BD)):
+            with self.subTest(name=name):
+                h = self.play(sq, hd, bd, play_ms=3000, repeat=1, guard=True)
+                self.assertIsNone(h.crash)
+                self.assertIsNone(h.hang)
 
 
 class CorpusTests(unittest.TestCase):

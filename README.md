@@ -313,6 +313,10 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
 - Hold **X** at boot to initialise the CD drive.
 - **Screensaver**: after about 3 minutes with no pad or USB activity the menu turns the display off (a static image
   can burn into a CRT); any button or command turns it back on.
+- **Buttons from the computer**: the menu, the cheat screen and the PicoStation screen also take buttons written to
+  RAM at `0x8000DFF0` (no controller needed, e.g. to test them): 8 bytes, `PADR` then a 32-bit value, the buttons in
+  bits 0-15 (the pad's bits, 1: pressed) and the frames they are held in bits 16-31 (0: one frame). For example
+  Start + Select held 40 frames, the value `0x00280900`: `ps1transfer -u -a 0x8000DFF0 -f pad.bin`.
 - **START + SELECT** boots the disc in the drive (or `ps1transfer -bootcd`). The CD drive is unlocked first (the
   "nocash unlock", as in Unirom), so burned and import discs boot without a modchip or disc swapping. Not on Japanese
   consoles, whose drive can't be unlocked (licensed discs still boot). The unlock stays when the lid is opened. The
@@ -320,6 +324,23 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
   kept for the Manager's cheats (`ps1transfer -info`: `game=`). A game that loads another program from the disc
   through the BIOS (`Load`, `LoadExec`, e.g. Fighting Force after its loading screen) has it loaded by the cartridge's
   debug monitor, since the BIOS CD driver isn't there after the cartridge's boot.
+- **PicoStation** ODE (firmware RC5): when its menu disc is in the drive (found at boot: the menu then says
+  "START + SELECT: PicoStation games"), START + SELECT opens the cartridge's PicoStation screen instead: the SD card's
+  folders and `.cue` files, sorted, folders first, with the cover of the selected one (a `.cov` file next to the
+  `.cue`, or next to a folder for the folder; "NO COVER" without). D-pad to choose (left/right: a page), X opens a
+  folder or boots the game, TRIANGLE boots it with the cheat screen, O goes back up (closes at the top), START closes.
+  The game is mounted, then booted by the cartridge as a disc: it keeps the kernel hook, which the PicoStation's own
+  menu loses (it restarts the BIOS). Once a game is mounted, START + SELECT boots it again; RESET held one second
+  brings the PicoStation's menu disc (and its games) back. The menu names the mounted game (START + SELECT: boot
+  ... again).
+  TRIANGLE lists the game's cheats: the cartridge's (found by the game's ID, written in its cover file by
+  `pctools/picostation_ids.py` or `picostation_covers.py`) and the SD card's: the PicoStation's `.cht` file next to
+  the `.cue` (text: `[name]` then `XXXXXXXX YYYY` GameShark codes; `[*name]`: off at first; at most 6 KB), which
+  `pctools/picostation_cheats.py` writes from the Manager's cheat database. X ticks them, START boots the game with
+  them, O goes back to the list. Covers: `pctools/picostation_covers.py` converts images and puts them on the card.
+  **PicoStation Manager** (`python pctools/picostation_manager.py`): an app for the card's games: covers from any
+  image or the PSIO game database (psio_assist.db), cheats edited or added from the cheat database, game IDs added
+  to the covers already on the card.
 - **Code engine**: cheats applied by the console at every interrupt while a game runs, like a cheat cartridge: up to
   216 PS1 GameShark codes (writes, tests, slides) set from the Manager's Cheats page. They stay on until the console
   is reset, without the computer.
@@ -380,7 +401,10 @@ PlayStation's RAM: your program keeps all its RAM.
   retail games from their disc too: the game's multitap buffer is found in its RAM and the cartridge's code engine
   puts the emulated controllers in it, each slot driven by the page or its own USB controller. Without a multitap:
   a virtual one, for developers adding multitap support to their program (one reading the multitap through a pad
-  buffer, such as the BIOS's InitPAD or PsyQ's libtap).
+  buffer, such as the BIOS's InitPAD or PsyQ's libtap). A game booted from its disc by the cartridge (START +
+  SELECT, the PicoStation screen; debug monitor version 14) can be driven too when it reads its pads through the
+  BIOS (InitPAD: e.g. WipEout; a game using the pad port itself, such as PsyQ's libpad, isn't): the monitor's work at
+  each interrupt starts with the first buttons from the computer, so a game nobody drives runs as before.
 - **Profiler** (`ps1transfer -prof`, or the Profiler page of the GUI), without changing your program, see
   [below](#profiler).
 

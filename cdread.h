@@ -18,6 +18,12 @@
 #include <stdbool.h>
 
 #define	CD_SECTOR		2048
+// CD_ReadSectors' drive mode (Setmode) and sector size: the includer may make them variables (the firmware reads the
+// PicoStation's directory pages whole: mode 20h, 2340 bytes), otherwise 2048-byte sectors
+#ifndef CD_READ_MODE
+#define	CD_READ_MODE	0x00
+#define	CD_READ_SECTOR	CD_SECTOR
+#endif
 #define	CD_BCD(n)		((((n) / 10) << 4) | ((n) % 10))
 #define	CD_LE32(p)		((p)[0] | ((p)[1] << 8) | ((p)[2] << 16) | ((p)[3] << 24))
 
@@ -78,7 +84,7 @@ static int	CD_RawCommand(uint8_t cmd, const void *param, int len, uint8_t *resp,
 // After an error the read starts again from the sector not read.
 static bool	CD_ReadSectors(int lba, uint8_t *dst, uint32_t size)
 {
-	uint8_t	resp[8], loc[3], mode = 0x00, c;	// (mode: single speed, 2048-byte sectors)
+	uint8_t	resp[8], loc[3], mode = CD_READ_MODE, c;	// (mode: single speed, 2048-byte sectors)
 	int		retry, timeout, irq, pos, i, n;
 
 	CD_CRITICAL_ENTER();
@@ -108,8 +114,8 @@ static bool	CD_ReadSectors(int lba, uint8_t *dst, uint32_t size)
 			CD_REG(3) = 0x80;	// Want data
 			for (timeout = 1000; !(CD_REG(0) & 0x40) && timeout; timeout--)	// Data FIFO not empty
 				CD_DELAY_US(10);
-			n = (size < CD_SECTOR) ? size : CD_SECTOR;
-			for (i = 0; i < CD_SECTOR; i++)
+			n = (size < CD_READ_SECTOR) ? size : CD_READ_SECTOR;
+			for (i = 0; i < CD_READ_SECTOR; i++)
 			{
 				c = CD_REG(2);
 				if (i < n)
