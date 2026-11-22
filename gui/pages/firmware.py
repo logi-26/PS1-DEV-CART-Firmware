@@ -12,6 +12,7 @@ import sys
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
 
+import flashercd
 import fwupdate
 from devices import GUI_DIR, parse_info
 from pages.base import Page
@@ -107,8 +108,50 @@ class FirmwarePage(Page):
                                       state="disabled")
         self.flash_button.pack(side="left", padx=6)
         self.track(box, "flash")
+
+        # Flasher CD: repairs a cartridge whose firmware doesn't start (flashercd.py), the licence from the user's disc
+        box = self.section("Flasher CD (repair a cartridge)")
+        box.pack(fill="x", pady=(8, 0))
+        tb.Label(box, text="A cartridge whose firmware doesn't start can be flashed from a CD: the console started "
+                           "with the cartridge switched off, the flasher CD booted, the cartridge switched on, START "
+                           "pressed. The CD needs the PlayStation licence data, taken from one of your own disc images "
+                           "(any PlayStation game of your console's region: .cue, .bin, .img or .iso). Burn the CD "
+                           "image (needs a modchip) or put it on an optical drive emulator such as a PicoStation.",
+                 wraplength=780, justify="left", bootstyle="secondary").pack(anchor="w", pady=(0, 6))
+        self.cd_disc = FileField(box, self.app, "fw.cddisc", "Disc image",
+                                 filetypes=[("PlayStation disc image", "*.cue *.bin *.img *.iso"), ("All files", "*.*")])
+        self.cd_disc.pack(fill="x", pady=2)
+        self.cd_out = FileField(box, self.app, "fw.cdout", "Save in", mode="dir")
+        self.cd_out.pack(fill="x", pady=2)
+        row = tb.Frame(box)
+        row.pack(fill="x", pady=(4, 0))
+        tb.Button(row, text="Make the flasher CD", bootstyle="primary", command=self.make_cd).pack(side="left")
+        base = flashercd.default_image()
+        self.cd_text = tb.Label(row, bootstyle="secondary" if base else "danger",
+                                text=("It installs firmware %s." % flashercd.rom_version(base)) if base else
+                                "The flasher image (ar_flash_nolicense.bin) wasn't found next to the Manager.")
+        self.cd_text.pack(side="left", padx=8)
         self.action = "info"
         self._check()
+
+    def make_cd(self):
+        disc, out = self.cd_disc.get().strip(), self.cd_out.get().strip()
+        if not disc or not os.path.isfile(disc):
+            return self.app.error("Choose one of your PlayStation disc images (.cue, .bin, .img or .iso).")
+        if not out:
+            return self.app.error("Choose the folder to save the flasher CD in.")
+        try:
+            cue = flashercd.make(disc, out)
+        except (ValueError, OSError) as e:
+            return self.app.error(str(e))
+        self.cd_disc.remember()
+        self.cd_out.remember()
+        Messagebox.show_info("Flasher CD made: %s (and ar_flash.bin).\n\nTo repair a cartridge: switch the cartridge "
+                             "off, start the console with this CD (burned, or from an optical drive emulator), switch "
+                             "the cartridge on when the flasher asks, then press START. The cartridge's cheats and "
+                             "settings are not kept: flash them again from the Cheats page and Settings afterwards."
+                             % cue, "PS1 Dev Cart Manager", parent=self)
+        return None
 
     def on_show(self):
         self._check()

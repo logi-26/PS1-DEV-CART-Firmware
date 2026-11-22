@@ -811,11 +811,21 @@ happens, it can be repaired with the flasher CD image (below).
 - **From the computer:** with the cartridge on its menu, run `ps1transfer -flash cartrom/ps1devcart.rom`, or use the
   Firmware page of the GUI. The ROM is checked first, flashed, then read back and compared. The cartridge's cheats,
   device ID and settings are kept.
-- **Repair or install from a CD:** `make` in the `ps1-tools/ar_flash` folder also builds `ar_flash.bin`/`ar_flash.cue`, a CD image
-  with the flasher. Burn it to a CD-R or use a CD emulator. Then:
+- **Repair or install from a CD:** the Manager makes the flasher CD (Firmware page, **Flasher CD**): choose one of your
+  own PlayStation disc images (`.cue`, `.bin`, `.img` or `.iso`, a game of your console's region) and a folder; it
+  writes `ar_flash.bin`/`ar_flash.cue`, the flasher with the firmware built in. The CD needs the PlayStation licence
+  data, which isn't published with the firmware: it is taken from your disc image and put in
+  `ps1-tools/ar_flash/ar_flash_nolicense.bin` (the flasher image without it). Without the Manager:
+  `python gui/flashercd.py YOUR_DISC_IMAGE OUT_FOLDER`. Burn it to a CD-R (needs a modchip) or put it on an optical
+  drive emulator (PicoStation). Then:
   1. Start the console with the cartridge switch **OFF**.
   2. Boot the CD.
-  3. Switch the cartridge **ON** before flashing.
+  3. Switch the cartridge **ON** when the flasher asks, then press **START**. The whole flash is written: the
+     cartridge's cheats and settings are not kept (flash them again from the Manager afterwards).
+
+  Building it yourself: `make` in `ps1-tools/ar_flash` builds `ar_flash_nolicense.bin`, and `ar_flash.bin`/`.cue`
+  with your licence file in `config/` (`LICENSEE.DAT` for Europe, see `ar_flash.xml`). The image ends with 150 empty
+  sectors, as a pressed disc: a PicoStation can't read an image's last sector.
 
 ## Building
 
