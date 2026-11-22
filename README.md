@@ -871,9 +871,10 @@ included.
   - **Libraries for your programs**: `psxpcdrv` (files on the computer), `psxcomb` (link play) and `psxdevcart`
     (PsyQo programs) are plain C compiled with your program, no SDK library; they work with PSn00bSDK and PsyQo (see
     [Using the cartridge with PsyQo](#using-the-cartridge-with-psyqo)).
-- The menu runs from RAM at 0x801EF000: it is copied there from the cartridge flash at boot (`cartrom`, based on
-  PSn00bSDK's cartrom example), as the original PS1USB firmware does at the same address. It takes 34.1 KB there
-  (0x801EF000 to 0x801F7854, code, data and variables), the original firmware 65.2 KB (up to 0x801FF4E8). This RAM
+- The menu runs from RAM at 0x801EB000 (0x801EF000 up to firmware 1.4, as the original PS1USB firmware): it is
+  unpacked there from the cartridge flash at boot (`cartrom`, based on PSn00bSDK's cartrom example), its stack (8 KB)
+  under it. It takes 68 KB there (code, data and variables, up to 0x801FBFDC: `python ci/check_sizes.py` shows the
+  room left), the original firmware 65.2 KB. Programs and data sent from the computer go below 0x801E8800. This RAM
   is only used while the menu is shown: a program you run gets all the PlayStation's RAM (it can load over the
   menu). What stays while it runs is the kernel hook, in the BIOS's unused kernel RAM (below), as with the original.
 - Flash (128KB):

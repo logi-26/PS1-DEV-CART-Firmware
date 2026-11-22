@@ -29,12 +29,14 @@ CFLAGS += -DMONITOR_IN_RAM -DTFS_RAM_ADRS=0x80140000
 OBJS += monitor_ram.o
 else
 # Release in ROM (the debug monitor is in the cartridge flash, see cartrom/rom.s)
-TLOAD_ADDR = 0x801EF000
-# Its stack: 8KB under it and its header copy (rom.s: 0x800 bytes under TLOAD_ADDR), s_addr 0x801EE800 in the exe
+# 0x801EB000: 84KB up to the top of RAM (0x801EF000 in firmware 1.0-1.4: 36 bytes were left, ci/check_sizes.py)
+TLOAD_ADDR = 0x801EB000
+# Its stack: 8KB under it and its header copy (rom.s: 0x800 bytes under TLOAD_ADDR), s_addr 0x801EA800 in the exe
 # header (the BIOS sets it). At the top of RAM (0x801FFF00) only about 1KB was left above the firmware's data: the
-# PicoStation screen's views overflowed it. Games and programs are loaded under FW_STACK_BOTTOM.
-STACK_BYTES = \000\350\036\200
-CFLAGS += -DFW_STACK_BOTTOM=0x801EC800
+# PicoStation screen's views overflowed it. Games and programs are loaded under FW_STACK_BOTTOM (ps1transfer.h:
+# RAM_FIRMWARE, the same).
+STACK_BYTES = \000\250\036\200
+CFLAGS += -DFW_STACK_BOTTOM=0x801E8800
 endif
 # The profiler's RAM fill (Execute) stops under the firmware
 CFLAGS += -DFW_LOAD_ADDR=$(TLOAD_ADDR)

@@ -87,7 +87,6 @@ bool	UploadNetYarozeLibrary(char *filename, uint32_t exe_adrs, uint32_t exe_size
 // "auto" script of siocons, which loads it and the data files ("local load main", "local dload file address",
 // "go"). A program converted to a PS-X EXE (eco2exe, or yarexe, which also includes the library) runs as usual.
 
-									// the files): data must stay below
 
 AutoData	auto_data[AUTO_MAX_DATA];
 int		auto_count;

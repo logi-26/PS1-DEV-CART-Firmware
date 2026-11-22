@@ -197,8 +197,8 @@ With the "auto" script of siocons, which loads the program and its data files:
 ps1transfer -auto auto -y libps.exe
 It reads "local load main" (the program), "local dload file address" (a data file, uploaded at its address) and
 "local auto file" (another script); "go" and the other siocons commands are skipped. File names are relative to the
-folder of the script ('\' or '/'). Each data file must fit below 0x801EF000 (the cartridge firmware, which receives
-the files, is above) and must not overlap the library, the program or another file.
+folder of the script ('\' or '/'). Each data file must fit below 0x801E8800 (the cartridge firmware and its stack, which receive
+the files, are above) and must not overlap the library, the program or another file.
 
 Or the program alone, the ECOFF executable made by the Net Yaroze compiler:
 ps1transfer -e -f main -y libps.exe

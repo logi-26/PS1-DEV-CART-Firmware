@@ -175,14 +175,16 @@ extern struct ftdi_context *ftdi;
 
 #define	RAM_USER_START		0x80010000
 
-#define	RAM_FIRMWARE		0x801EC800	// PS1 DEV CART firmware's stack (8KB), the firmware above it (0x801EF000, receives
+// PS1 DEV CART firmware's stack (8KB), the firmware above it (0x801EB000 from firmware 1.5, 0x801EF000 in 1.0-1.4; it
+// receives the files): data must stay below (the Makefile's FW_STACK_BOTTOM)
+#define	RAM_FIRMWARE		0x801E8800
 
 // pstools.c
 #define	VIEWER_FILENAME		"tmdviewer.ps-exe"
 
 #define	VIEWER_DATA_ADRS	0x80100000	// Above the viewer program and its buffers
 
-#define	VIEWER_DATA_END		0x801E0000	// Below the PS1 DEV CART firmware (0x801EF000) which receives the data
+#define	VIEWER_DATA_END		0x801E0000	// Below the PS1 DEV CART firmware (0x801E8800, RAM_FIRMWARE) which receives the data
 
 #define	VIEWER_MAGIC		0x56444D54	// "TMDV"
 
@@ -201,7 +203,7 @@ extern struct ftdi_context *ftdi;
 
 #define	TESTER_DATA_ADRS	0x80100000
 
-#define	TESTER_DATA_END		0x801E0000	// Below the PS1 DEV CART firmware (0x801EF000) which receives the data
+#define	TESTER_DATA_END		0x801E0000	// Below the PS1 DEV CART firmware (0x801E8800, RAM_FIRMWARE) which receives the data
 
 #define	TESTER_MAGIC		0x54444E53	// "SNDT"
 
@@ -213,7 +215,7 @@ extern struct ftdi_context *ftdi;
 
 #define	TIMVIEW_DATA_ADRS	0x80100000
 
-#define	TIMVIEW_DATA_END	0x801E0000	// Below the PS1 DEV CART firmware (0x801EF000) which receives the data
+#define	TIMVIEW_DATA_END	0x801E0000	// Below the PS1 DEV CART firmware (0x801E8800, RAM_FIRMWARE) which receives the data
 
 #define	TIMVIEW_MAGIC		0x564D4954	// "TIMV"
 

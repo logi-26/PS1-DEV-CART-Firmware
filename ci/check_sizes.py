@@ -48,11 +48,14 @@ def hook_end():
     return end
 
 
-def firmware_end():
-    m = re.search(r"^\s+0x([0-9a-f]+)\s+_end = \.", read("ps1devcart.map"), re.M)
-    if not m:
-        raise SystemExit("ps1devcart.map: _end not found")
-    return int(m.group(1), 16)
+def firmware_range():
+    """Where the firmware is in RAM: its load address (TLOAD_ADDR, its .text) and its end (_end), from its map."""
+    text = read("ps1devcart.map")
+    start = re.search(r"^\.text\s+0x([0-9a-f]+)", text, re.M)
+    end = re.search(r"^\s+0x([0-9a-f]+)\s+_end = \.", text, re.M)
+    if not start or not end:
+        raise SystemExit("ps1devcart.map: .text or _end not found")
+    return int(start.group(1), 16), int(end.group(1), 16)
 
 
 def main():
@@ -78,7 +81,8 @@ def main():
     row("Menu images, packed (from 0x10000)", tfs, MONITOR_ADRS - TFS_ADRS)
     row("Debug monitor (0x19000-0x1EF00)", size("monitor_rom.bin"), MONITOR_MAX)
     row("Kernel hook (0x8000C160-0x8000D800)", hook_end() - HOOK_START, HOOK_END - HOOK_START)
-    row("Firmware in RAM (0x801EF000-0x80200000)", firmware_end() - 0x801EF000, FW_RAM_END - 0x801EF000)
+    fw_start, fw_end = firmware_range()
+    row("Firmware in RAM (0x%08X-0x80200000)" % fw_start, fw_end - fw_start, FW_RAM_END - fw_start)
 
     lines = ["| Place | Used | Room | Left | |", "|---|---:|---:|---:|---|"]
     for place, used, room, left, state in rows:
