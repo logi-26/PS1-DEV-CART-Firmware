@@ -3525,12 +3525,22 @@ report_end:
 // "-flash rom.rom" flashes a cartridge ROM. The ROM is uploaded to RAM with a header (magic, size, sum),
 // the flasher (ar_flash.ps-exe, next to ps1transfer) flashes it and sends its status lines, then the PS1 is reset and
 // the flash is read back and compared (except the last sector: the device ID, written again by the new firmware).
+// The cartridge's cheats and device ID/settings sector are read first and kept when the ROM's areas are empty
+// (-flashcheats: the ROM's cheats area written as it is, -flashall: nothing kept).
 
 #define	FLASH_ROM_SIZE		(128 * 1024)
 #define	FLASH_IMAGE_ADRS	0x80100000		// See ps1-tools/ar_flash/ar_flash.c
 #define	FLASH_ID_SECTOR		0x1F000			// Device ID sector, not compared
 #define	FLASHER_FILENAME	"ar_flash.ps-exe"
 #define	FLASH_TIMEOUT		60				// Seconds for the flasher to report
+#define	FLASH_CHEATS		0xB000			// Cheats of games (cheatmenu.h CHEAT_DB_ROM, gui/cheatdb.py ROM_CHEATS)
+#define	FLASH_CHEATS_SIZE	0x5000
+#define	FLASH_SECTOR_SIZE	0x1000
+
+// What -flash keeps of the cartridge's flash (the ROM file's areas are empty in a release ROM)
+#define	FLASH_KEEP_CHEATS	1		// Its cheats (not with -flashcheats: the ROM's own, e.g. the Manager's Cheats page)
+#define	FLASH_KEEP_SETTINGS	2		// Its device ID and settings sector (screensavers, options)
+int		flash_keep = FLASH_KEEP_CHEATS | FLASH_KEEP_SETTINGS;
 
 static void	SleepMs(int ms)
 {
@@ -3559,6 +3569,52 @@ static uint8_t	*LoadRom(char *rom_file)
 	return (rom);
 }
 
+static bool	FlashAreaEmpty(const uint8_t *p, int size)
+{
+	int	i;
+
+	for (i = 1; (i < size) && (p[i] == p[0]); i++)
+		;
+	return ((i == size) && ((p[0] == 0x00) || (p[0] == 0xFF)));
+}
+
+// The cartridge's cheats and device ID/settings sector put in the ROM image, where the ROM has none (an older ROM may
+// have code there: then it is written as it is). False on a USB error (nothing flashed then).
+static bool	FlashKeepAreas(uint8_t *rom)
+{
+	uint8_t	*cart;
+	bool	ok = false;
+
+	if (!flash_keep)
+		return (true);
+	if (!(cart = malloc(FLASH_CHEATS_SIZE)))
+		return (false);
+	if ((flash_keep & FLASH_KEEP_CHEATS) && FlashAreaEmpty(rom + FLASH_CHEATS, FLASH_CHEATS_SIZE))
+	{
+		if (!USB_Process('D', cart, 0x1F000000 + FLASH_CHEATS, FLASH_CHEATS_SIZE))
+			goto out;
+		if (!memcmp(cart, "CHDB", 4))
+		{
+			memcpy(rom + FLASH_CHEATS, cart, FLASH_CHEATS_SIZE);
+			printf("The cartridge's cheats are kept (-flashcheats writes the ROM's instead).\n");
+		}
+	}
+	if ((flash_keep & FLASH_KEEP_SETTINGS) && FlashAreaEmpty(rom + FLASH_ID_SECTOR, FLASH_SECTOR_SIZE))
+	{
+		if (!USB_Process('D', cart, 0x1F000000 + FLASH_ID_SECTOR, FLASH_SECTOR_SIZE))
+			goto out;
+		if (!memcmp(cart, "DVID", 4))
+		{
+			memcpy(rom + FLASH_ID_SECTOR, cart, FLASH_SECTOR_SIZE);
+			printf("The cartridge's device ID and settings are kept.\n");
+		}
+	}
+	ok = true;
+out:
+	free(cart);
+	return (ok);
+}
+
 static bool	FlashRom(char *rom_file, uint8_t *rom, char *argv0)
 {
 	uint8_t		*image = NULL, *exe = NULL, *readback = NULL, c;
@@ -3570,6 +3626,8 @@ static bool	FlashRom(char *rom_file, uint8_t *rom, char *argv0)
 
 	if (!(exe = SystemGetFile(GetToolPath(argv0, FLASHER_FILENAME), &exe_size)) || !(image = calloc(1, 32 + size)))
 		goto out;
+	if (!FlashKeepAreas(rom))
+		goto usb_error;
 
 	// ROM image in RAM: "PS1 DEV CART ROM", size, sum, padding, ROM
 	memcpy(image, "PS1 DEV CART ROM", 16);
@@ -4752,6 +4810,16 @@ int main(int argc, char *argv[])
 						reset = true;	// The PS1 only accepts a reset command while a program runs
 						break;
 					}
+					if (!strcmp(argv[i], "-flashcheats"))	// -flash: the ROM's cheats area as it is (not the cartridge's)
+					{
+						flash_keep &= ~FLASH_KEEP_CHEATS;
+						break;
+					}
+					if (!strcmp(argv[i], "-flashall"))	// -flash: the whole ROM as it is (nothing of the cartridge's kept)
+					{
+						flash_keep = 0;
+						break;
+					}
 					if (!strcmp(argv[i], "-flash"))	// Flash a cartridge ROM (with ar_flash.ps-exe, readback check)
 					{
 						if (i + 1 >= argc)
@@ -5832,6 +5900,8 @@ usage:
 	printf("\t   (an FTDI chip on its virtual COM port: set its latency timer to 1 ms in Device Manager)\n");
 	printf("\t-l List connected USB devices with their index and serial number (then the USB serial ports)\n");
 	printf("\t-flash rom.rom Flash a cartridge ROM (ar_flash.ps-exe next to ps1transfer), then read it back to check\n");
+	printf("\t   (the cartridge's cheats, device ID and settings are kept; -flashcheats: the ROM's cheats area as it is,\n"
+		"\t   -flashall: the whole ROM as it is)\n");
 	printf("\t-bootcd Boot the disc in the drive (the CD drive unlocked first: burned and import discs, no modchip)\n");
 	printf("\t   Same as START + SELECT on the menu. Not on Japanese consoles (licensed discs still boot).\n");
 	printf("\t-saver MENU PICO The menu's and the PicoStation screen's screensavers: off, or 3, 5 or 10 (minutes) and ,logo "

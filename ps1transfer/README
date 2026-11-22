@@ -142,6 +142,9 @@ Parameters:
 -flash rom.rom Flash a cartridge ROM: checked first (128KB, cartridge boot header), uploaded to RAM, flashed by the
    flasher (ar_flash.ps-exe next to ps1transfer, it shows its progress on the TV and reports here), then the PS1 is
    reset and the flash is read back and compared. Exit code 0 only if the readback is identical.
+   The cartridge's cheats and its device ID/settings sector are read first and kept when the ROM's areas are empty
+   (a release ROM): -flashcheats writes the ROM's cheats area as it is (the Manager's Cheats page), -flashall the
+   whole ROM as it is.
 -bootcd Boot the disc in the drive, like START + SELECT on the menu: the CD drive is unlocked first (burned and
    import discs, no modchip; not on Japanese consoles), then SYSTEM.CNF and the game are loaded as the BIOS does.
    A program running is reset first. The messages are on the TV.

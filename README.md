@@ -424,7 +424,9 @@ PlayStation's RAM: your program keeps all its RAM.
 
 **Flashing**
 - `ps1transfer -flash` (or the Firmware page of the GUI) flashes a ROM, then reads the flash back and compares it.
-  The GUI asks you to type the cartridge's name before it writes anything.
+  The GUI asks you to type the cartridge's name before it writes anything. The cartridge's cheats, device ID and
+  settings (screensavers, options) are read first and kept (`-flashcheats`: the ROM file's cheats area as it is, as
+  the Cheats page does; `-flashall`: the whole ROM file as it is).
 - **Settings** page of the GUI: the `ps1transfer` program to use and the theme (dark by default).
 
 ## Tools run on the PlayStation
@@ -788,7 +790,8 @@ yourself: `npm run package` in the `vscode-extension` folder.
 happens, it can be repaired with the flasher CD image (below).
 
 - **From the computer:** with the cartridge on its menu, run `ps1transfer -flash cartrom/ps1devcart.rom`, or use the
-  Firmware page of the GUI. The ROM is checked first, flashed, then read back and compared.
+  Firmware page of the GUI. The ROM is checked first, flashed, then read back and compared. The cartridge's cheats,
+  device ID and settings are kept.
 - **Repair or install from a CD:** `make` in the `ps1-tools/ar_flash` folder also builds `ar_flash.bin`/`ar_flash.cue`, a CD image
   with the flasher. Burn it to a CD-R or use a CD emulator. Then:
   1. Start the console with the cartridge switch **OFF**.

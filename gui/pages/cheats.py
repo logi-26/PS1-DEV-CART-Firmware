@@ -1100,7 +1100,7 @@ class CheatsPage(Page):
             else:
                 self.cart_note.configure(text="Flashing failed: %s" % ([l for l in output if l.strip()][-1:] or
                                                                        ["?"])[0])
-        self.app.run(["-flash", out], "Flash", on_done=done)
+        self.app.run(["-flash", out, "-flashcheats"], "Flash", on_done=done)   # (these cheats, not the cartridge's)
         return None
 
     def on_device_changed(self):
