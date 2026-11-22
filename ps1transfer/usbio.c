@@ -725,7 +725,11 @@ void		(*usb_test_packet)(char cmd, uint32_t offset, const uint8_t *got, uint32_t
 
 void	USB_PurgeNow(void)
 {
+#ifdef _WIN32
 	USB_Purge(ftdi);
+#else
+	ftdi_tcioflush(ftdi);	// (libftdi: both buffers)
+#endif
 }
 
 // A download packet and its CRC byte, test mode: 1 good (in data), 0 bad (the PS1 is asked again), -1 USB error.
