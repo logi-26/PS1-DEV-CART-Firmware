@@ -6,6 +6,9 @@
 <directory_tree>
 <file name="SYSTEM.CNF" type="data" source="system.txt"/>
 <file name="AR_FLASH.PSX" type="data" source="ar_flash.ps-exe"/>
+<!-- 150 empty sectors after the files, as on a pressed disc: optical drive emulators (PicoStation) can't read the last
+     sector of an image, which was the flasher's last one: its boot never ended -->
+<dummy sectors="150"/>
 </directory_tree>
 </track>
 </iso_project>
