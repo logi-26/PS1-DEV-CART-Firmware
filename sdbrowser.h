@@ -79,8 +79,19 @@
 #define	SD_PROBE_POOL_ADRS	0x801A8000	// A folder looked into (its game: SdFolderCover), its entries
 #define	SD_PROBE_TABLE_ADRS	0x801B8000	// and their pointers
 #define	SD_TABLE_ADRS		0x801BC000	// PICO_MAX_ENTRIES pointers, sorted (up to 0x801C0000)
-#define	SD_CACHE_ADRS		0x80120000	// The last covers shown (SD_CACHED), after the VRAM saved at boot (0x80020000)
-#define	SD_CACHED			7			// (up to 0x8013CE8C: under a test build's menu images at 0x80140000)
+// The last covers shown (SD_CACHED, about 16.9 KB each): free RAM while the menu runs, a game booted writes over it.
+// From 0x80120000 (after the VRAM saved at boot, 0x80020000) up to the buffers above (SD_SECTOR_ADRS), then from
+// 0x801C0000 up to the firmware's stack (0x801E8800, the Makefile's FW_STACK_BOTTOM). A test build (make RAMTEST=1)
+// keeps 7 under its uploaded menu images (0x80140000), its cheats and its debug monitor (0x801C0000) using the rest.
+#define	SD_CACHE_ADRS		0x80120000
+#ifdef TFS_RAM_ADRS
+#define	SD_CACHED_1			7			// (up to 0x8013CE8C)
+#define	SD_CACHED			SD_CACHED_1
+#else
+#define	SD_CACHE_ADRS_2		0x801C0000
+#define	SD_CACHED_1			((SD_SECTOR_ADRS - SD_CACHE_ADRS) / sizeof(SdCached))	// 23
+#define	SD_CACHED			(SD_CACHED_1 + (FW_STACK_BOTTOM - SD_CACHE_ADRS_2) / sizeof(SdCached))	// 32
+#endif
 
 // SdEntry.dir: a .cue file, or a folder. A folder is shown as the game it holds (each game in its own folder), until
 // it is found to hold something else (looked into for its cover, or opened).
@@ -126,7 +137,15 @@ typedef struct
 	uint8_t		data[512 + 128 * 128];
 } SdCached;
 
-static SdCached	*sd_cache = (SdCached *)SD_CACHE_ADRS;
+// The cover kept in place k (0 to SD_CACHED - 1): the first block, then the second one
+static inline SdCached	*SdCache(int k)
+{
+#ifdef SD_CACHE_ADRS_2
+	if (k >= SD_CACHED_1)
+		return ((SdCached *)SD_CACHE_ADRS_2 + (k - SD_CACHED_1));
+#endif
+	return ((SdCached *)SD_CACHE_ADRS + k);
+}
 static int		sd_dir, sd_cache_next;	// (sd_dir: counts the directories read, the cache's entries are of one)
 
 // The list being read (Pico_List): the directory shown, or a folder looked into
@@ -757,9 +776,9 @@ static int	SdFetchCover(SdEntry *e)
 	int			found = COV_NONE, k, t0 = SD_TIME();
 
 	for (k = 0; k < SD_CACHED; k++)
-		if ((sd_cache[k].dir == (int16_t)sd_dir) && (sd_cache[k].index == e->index))
+		if ((SdCache(k)->dir == (int16_t)sd_dir) && (SdCache(k)->index == e->index))
 		{
-			c = &sd_cache[k];
+			c = SdCache(k);
 			memcpy((void *)SD_COVER_ADRS, c->data, COVER_FILE);
 			strcpy(sd_serial, c->serial);
 			found = c->image ? COV_IMAGE : COV_ID;
@@ -785,7 +804,7 @@ static int	SdFetchCover(SdEntry *e)
 		SD_DEBUG(8, SD_TIME_SINCE(t0));	// (the folder looked into)
 		if (found != COV_NONE)		// Kept (the oldest one replaced)
 		{
-			c = &sd_cache[sd_cache_next];
+			c = SdCache(sd_cache_next);
 			sd_cache_next = (sd_cache_next + 1) % SD_CACHED;
 			c->dir = sd_dir;
 			c->index = e->index;
@@ -1108,7 +1127,7 @@ static void	SdFlowCenter(int sel, bool load)
 	int		found = COV_NONE, k;
 
 	for (k = 0; (k < SD_CACHED) && !load; k++)
-		if ((sd_cache[k].dir == (int16_t)sd_dir) && (sd_cache[k].index == e->index))
+		if ((SdCache(k)->dir == (int16_t)sd_dir) && (SdCache(k)->index == e->index))
 			load = true;
 	flow_center_ok = load || (e->dir == SD_FOLDER) || (e->cov == SD_COV_NONE);
 	if (load && (e->dir != SD_FOLDER))
@@ -1340,7 +1359,7 @@ void	SdBrowser(void)
 
 	sd_path[0] = 0;
 	for (i = 0; i < SD_CACHED; i++)	// (no covers kept: the RAM after a power on is anything)
-		sd_cache[i].dir = -1;
+		SdCache(i)->dir = -1;
 	for (i = 0; i < SD_SLOTS; i++)
 		sd_slots[i].dir = -1;
 	mid_font_ok = false;	// (made again: VRAM may have been used since)
