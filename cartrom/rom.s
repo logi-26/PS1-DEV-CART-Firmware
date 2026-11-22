@@ -166,6 +166,8 @@ entry:
 	lw		$a2,0x800($t0)		# Unpacked size
 	la		$a0,psexe+0x800+4+16	# (after the size and the version text)
 	addiu		$a1,$s0,0x800		# The load address
+	la		$a3,psexe_end		# The first part's end (before the cheats)
+	la		$t8,psexe2		# The second part (after the menu images)
 	jal		unpack
 	addu		$a2,$a1,$a2		# (delay slot) The end
 
@@ -186,17 +188,25 @@ entry:
 .include "bios.inc"
 .include "unpack.inc"
 
-	.balign 4
+	# The firmware: header, size, version text, packed (see Makefile), in two parts. The first one from 0x400 (the build
+	# fails here, "attempt to move .org backwards", if the code above reaches it) up to the cheats' area: rom_packer
+	# makes it at most PAK_MAX (Makefile: 0xB000 - 0x400) bytes long
+	.org	0x00000400
 psexe:
-	.incbin	"ps1devcart.pak"	# The firmware: header, size, version text, packed (see Makefile)
+	.incbin	"ps1devcart.pak"
 psexe_end:
 	# Cheats of games (cheatmenu.h: CHEAT_DB_ROM, 20KB), written by the computer (the Manager's Cheats page): empty here.
 	# The build fails ("attempt to move .org backwards") if the firmware reaches it
 	.org	0x0000B000
+	# The menu images (tfs.h: 0x1F010000), each packed (made from tim.tfs by rom_packer -tfs, see Makefile)
 	.org	0x00010000
-	.incbin	"tim.tfs"
-	# Debug monitor, executed from the flash (see monitor/monitor.h MONITOR_ROM_ADRS): after the menu images (they end
-	# at 0x18F6C), up to 0x1EF00 (24KB: the serial port tty driver moved from the kernel hook is in it)
+	.incbin	"tim_packed.tfs"
+	# The firmware's second part (empty when it all fits before the cheats)
+	.balign 4
+psexe2:
+	.incbin	"ps1devcart.pak2"
+	# Debug monitor, executed from the flash (see monitor/monitor.h MONITOR_ROM_ADRS), up to 0x1EF00 (24KB: the serial
+	# port tty driver moved from the kernel hook is in it). The build fails here if the firmware's second part reaches it
 	.org	0x00019000
 	.incbin	"../monitor_rom.bin"
 	# The last 4KB flash sector (0x1F000) holds the device ID (erased and written by the menu, see ps1devcart.c): the

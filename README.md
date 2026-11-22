@@ -845,9 +845,12 @@ included.
   is only used while the menu is shown: a program you run gets all the PlayStation's RAM (it can load over the
   menu). What stays while it runs is the kernel hook, in the BIOS's unused kernel RAM (below), as with the original.
 - Flash (128KB):
-  - firmware at the start;
-  - menu images at 0x1F010000 (a small file system of TIMs, edited with `cartrom/tfs_tool.py`);
-  - debug monitor at 0x1F019000;
+  - firmware at the start (from 0x1F000400), packed (`cartrom/rom_packer`, LZSS) and unpacked to RAM at boot;
+  - cheats of games at 0x1F00B000 (20KB, written by the Manager's Cheats page);
+  - menu images at 0x1F010000 (a small file system of TIMs, edited with `cartrom/tfs_tool.py` in `cartrom/tim.tfs`,
+    each one packed by the build), then the rest of the firmware when it doesn't fit before the cheats (the build
+    prints how much room is left: "... before the cheats (room ...), ... after the menu images");
+  - debug monitor at 0x1F019000 (not packed: it runs from the flash, so programs keep all their RAM);
   - device ID saved in the last sector (0x1F01F000).
 - The **kernel hook** (0x8000C160 to 0x8000DF7F, unused kernel RAM) answers the computer while a program runs: memory
   access, reset, TTY, USB link. Its parameters are at 0x8000DF70 (TTY mode, packet size, features, pointer to its USB

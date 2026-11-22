@@ -17,8 +17,10 @@ Pack notes:
 - The menu (display.h) has the logo at 8,6 (304x40, images/logo_menu.png: images/logo.png with its black background
   lightened to the menu blue), then from y=50 an accent line and the panels: keep images within the logo area.
   python tfs_tool.py pack tim.tfs logo.tim=images/logo_menu.png@8,6:304x40 font.tim=images/font.png@768,0
-- The archive is placed at ROM offset 0x10000, it must not exceed 64KB to keep a 128KB ROM,
-  and each TIM must not exceed 64KB (it is copied to RAM 0x80010000, the VRAM backup starts at 0x80020000).
+- tim.tfs stays unpacked (this tool's format): the ROM build packs each TIM into tim_packed.tfs (rom_packer -tfs),
+  placed at ROM offset 0x10000 and followed by the rest of the firmware, before the debug monitor at 0x19000 (the
+  build fails if they don't fit). Each TIM must not exceed 64KB (it is unpacked to RAM 0x80010000, the VRAM backup
+  starts at 0x80020000); logo.tim 32KB (the screensaver makes its small logo at 0x80018000).
 - The firmware loads the TIMs listed in tim_files (ps1devcart.c) by name, font.tim must be kept.
 """
 import os

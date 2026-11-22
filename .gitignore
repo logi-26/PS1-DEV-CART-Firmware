@@ -11,6 +11,8 @@ monitor_ram.bin
 monitor_rom.bin
 ps1devcart.ps-exe
 cartrom/ps1devcart.pak
+cartrom/ps1devcart.pak2
+cartrom/tim_packed.tfs
 cartrom/rom_packer/rom_packer
 cartrom/rom_packer/rom_packer.exe
 cartrom/rom_rounder/rom_rounder

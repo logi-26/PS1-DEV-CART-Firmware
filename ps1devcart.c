@@ -763,21 +763,14 @@ void	BootDisc(int flags)
 
 static void	MenuDraw(void)
 {
-	int	size, i;
+	int	i;
 
 	DrawMenuFrame();
-	// Copy image data from ROM to RAM, because LoadImage doesn't work when loading directly from ROM ?!
+	// Image data unpacked from ROM to RAM (LoadImage doesn't work when loading directly from ROM ?! and they're packed)
 	// Images are placed in VRAM at the position stored in each TIM (see cartrom/tfs_tool.py)
 	for (i = 0; i < sizeof(tim_files) / sizeof(tim_files[0]); i++)
-	{
-		volatile uint8_t	*tim = ROM_GetFile(tim_files[i], &size);
-
-		if (tim)
-		{
-			memcpy((volatile uint8_t *)0x80010000, tim, size);
+		if (ROM_LoadFile(tim_files[i], (uint8_t *)0x80010000) > 0)
 			LoadTexture((uint32_t *)0x80010000);
-		}
-	}
 	// Menu header: logo (loaded above with the TIMs), firmware version on the left and device ID on the right
 	DrawMenuLabels();
 	DrawInfoLine();

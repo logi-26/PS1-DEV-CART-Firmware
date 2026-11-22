@@ -48,3 +48,52 @@ next:
 
 	return (NULL);	// File not found !
 }
+
+/****************************************/
+// PS1 DEV CART: the ROM's files are packed (cartrom/rom_packer: size field with TFS_PACKED, data = unpacked size then
+// LZSS, the firmware's format: see rom_packer/main.c). A test build's archive uploaded to RAM isn't (tim.tfs as it is).
+
+#define	TFS_PACKED	0x80000000
+
+// The file copied, unpacked if packed, to dst (RAM); its size (unpacked), -1 if not found
+int		ROM_LoadFile(char *filename, uint8_t *dst)
+{
+	volatile uint8_t	*src;
+	uint8_t				*out = dst, *end;
+	int					size, flags = 0, bits = 0, off, len;
+
+	if (!(src = ROM_GetFile(filename, &size)))
+		return (-1);
+	if (!(size & TFS_PACKED))
+	{
+		memcpy(dst, (const void *)src, size);
+		return (size);
+	}
+	size = src[0] | (src[1] << 8) | (src[2] << 16) | (src[3] << 24);
+	src += 4;
+	end = dst + size;
+	while (out < end)
+	{
+		if (!bits)
+		{
+			flags = *src++;
+			bits = 8;
+		}
+		bits--;
+		if (flags & 1)
+			*out++ = *src++;
+		else
+		{
+			off = (src[0] | ((src[1] & 0x0F) << 8)) + 1;
+			len = (src[1] >> 4) + 3;
+			src += 2;
+			while (len--)
+			{
+				*out = out[-off];
+				out++;
+			}
+		}
+		flags >>= 1;
+	}
+	return (size);
+}

@@ -1,6 +1,8 @@
 # PS1 DEV CART: the firmware unpacked at boot (packed by rom_packer/main.c, see it for the format).
-# unpack: $a0 the packed data, $a1 where it goes, $a2 the end of the output. Uses $t0-$t7 (noreorder: delay slots
-# and load delays written out).
+# unpack: $a0 the packed data, $a1 where it goes, $a2 the end of the output, $a3 the end of the packed data's first
+# part, $t8 its second part (read from there once $a0 reaches $a3: the packer cuts the data before an item, never
+# before a flag byte, so this is checked before each item). Uses $t0-$t7 (noreorder: delay slots and load delays
+# written out).
 #
 # This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 # If a copy of the MPL was not distributed with this file,
@@ -18,6 +20,10 @@ unpack_loop:
 	addiu	$a0, 1
 	li		$t3, 8
 unpack_bit:
+	bne		$a0, $a3, unpack_item
+	nop
+	move	$a0, $t8				# The first part read: the second one
+unpack_item:
 	andi	$t4, $t2, 1
 	srl		$t2, $t2, 1
 	beqz	$t4, unpack_copy

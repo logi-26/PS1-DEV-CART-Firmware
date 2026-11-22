@@ -39,16 +39,25 @@ $(TARGET).rom: rom.o
 # The firmware in the ROM, packed (rom_packer/main.c, unpacked by the entry in rom.s): its PS-X EXE header, then
 # exactly the loaded bytes (the ELF's sections, as objcopy writes them: not elf2x's padding to a multiple of 2KB). The
 # RAM after them is the .bss, which the firmware's _start() clears.
+# Two parts: $(TARGET).pak from 0x400 up to the cheats' area at 0xB000 (PAK_MAX bytes at most), $(TARGET).pak2 after
+# the menu images (rom.s).
+PAK_MAX = 0xAC00
 $(TARGET).pak: ../$(TARGET).ps-exe ../$(TARGET).elf $(PACKER)$(EXT)
 	$(OBJCOPY) -O binary ../$(TARGET).elf $(TARGET)_body.tmp
-	./$(PACKER)/$(PACKER) ../$(TARGET).ps-exe $(TARGET)_body.tmp $@
+	./$(PACKER)/$(PACKER) ../$(TARGET).ps-exe $(TARGET)_body.tmp $(TARGET).pak $(TARGET).pak2 $(PAK_MAX)
 	rm -f $(TARGET)_body.tmp
 
-rom.o: $(TARGET).pak ../monitor_rom.bin tim.tfs *.inc rom.s
+$(TARGET).pak2: $(TARGET).pak ;
+
+# The menu images (tim.tfs: made by tfs_tool.py, kept unpacked to be edited), each one packed for the ROM
+tim_packed.tfs: tim.tfs $(PACKER)$(EXT)
+	./$(PACKER)/$(PACKER) -tfs tim.tfs $@
+
+rom.o: $(TARGET).pak $(TARGET).pak2 tim_packed.tfs ../monitor_rom.bin *.inc rom.s
 	$(AS) -o rom.o rom.s
 
 clean:
-	rm -f *.o $(TARGET).rom $(TARGET).pak ../ps1-tools/ar_flash/$(TARGET).rom
+	rm -f *.o $(TARGET).rom $(TARGET).pak $(TARGET).pak2 tim_packed.tfs ../ps1-tools/ar_flash/$(TARGET).rom
 	$(MAKE) -C $(TARGET_DEP) clean
 	$(MAKE) -C $(PACKER) clean
 

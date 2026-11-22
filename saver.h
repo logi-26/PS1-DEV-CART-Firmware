@@ -60,14 +60,12 @@ static int	SaverFrames(int which)
 // logo.tim made half as big (each pixel: the average of 4, the background counted as black) into VRAM
 static bool	SaverLogoMake(void)
 {
-	volatile uint8_t	*tim;
 	uint16_t			*src = (uint16_t *)(SAVER_TIM_RAM + 20), *out = (uint16_t *)SAVER_SMALL_RAM;
 	RECT				rect = {SAVER_LOGO_X, SAVER_LOGO_Y, SAVER_LOGO_W, SAVER_LOGO_H};
-	int					size, x, y, i;
+	int					x, y, i;
 
-	if (!(tim = ROM_GetFile("logo.tim", &size)) || (size < 20 + 2 * 4 * SAVER_LOGO_W * SAVER_LOGO_H))
+	if (ROM_LoadFile("logo.tim", (uint8_t *)SAVER_TIM_RAM) < 20 + 2 * 4 * SAVER_LOGO_W * SAVER_LOGO_H)
 		return (false);
-	memcpy((void *)SAVER_TIM_RAM, (const void *)tim, size);
 	for (y = 0; y < SAVER_LOGO_H; y++)
 		for (x = 0; x < SAVER_LOGO_W; x++)
 		{
