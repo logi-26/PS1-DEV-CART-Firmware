@@ -1,7 +1,7 @@
 """
 PS1 DEV CART GUI: symbol files read for the Memory page (the variables and functions of a program, their address and
 size): ELF executable (sizes and kinds from its symbol table), Net Yaroze ECOFF executable, GNU ld map file and nm
-output ("nm -S" gives the sizes). As ps1transfer's -sym (LoadSymbols in ps1transfer/main.c), with the sizes and kinds
+output ("nm -S" gives the sizes). As ps1transfer's -sym (LoadSymbols in ps1transfer/crash.c), with the sizes and kinds
 too. A size the file doesn't give is estimated from the next symbol (shown with a ~).
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.

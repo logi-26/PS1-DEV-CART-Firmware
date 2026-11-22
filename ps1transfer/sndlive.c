@@ -105,7 +105,7 @@
 #define	TESTER_FILE_TABLE	8			// TesterData: magic, count, then type, address, size of each file
 #define	TESTER_MAX_FILES	8
 #define	TESTER_FILE_SEQ		4
-#define	TESTER_FILE_MAGIC	0x54444E53	// "SNDT" (main.c: TESTER_MAGIC)
+#define	TESTER_FILE_MAGIC	0x54444E53	// "SNDT" (ps1transfer.h: TESTER_MAGIC)
 #define	TESTER_HEADER_SIZE	0x120		// The files after the header (file table, SoundPos, SoundSync, SoundFx2)
 #define	TESTER_FX2_ADRS		0x80100100	// SoundFx2 in soundtest.c: version, rev_delay, rev_feedback, rev_channels
 #define	TESTER_SEQ_SPARE	0x801C0000	// soundtest.c: the second place of a reloaded SEQ

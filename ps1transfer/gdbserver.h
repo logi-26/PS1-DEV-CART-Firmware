@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size);
 bool	USB_ReadByteNoWait(uint8_t *c);		// A byte from the PS1 if one is waiting
 bool	USB_WriteBytes(uint8_t *data, uint32_t size);

@@ -14,7 +14,7 @@
 
 #define	SYNTH_FILENAME	"synth.ps-exe"
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size);
 void	*SystemGetFile(char *filename, int *sizeptr);
 char	*GetToolPath(char *argv0, char *name);

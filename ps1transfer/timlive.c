@@ -1,7 +1,7 @@
 /*
 * PS1 DEV CART Transfer tool: live link of the TIM viewer with the PS1 Dev Cart Manager ("-tim file.tim -c -timlive")
 *
-* The TIM viewer (ps1-tools/timviewer) runs with its data block (the TIM files, see UploadTimData in main.c). Its
+* The TIM viewer (ps1-tools/timviewer) runs with its data block (the TIM files, see UploadTimData in pstools.c). Its
 * palette editor edits the CLUT in the TIM file of the data block and loads the edited row in VRAM. Here the computer
 * does the same while the viewer runs: a CLUT row is written in the TIM file (RAM, the kernel hook) and in VRAM (the
 * debug monitor's 'M' service), so the picture on the TV and the viewer's own palette editor show it at once. The
@@ -42,7 +42,7 @@
 #include "timlive.h"
 #include "../monitor/monitor.h"
 
-#define	TIMVIEW_DATA_ADRS	0x80100000	// Data block of the viewer (see UploadTimData in main.c and timviewer.c)
+#define	TIMVIEW_DATA_ADRS	0x80100000	// Data block of the viewer (see UploadTimData in pstools.c and timviewer.c)
 #define	TIMVIEW_MAGIC		0x564D4954	// "TIMV"
 #define	TIMVIEW_MAX_FILES	32
 #define	TIMVIEW_ENTRY_SIZE	(8 + 24)	// Address, size, name

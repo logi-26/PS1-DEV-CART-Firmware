@@ -126,6 +126,8 @@ class App(tb.Window):
         self.state.pack(side="left", padx=(12, 6))
         self.fw = tb.Label(top, text="", bootstyle="secondary")
         self.fw.pack(side="left")
+        # A newer firmware in the ROM bundled (Firmware page's ROM): a link to that page, shown only then (fwupdate.py)
+        self.update_note = tb.Button(top, text="", bootstyle="warning-link", command=lambda: self.show_page("Firmware"))
         tb.Button(top, text="Reset the PS1", bootstyle="warning-outline", command=self.reset_ps1).pack(side="right")
         self.stop_button = tb.Button(top, text="Stop task", bootstyle="danger", command=self.stop_task,
                                      state="disabled")
@@ -471,6 +473,17 @@ class App(tb.Window):
         for p in self.pages.values():
             if p.needs_devcart == "running":
                 p.show_devcart_note(original)
+        fw_page = self.pages.get("Firmware")
+        if fw_page:
+            fw_page.update_banner()     # (also the top bar's update note)
+
+    def show_update_note(self, text):
+        """The top bar's note of a firmware update ("": hidden)."""
+        self.update_note.configure(text=text)
+        if text and not self.update_note.winfo_manager():
+            self.update_note.pack(side="left", padx=(6, 0), after=self.fw)
+        elif not text and self.update_note.winfo_manager():
+            self.update_note.pack_forget()
 
     def _build_cover(self):
         self.cover = tb.Frame(self.content, padding=12)

@@ -31,7 +31,7 @@
 #include "cardio.h"
 #include "devcart_ui.h"
 
-// Data block written by ps1transfer, see "-mcbackup"/"-mcrestore" in ps1transfer/main.c
+// Data block written by ps1transfer, see UploadCardData in ps1transfer/memcard.c ("-mcbackup"/"-mcrestore")
 #define	CARD_DATA_ADRS		0x80100000
 #define	CARD_MAGIC			0x44524143	// "CARD"
 #define	CARD_IMAGE_OFFSET	0x100

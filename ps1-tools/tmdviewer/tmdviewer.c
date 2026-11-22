@@ -42,7 +42,7 @@
 #include "psyq_compat.h"
 #include "devcart_ui.h"
 
-// Data block written by ps1transfer, see "-m" in ps1transfer/main.c
+// Data block written by ps1transfer, see UploadModelData in ps1transfer/pstools.c ("-m")
 #define	VIEWER_DATA_ADRS	0x80100000
 #define	VIEWER_MAGIC		0x56444D54	// "TMDV"
 #define	VIEWER_MAX_TIM		8
@@ -96,7 +96,7 @@ _Static_assert(__builtin_offsetof(ModelSync, dist) == 28, "ModelSync: see mdlliv
 _Static_assert(__builtin_offsetof(ModelSync, req_tod) == 48, "ModelSync: see mdllive.c");
 _Static_assert(__builtin_offsetof(ModelSync, req_rot) == 60, "ModelSync: see mdllive.c");
 _Static_assert(__builtin_offsetof(ModelSync, req_dist) == 68 && sizeof(ModelSync) == 72, "ModelSync: see mdllive.c");
-_Static_assert(__builtin_offsetof(ViewerData, tod_count) == 0x40, "ViewerData: see UploadModelData in main.c");
+_Static_assert(__builtin_offsetof(ViewerData, tod_count) == 0x40, "ViewerData: see UploadModelData in ps1transfer/pstools.c");
 
 #define	SCREEN_W		320
 #define	SCREEN_H		240

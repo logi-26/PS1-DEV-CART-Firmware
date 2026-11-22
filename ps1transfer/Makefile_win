@@ -40,9 +40,9 @@ OBJDIR_RELEASE = obj\\Release
 DEP_RELEASE = 
 OUT_RELEASE = ps1transfer.exe
 
-OBJ_DEBUG = $(OBJDIR_DEBUG)\\lodepng.o $(OBJDIR_DEBUG)\\main.o $(OBJDIR_DEBUG)\\gdbserver.o $(OBJDIR_DEBUG)\\synthbridge.o $(OBJDIR_DEBUG)\\usblink.o $(OBJDIR_DEBUG)\\profiler.o $(OBJDIR_DEBUG)\\timlive.o $(OBJDIR_DEBUG)\\sndlive.o $(OBJDIR_DEBUG)\\mdllive.o $(OBJDIR_DEBUG)\\memlive.o $(OBJDIR_DEBUG)\\disclive.o $(OBJDIR_DEBUG)\\timingtest.o $(OBJDIR_DEBUG)\\rename.o $(OBJDIR_DEBUG)\\serialport.o
+OBJ_DEBUG = $(OBJDIR_DEBUG)\\lodepng.o $(OBJDIR_DEBUG)\\main.o $(OBJDIR_DEBUG)\\gdbserver.o $(OBJDIR_DEBUG)\\synthbridge.o $(OBJDIR_DEBUG)\\usblink.o $(OBJDIR_DEBUG)\\usblink_vlink.o $(OBJDIR_DEBUG)\\usblink_net.o $(OBJDIR_DEBUG)\\usblink_xserve.o $(OBJDIR_DEBUG)\\profiler.o $(OBJDIR_DEBUG)\\timlive.o $(OBJDIR_DEBUG)\\sndlive.o $(OBJDIR_DEBUG)\\mdllive.o $(OBJDIR_DEBUG)\\memlive.o $(OBJDIR_DEBUG)\\disclive.o $(OBJDIR_DEBUG)\\timingtest.o $(OBJDIR_DEBUG)\\rename.o $(OBJDIR_DEBUG)\\usbio.o $(OBJDIR_DEBUG)\\pcdrv.o $(OBJDIR_DEBUG)\\yaroze.o $(OBJDIR_DEBUG)\\pstools.o $(OBJDIR_DEBUG)\\memcard.o $(OBJDIR_DEBUG)\\crash.o $(OBJDIR_DEBUG)\\flash.o $(OBJDIR_DEBUG)\\info.o $(OBJDIR_DEBUG)\\hotreload.o $(OBJDIR_DEBUG)\\serialport.o
 
-OBJ_RELEASE = $(OBJDIR_RELEASE)\\lodepng.o $(OBJDIR_RELEASE)\\main.o $(OBJDIR_RELEASE)\\gdbserver.o $(OBJDIR_RELEASE)\\synthbridge.o $(OBJDIR_RELEASE)\\usblink.o $(OBJDIR_RELEASE)\\profiler.o $(OBJDIR_RELEASE)\\timlive.o $(OBJDIR_RELEASE)\\sndlive.o $(OBJDIR_RELEASE)\\mdllive.o $(OBJDIR_RELEASE)\\memlive.o $(OBJDIR_RELEASE)\\disclive.o $(OBJDIR_RELEASE)\\timingtest.o $(OBJDIR_RELEASE)\\rename.o $(OBJDIR_RELEASE)\\serialport.o
+OBJ_RELEASE = $(OBJDIR_RELEASE)\\lodepng.o $(OBJDIR_RELEASE)\\main.o $(OBJDIR_RELEASE)\\gdbserver.o $(OBJDIR_RELEASE)\\synthbridge.o $(OBJDIR_RELEASE)\\usblink.o $(OBJDIR_RELEASE)\\usblink_vlink.o $(OBJDIR_RELEASE)\\usblink_net.o $(OBJDIR_RELEASE)\\usblink_xserve.o $(OBJDIR_RELEASE)\\profiler.o $(OBJDIR_RELEASE)\\timlive.o $(OBJDIR_RELEASE)\\sndlive.o $(OBJDIR_RELEASE)\\mdllive.o $(OBJDIR_RELEASE)\\memlive.o $(OBJDIR_RELEASE)\\disclive.o $(OBJDIR_RELEASE)\\timingtest.o $(OBJDIR_RELEASE)\\rename.o $(OBJDIR_RELEASE)\\usbio.o $(OBJDIR_RELEASE)\\pcdrv.o $(OBJDIR_RELEASE)\\yaroze.o $(OBJDIR_RELEASE)\\pstools.o $(OBJDIR_RELEASE)\\memcard.o $(OBJDIR_RELEASE)\\crash.o $(OBJDIR_RELEASE)\\flash.o $(OBJDIR_RELEASE)\\info.o $(OBJDIR_RELEASE)\\hotreload.o $(OBJDIR_RELEASE)\\serialport.o
 
 all: debug release
 
@@ -70,6 +70,12 @@ $(OBJDIR_DEBUG)\\gdbserver.o: gdbserver.c
 
 $(OBJDIR_DEBUG)\\usblink.o: usblink.c
 	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c usblink.c -o $(OBJDIR_DEBUG)\\usblink.o
+$(OBJDIR_DEBUG)\\usblink_vlink.o: usblink_vlink.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c usblink_vlink.c -o $(OBJDIR_DEBUG)\\usblink_vlink.o
+$(OBJDIR_DEBUG)\\usblink_net.o: usblink_net.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c usblink_net.c -o $(OBJDIR_DEBUG)\\usblink_net.o
+$(OBJDIR_DEBUG)\\usblink_xserve.o: usblink_xserve.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c usblink_xserve.c -o $(OBJDIR_DEBUG)\\usblink_xserve.o
 
 $(OBJDIR_DEBUG)\\profiler.o: profiler.c
 	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c profiler.c -o $(OBJDIR_DEBUG)\\profiler.o
@@ -91,6 +97,24 @@ $(OBJDIR_DEBUG)\\timingtest.o: timingtest.c
 
 $(OBJDIR_DEBUG)\\rename.o: rename.c
 	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c rename.c -o $(OBJDIR_DEBUG)\\rename.o
+$(OBJDIR_DEBUG)\\usbio.o: usbio.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c usbio.c -o $(OBJDIR_DEBUG)\\usbio.o
+$(OBJDIR_DEBUG)\\pcdrv.o: pcdrv.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c pcdrv.c -o $(OBJDIR_DEBUG)\\pcdrv.o
+$(OBJDIR_DEBUG)\\yaroze.o: yaroze.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c yaroze.c -o $(OBJDIR_DEBUG)\\yaroze.o
+$(OBJDIR_DEBUG)\\pstools.o: pstools.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c pstools.c -o $(OBJDIR_DEBUG)\\pstools.o
+$(OBJDIR_DEBUG)\\memcard.o: memcard.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c memcard.c -o $(OBJDIR_DEBUG)\\memcard.o
+$(OBJDIR_DEBUG)\\crash.o: crash.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c crash.c -o $(OBJDIR_DEBUG)\\crash.o
+$(OBJDIR_DEBUG)\\flash.o: flash.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c flash.c -o $(OBJDIR_DEBUG)\\flash.o
+$(OBJDIR_DEBUG)\\info.o: info.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c info.c -o $(OBJDIR_DEBUG)\\info.o
+$(OBJDIR_DEBUG)\\hotreload.o: hotreload.c
+	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c hotreload.c -o $(OBJDIR_DEBUG)\\hotreload.o
 
 $(OBJDIR_DEBUG)\\serialport.o: serialport.c
 	$(CC) $(CFLAGS_DEBUG) $(INC_DEBUG) -c serialport.c -o $(OBJDIR_DEBUG)\\serialport.o
@@ -124,6 +148,12 @@ $(OBJDIR_RELEASE)\\gdbserver.o: gdbserver.c
 
 $(OBJDIR_RELEASE)\\usblink.o: usblink.c
 	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c usblink.c -o $(OBJDIR_RELEASE)\\usblink.o
+$(OBJDIR_RELEASE)\\usblink_vlink.o: usblink_vlink.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c usblink_vlink.c -o $(OBJDIR_RELEASE)\\usblink_vlink.o
+$(OBJDIR_RELEASE)\\usblink_net.o: usblink_net.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c usblink_net.c -o $(OBJDIR_RELEASE)\\usblink_net.o
+$(OBJDIR_RELEASE)\\usblink_xserve.o: usblink_xserve.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c usblink_xserve.c -o $(OBJDIR_RELEASE)\\usblink_xserve.o
 
 $(OBJDIR_RELEASE)\\profiler.o: profiler.c
 	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c profiler.c -o $(OBJDIR_RELEASE)\\profiler.o
@@ -145,6 +175,24 @@ $(OBJDIR_RELEASE)\\timingtest.o: timingtest.c
 
 $(OBJDIR_RELEASE)\\rename.o: rename.c
 	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c rename.c -o $(OBJDIR_RELEASE)\\rename.o
+$(OBJDIR_RELEASE)\\usbio.o: usbio.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c usbio.c -o $(OBJDIR_RELEASE)\\usbio.o
+$(OBJDIR_RELEASE)\\pcdrv.o: pcdrv.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c pcdrv.c -o $(OBJDIR_RELEASE)\\pcdrv.o
+$(OBJDIR_RELEASE)\\yaroze.o: yaroze.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c yaroze.c -o $(OBJDIR_RELEASE)\\yaroze.o
+$(OBJDIR_RELEASE)\\pstools.o: pstools.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c pstools.c -o $(OBJDIR_RELEASE)\\pstools.o
+$(OBJDIR_RELEASE)\\memcard.o: memcard.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c memcard.c -o $(OBJDIR_RELEASE)\\memcard.o
+$(OBJDIR_RELEASE)\\crash.o: crash.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c crash.c -o $(OBJDIR_RELEASE)\\crash.o
+$(OBJDIR_RELEASE)\\flash.o: flash.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c flash.c -o $(OBJDIR_RELEASE)\\flash.o
+$(OBJDIR_RELEASE)\\info.o: info.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c info.c -o $(OBJDIR_RELEASE)\\info.o
+$(OBJDIR_RELEASE)\\hotreload.o: hotreload.c
+	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c hotreload.c -o $(OBJDIR_RELEASE)\\hotreload.o
 
 $(OBJDIR_RELEASE)\\serialport.o: serialport.c
 	$(CC) $(CFLAGS_RELEASE) $(INC_RELEASE) -c serialport.c -o $(OBJDIR_RELEASE)\\serialport.o

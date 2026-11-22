@@ -45,7 +45,7 @@
 #define	MAX_FILES			8192
 #define	MAX_PATH_LEN		256
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 void	*SystemGetFile(char *filename, int *sizeptr);
 char	*GetToolPath(char *argv0, char *name);
 
@@ -670,7 +670,7 @@ static uint32_t	CaptureTrack(uint32_t lba, uint32_t total, uint32_t *out, uint32
 static void	Put16(uint8_t *p, uint32_t v)	{p[0] = v; p[1] = v >> 8;}
 static void	Put32(uint8_t *p, uint32_t v)	{p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;}
 
-bool	USB_ReadData(uint8_t *data, uint32_t size);	// (main.c: exactly size bytes, or false after its timeout)
+bool	USB_ReadData(uint8_t *data, uint32_t size);	// (usbio.c: exactly size bytes, or false after its timeout)
 bool	USB_SendRawByte(uint8_t c);
 
 // CD audio from sector lba, sectors long, played once and taken as it plays (DISCSRV_STREAM: the disc reader sends each

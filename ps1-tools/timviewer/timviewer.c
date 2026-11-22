@@ -37,7 +37,7 @@
 #include "devcart_ui.h"
 #include "psxpcdrv.h"
 
-// Data block written by ps1transfer, see "-tim" in ps1transfer/main.c
+// Data block written by ps1transfer, see UploadTimData in ps1transfer/pstools.c ("-tim")
 #define	VIEWER_DATA_ADRS	0x80100000
 #define	VIEWER_MAGIC		0x564D4954	// "TIMV"
 #define	VIEWER_MAX_TIM		32

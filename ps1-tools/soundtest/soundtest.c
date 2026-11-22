@@ -43,7 +43,7 @@
 #include "psyq_compat.h"
 #include "devcart_ui.h"
 
-// Data block written by ps1transfer, see "-snd" in ps1transfer/main.c
+// Data block written by ps1transfer, see UploadSoundData in ps1transfer/pstools.c ("-snd")
 #define	TESTER_DATA_ADRS	0x80100000
 #define	TESTER_MAGIC		0x54444E53	// "SNDT"
 #define	TESTER_MAX_FILES	8

@@ -12,6 +12,7 @@ import sys
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
 
+import fwupdate
 from devices import GUI_DIR, parse_info
 from pages.base import Page
 from widgets import FileField
@@ -21,7 +22,8 @@ ROM_TYPES = [("Cartridge ROM", "*.rom *.bin"), ("All files", "*.*")]
 MONITOR_OFFSET = 0x19000        # Debug monitor in the ROM (monitor/monitor.h MONITOR_ROM_ADRS 0x1F019000)
 
 FEATURES = {0x01: "live memory/VRAM access", 0x02: "device ID", 0x04: "big packets while a program runs",
-            0x08: "disc boot", 0x10: "game booted from its disc known", 0x20: "code engine (cheats)"}
+            0x08: "disc boot", 0x10: "game booted from its disc known", 0x20: "code engine (cheats)",
+            0x40: "menu screensaver"}
 INFO_ROWS = (("device", "Cartridge (USB serial)"), ("state", "State"), ("firmware", "Firmware"),
              ("firmware_version", "Firmware version"), ("features", "Features"), ("monitor", "Debug monitor"),
              ("monitor_version", "Monitor version"), ("escaped_answers", "Escaped answers"),
@@ -66,6 +68,9 @@ class FirmwarePage(Page):
 
     def build(self):
         tb.Label(self, text="Firmware", font=("", 16, "bold")).pack(anchor="w", pady=(0, 8))
+        # What flashing the ROM below brings, when the cartridge's firmware is older (fwupdate.py); hidden otherwise
+        self.banner = tb.Label(self, text="", bootstyle="inverse-warning", wraplength=760, justify="left",
+                               padding=(10, 8))
 
         box = self.section("Cartridge")
         box.pack(fill="x", pady=(0, 8))
@@ -123,6 +128,21 @@ class FirmwarePage(Page):
         self.confirm_label.configure(text="Type %s to confirm:" % serial if serial else "No cartridge selected")
         ok = valid and serial and self.confirm.get().strip() == serial
         self.flash_button.configure(state="normal" if ok else "disabled")
+        self.update_banner()
+
+    def update_banner(self):
+        """The update banner for the cartridge's firmware (app status) and the ROM chosen (also the top bar's note)."""
+        if not hasattr(self, "banner"):
+            return
+        rom = self.rom.get() if hasattr(self, "rom") else ""
+        new = fwupdate.rom_version(rom) if rom and os.path.isfile(rom) else None
+        text = fwupdate.banner_text(self.app.firmware, self.app.fw_version, new, os.path.basename(rom))
+        self.banner.configure(text=text)
+        if text and not self.banner.winfo_manager():
+            self.banner.pack(anchor="w", fill="x", pady=(0, 8), after=self.winfo_children()[0])
+        elif not text and self.banner.winfo_manager():
+            self.banner.pack_forget()
+        self.app.show_update_note(fwupdate.top_note(self.app.firmware, self.app.fw_version, new))
 
     def args(self):
         if self.action == "flash":

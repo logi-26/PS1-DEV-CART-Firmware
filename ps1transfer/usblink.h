@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size);
 void	*USB_GetHandle(void);
 void	USB_SetHandle(void *handle);
@@ -25,7 +25,7 @@ bool	USB_ExchangeRecv(void *handle, uint8_t *wdata, uint32_t wsize, uint8_t *rda
 int		LinkStopFlag(void);
 extern volatile int		usb_patient;		// -vlink: reads wait for a silent cartridge (not 5 s)
 extern volatile uint32_t	link_crc_errors;	// Exchange packets received wrong (not used, or written again)
-void	USB_DetectEscaped(void);			// Asks the selected cartridge if it has escaped answers (see main.c)
+void	USB_DetectEscaped(void);			// Asks the selected cartridge if it has escaped answers (see usbio.c)
 extern bool		ps1_program_running;
 extern uint32_t	usb_big_packet_size;
 extern bool		usb_quiet;

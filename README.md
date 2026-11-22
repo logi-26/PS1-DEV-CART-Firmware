@@ -224,7 +224,9 @@ The firmware and all the PlayStation programs are built with the open source
   <img src="screenshots/manager/cheats_cartridge.png" alt="On the cartridge: the games whose cheats the cartridge keeps, the space used, and the changes not written yet." width="100%">
 </p>
 
-**Firmware**: The cartridge's information, and the ROM ready to flash.
+**Firmware**: The cartridge's information, and the ROM ready to flash. When the cartridge's firmware is older than
+the ROM (or is the original PS1USB firmware), a banner lists what flashing it adds, version by version, and the top
+bar shows "Update to x.y available" on every page.
 
 <p align="center">
   <img src="screenshots/manager/firmware.png" alt="The cartridge's information, and the ROM ready to flash." width="100%">
@@ -732,6 +734,13 @@ The command line tool on the computer (Windows and Linux). All the options are i
     ps1transfer -l                                list the connected cartridges
 
 Windows needs the FTDI D2XX driver; Linux needs libftdi1.
+
+Its source, by area: `main.c` (options and commands), `usbio.c` (the USB connection and protocol), `pcdrv.c` (file
+server), `memcard.c` (memory cards), `flash.c` (flashing), `crash.c` (crash reports, symbols), `pstools.c` (the PS1
+tools it runs), `yaroze.c` (Net Yaroze), `info.c` (`-info`), `hotreload.c`, then the live tools (`*live.c`),
+`gdbserver.c`, `profiler.c`, `usblink.c` (USB link relays, `-net`) with `usblink_vlink.c`, `usblink_net.c` and
+`usblink_xserve.c` (the experimental link play over the internet and pad play)...; `ps1transfer.h` and
+`usblink_int.h` have what they share.
 
 ## PS1 Dev Cart Manager (GUI)
 

@@ -39,7 +39,7 @@
 #define	BIOS_SIZE			0x80000
 #define	MENU_TEST_ADRS		0x80100000	// (free RAM at the menu)
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 void	*SystemGetFile(char *filename, int *sizeptr);
 char	*GetToolPath(char *argv0, char *name);
 void	USB_PurgeNow(void);
@@ -155,7 +155,7 @@ static void	Example(Result *r, const char *fmt, ...)
 	va_end(ap);
 }
 
-// A packet that failed (main.c's test mode): what arrived compared with what was sent
+// A packet that failed (usbio.c's test mode): what arrived compared with what was sent
 static void	PacketFailed(char cmd, uint32_t offset, const uint8_t *got, uint32_t got_n, uint32_t want_n, uint32_t extra)
 {
 	Result			*r = cur;

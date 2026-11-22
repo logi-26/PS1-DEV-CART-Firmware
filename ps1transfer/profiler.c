@@ -43,7 +43,7 @@
 #define	MAX_HINTS		8
 #define	HINT_SIZE		256
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 const char	*SymbolAt(uint32_t adrs, uint32_t *start);
 bool		SymbolExists(const char *name);
 

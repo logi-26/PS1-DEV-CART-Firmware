@@ -23,12 +23,12 @@ typedef struct
 	char		*idle;		// -idle: more waiting functions, names (or addresses as shown) separated by commas
 } ProfOptions;
 
-// Provided by main.c
+// Provided by the other files of ps1transfer (ps1transfer.h)
 bool	USB_Process(char cmd, uint8_t *data, uint32_t adrs, uint32_t size);
 bool	USB_ReadData(uint8_t *data, uint32_t size);
 bool	USB_ReadByteNoWait(uint8_t *c);
 void	PC_FileServerCmd(int first);
-bool	PC_IsFileServerRequest(uint8_t type);	// (main.c)
+bool	PC_IsFileServerRequest(uint8_t type);	// (pcdrv.c)
 void	AutoLoadSymbols(char *symfile);
 extern bool		ps1_program_running;
 extern uint32_t	usb_big_packet_size;

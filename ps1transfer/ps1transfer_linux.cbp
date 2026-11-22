@@ -46,6 +46,41 @@
 		<Unit filename="main.c">
 			<Option compilerVar="CC" />
 		</Unit>
+		<Unit filename="usbio.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="pcdrv.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="yaroze.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="pstools.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="memcard.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="crash.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="flash.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="info.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="hotreload.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="rename.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="timingtest.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="ps1transfer.h" />
+		<Unit filename="rename.h" />
 		<Extensions />
 		<Unit filename="synthbridge.c">
 			<Option compilerVar="CC" />
@@ -74,6 +109,16 @@
 		<Unit filename="usblink.c">
 			<Option compilerVar="CC" />
 		</Unit>
+		<Unit filename="usblink_vlink.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="usblink_net.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="usblink_xserve.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="usblink_int.h" />
 		<Unit filename="usblink.h" />
 	</Project>
 </CodeBlocks_project_file>
