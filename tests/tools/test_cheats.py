@@ -138,7 +138,7 @@ def harness():
             raise RuntimeError("ApplyCheats changed: %s (update the test)" % a)
         apply = apply.replace(a, b)
     table = cbuild.block("cheatmenu.h", "\t\tvolatile CheatTable\t*t = (volatile CheatTable *)CHEAT_TABLE_ADRS;",
-                         "\tFillRect(0, UI_HELP_Y")
+                         "\n}\n")  # (CheatApply's table code: up to the end of the function)
     table = table.replace("(volatile CheatTable *)CHEAT_TABLE_ADRS", "(volatile CheatTable *)&host_table")
     table = "\t{\n" + table.rstrip()
     code = HARNESS.replace("@APPLY@", apply).replace("@ROMLE@", cbuild.function("cheatmenu.h", "RomLe"))
