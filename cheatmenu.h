@@ -135,6 +135,7 @@ static void	CheatDraw(const volatile uint8_t **cheats, int n, const uint8_t *on,
 static const volatile uint8_t	*cheat_list[CHEATS_SHOWN];	// The cheats listed (records as in the flash)
 static uint8_t					cheat_on[CHEATS_SHOWN];		// Ticked (the screen starts with them)
 static int	CheatScreen(int n, const char *title);
+static void	CheatApply(int n);
 
 // The cheat screen for a disc (BootDisc): 1 to boot (the cheats chosen in the code engine's table), 0 to go back
 int	CheatMenu(const char *serial)
@@ -193,7 +194,7 @@ static int	CheatScreen(int n, const char *title)
 		}
 		if ((pad & ~old) & PADstart)
 			break;
-		if ((pad & ~old) & PADRright)		// Back: the menu as it was
+		if ((pad & ~old) & PADRright)		// Back: the menu as it was (the ticks kept in cheat_on)
 		{
 			RECT	saved = {0, CHEAT_SAVE_Y, SCREEN_WIDTH, SCREEN_HEIGHT};
 
@@ -212,8 +213,19 @@ static int	CheatScreen(int n, const char *title)
 			redraw = 0;
 		}
 	}
+	CheatApply(n);
+	FillRect(0, UI_HELP_Y, SCREEN_WIDTH, UI_HELP_H, UI_PANEL);
+	DrawTextColor(8, UI_HELP_Y + 3, "BOOTING THE DISC...", TEXT_DIM);
+	return (1);
+}
 
-	// The cheats chosen: their codes in the code engine's table
+// The cheats ticked (cheat_list's n, cheat_on): their codes in the code engine's table (none: no table)
+static void	CheatApply(int n)
+{
+	const volatile uint8_t	**cheats = cheat_list;
+	uint8_t					*on = cheat_on;
+	int						i;
+
 	{
 		volatile CheatTable	*t = (volatile CheatTable *)CHEAT_TABLE_ADRS;
 		int					count = 0, k;
@@ -252,9 +264,6 @@ static int	CheatScreen(int n, const char *title)
 		if (count)
 			t->magic = CHEAT_TABLE_MAGIC;
 	}
-	FillRect(0, UI_HELP_Y, SCREEN_WIDTH, UI_HELP_H, UI_PANEL);
-	DrawTextColor(8, UI_HELP_Y + 3, "BOOTING THE DISC...", TEXT_DIM);
-	return (1);
 }
 
 #endif

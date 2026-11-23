@@ -1034,6 +1034,26 @@ int main(void)
 			BootDisc(0);
 	}
 
+	// The PicoStation screen at once (its option OPEN AT POWER ON: OPT_PICO_START), unless a button is held (this
+	// menu), after a chain boot, without the PicoStation's menu disc in the drive, or with a game it mounted (a reset
+	// during the game: START + SELECT boots it again, MenuHint; the drive isn't read meanwhile)
+	if (!chain && (saver_cfg[SAVER_OPTS] & OPT_PICO_START) && (pico_game->magic != PICO_GAME_MAGIC))
+	{
+		int		i;
+
+		for (i = 0; i < 10; i++)	// (the BIOS reads the pads at VBlank)
+			VSync(0);
+		pad = PadRead(1) & 0xFFFF;
+		if (pad && (pad != 0xFFFF))
+			PrintConsole("Button held: the PicoStation screen not opened");
+		else if (PicoDetect())
+		{
+			hint_next = 0;	// (its screen prints the hint when left)
+			SdBrowser();
+			usb_ok = !(USB_STATUS & USB_STATUS_MASK_USB_READY);
+		}
+	}
+
 	Init_CRC8();	// Copy CRC8 lookup table in Data Cache
 	last_activity = VSync(-1);
 	while (1)

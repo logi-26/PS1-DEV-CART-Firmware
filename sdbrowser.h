@@ -52,6 +52,52 @@
 #define	PICO_EXT_SKIP_EDC	(2 << 1)	// | 1: the EDC correction off (0: on, the same)
 #define	PICO_COVER			9
 #define	PICO_CHEATS			11	// RC5 release: the .cht file of a .cue (not of a folder)
+// Extra commands, used only when the PicoStation answers the information request (PICO_EXT_DEVCART_INFO; any other
+// firmware, RC5 too, doesn't: sd_devcart stays 0): the cheats then asked with PICO_DEVCART_CHEATS (11 prepares a game
+// there), the screen's settings read from and written to devcart.cfg at the SD card's root
+#define	PICO_IO_COMMAND		6	// arg = op << 12 | value: PICO_OP_*
+#define	PICO_IO_DATA		7	// arg = 2 bytes, the low one first
+#define	PICO_DEVCART_CHEATS	14	// (13: PICO_LOG)
+#define	PICO_EXT_DEVCART_CFG	(6 << 1)
+#define	PICO_EXT_DEVCART_INFO	(7 << 1)
+#define	PICO_OP_BEGIN		1
+#define	PICO_OP_LENGTH		2
+#define	PICO_OP_COMMIT		3
+#define	PICO_DEVCART_CFG_LBA	260	// "DCF1", the bytes (16 bits), the text; "DCF0": none
+#define	PICO_DEVCART_INFO_LBA	262	// "DCX1", features, the last write's status, the bytes received
+#define	PICO_FEATURE_CHEATS		0x01
+#define	PICO_FEATURE_CFG_READ	0x02
+#define	PICO_FEATURE_CFG_WRITE	0x04
+#define	PICO_FEATURE_GAME_CFG	0x08	// A game's .cfg (its settings, beside its .cue) read and written
+#define	PICO_DEVCART_GAME_CFG	15		// A game's .cfg, arg the entry: answered as devcart.cfg (PICO_DEVCART_CFG_LBA)
+#define	PICO_FILE_CFG		0		// PICO_OP_BEGIN's file: devcart.cfg,
+#define	PICO_FILE_GAME		1		// or this + the entry: its .cfg
+#define	PICO_FILE_GAME_MAX	4094
+#define	PICO_FEATURE_DETAILS	0x10	// The listing's details: each folder's kind and discs, covers and cheats there
+#define	PICO_FEATURE_PREPARE	0x20	// A game opened first (PICO_PREPARE), its status read until it is done
+#define	PICO_FEATURE_LOG		0x40	// The cartridge's events in the PicoStation's /debug.log (SdLog)
+#define	PICO_FEATURE_IDS		0x80	// Covers with the game's ID (from the disc image without one in the .cov)
+#define	PICO_EXT_DEVCART_IDS	(9 << 1)	// | 1: covers so (until the PicoStation's own menu starts)
+#define	PICO_EXT_DEVCART_DETAILS	(8 << 1)	// Before a listing command: that listing with its details
+#define	PICO_PREPARE		11		// A game's .cue opened before the mount (PICO_FEATURE_PREPARE; RC5: PICO_CHEATS)
+#define	PICO_LOG			13		// An event in the PicoStation's /debug.log (PICO_FEATURE_LOG)
+#define	PICO_MOUNT_STATUS_LBA	110	// "MNT1", the entry (16 bits), FatFs' result (16 bits), flags (1: audio only)
+#define	PICO_LOG_EVENT		0x2000	// PICO_LOG's argument: this + event << 8 + detail (8 bits)
+#define	PICO_EV_LIST		0		// A listing not read (detail: the command)
+#define	PICO_EV_READ		1		// Sectors not read (detail: the LBA / 2)
+#define	PICO_EV_COVER		2		// A cover not read
+#define	PICO_EV_CHEATS		3		// A .cht not read
+#define	PICO_EV_CFG_READ	4		// A settings file not read (detail: 0 devcart.cfg, 1 a game's)
+#define	PICO_EV_CFG_WRITE	5		// Not written (detail: the write's status)
+#define	PICO_EV_PREPARE		6		// A game not opened (detail: FatFs' result; 255 no answer, 254 audio only)
+#define	PICO_EV_BOOT		7		// A game mounted, its boot failed
+#define	PICO_DETAIL_FOLDER	0x01	// The listing's details (PICO_FEATURE_DETAILS): flags,
+#define	PICO_DETAIL_COVER	0x02	// a .cov (a folder: beside it, or its game's)
+#define	PICO_DETAIL_CHEATS	0x04	// a .cht (a folder: its game's)
+#define	PICO_DETAIL_KIND(_f_)	(((_f_) >> 4) & 3)	// a folder's: 0 not known, 1 a game, 2 a game's discs, 3 a folder
+#define	PICO_WRITE_RECEIVING	1
+#define	PICO_WRITE_OK		2
+#define	DEVCART_CFG_TEXT	400	// (devcart.cfg read and written: less than that; the PicoStation takes 512)
 
 #define	PICO_LIST_LBA		100
 #define	PICO_COVER_LBA		200
@@ -154,6 +200,7 @@ static int		sd_count;
 static char		*sd_pool = (char *)SD_POOL_ADRS, *sd_pool_end = (char *)SD_PROBE_POOL_ADRS;
 static char		sd_path[96];	// The current directory, "" at the root
 static int		sd_view;		// SD_VIEW_*: SELECT, kept with the last selection
+static int		sd_devcart;		// PICO_FEATURE_*: the extra commands answered, 0: none (RC5)
 #define	SD_VIEW_LIST	0
 #define	SD_VIEW_GRID	1
 #define	SD_VIEW_FLOW	2	// Cover flow
@@ -195,6 +242,13 @@ static bool	Pico_Command(int cmd, int arg)
 	return (irq == 3);
 }
 
+// An event in the PicoStation's /debug.log (PICO_FEATURE_LOG): what failed (PICO_EV_*), a detail
+static void	SdLog(int event, int detail)
+{
+	if (sd_devcart & PICO_FEATURE_LOG)
+		Pico_Command(PICO_LOG, PICO_LOG_EVENT | (event << 8) | (detail & 0xFF));
+}
+
 // Whole sectors (Setmode 20h, double speed as the PicoStation's menu) from PICO_LEAD sectors before lba: the first
 // asked at SD_SECTOR_ADRS + PICO_LEAD * PICO_RAW_SECTOR
 static bool	Pico_Read(int lba, int n)
@@ -206,6 +260,8 @@ static bool	Pico_Read(int lba, int n)
 	ok = CD_ReadSectors(lba - PICO_LEAD, (uint8_t *)SD_SECTOR_ADRS, (PICO_LEAD + n) * PICO_RAW_SECTOR);
 	cd_read_mode = 0x00;
 	cd_read_sector = CD_SECTOR;
+	if (!ok)
+		SdLog(PICO_EV_READ, lba >> 1);
 	return (ok);
 }
 
@@ -215,13 +271,20 @@ static bool	Pico_Read(int lba, int n)
 // -1 not a page (nothing added)
 static int	Pico_AddPage(const uint8_t *d, char **pool)
 {
-	char	*p = *pool;
-	int		pos = 0, n = 0, len, total, i;
-	SdEntry	*e;
+	static const uint8_t	kinds[4] = {SD_UNKNOWN, SD_GAME, SD_DISCS, SD_FOLDER};
+	char					*p = *pool;
+	int						pos = 0, n = 0, details = 0, len, total, flags, i;
+	SdEntry					*e;
 
-	// RC5 release: the page starts with a "LST1" directory entry (a marker, not counted)
+	// RC5 release: the page starts with a "LST1" directory entry (a marker, not counted). Details asked for
+	// (PICO_FEATURE_DETAILS): "DLS1", then each entry has its details (flags, discs) before its name.
 	if (!memcmp(d, "\x04\x01LST1", 6))
 		pos = 6;
+	else if (!memcmp(d, "\x04\x01" "DLS1", 6))
+	{
+		pos = 6;
+		details = 1;
+	}
 	while (pos + 4 <= PICO_LIST_SIZE)
 	{
 		if (!(len = d[pos]))
@@ -233,28 +296,32 @@ static int	Pico_AddPage(const uint8_t *d, char **pool)
 			*pool = p;
 			return (d[pos + 1] && n);
 		}
-		if ((d[pos + 1] > 1) || (pos + 2 + len + 4 > PICO_LIST_SIZE))
+		flags = d[pos + 1];
+		if ((flags > (details ? 0x3F : 1)) || (pos + 2 + details + len + 4 > PICO_LIST_SIZE))
 			return (-1);
 		for (i = 0; i < len; i++)
-			if ((uint8_t)d[pos + 2 + i] < ' ')
+			if ((uint8_t)d[pos + 2 + details + i] < ' ')
 				return (-1);
 		// Full: the rest of the directory left out
 		if ((sd_count + n < PICO_MAX_ENTRIES) && (p + sizeof(SdEntry) + len + 2 < sd_pool_end))
 		{
 			e = (SdEntry *)p;
 			e->index = sd_count + n;
-			e->dir = d[pos + 1];
-			e->cov = SD_COV_UNKNOWN;
-			e->discs = d[pos + 1] ? SD_UNKNOWN_COUNT : 1;
-			e->cht = SD_UNKNOWN_COUNT;
+			e->dir = !(flags & PICO_DETAIL_FOLDER) ? SD_FILE : details ? kinds[PICO_DETAIL_KIND(flags)] : SD_UNKNOWN;
+			// (no .cov: still asked for with the game IDs, a game's cover answer has its ID)
+			e->cov = !details ? SD_COV_UNKNOWN : ((flags & PICO_DETAIL_COVER) || ((sd_devcart & PICO_FEATURE_IDS) &&
+				(PICO_DETAIL_KIND(flags) != 3))) ? SD_COV_BESIDE : SD_COV_NONE;
+			e->discs = (e->dir == SD_FILE) ? 1 : (e->dir == SD_UNKNOWN) ? SD_UNKNOWN_COUNT :
+				(e->dir == SD_FOLDER) ? 0 : d[pos + 2];
+			e->cht = (!details || (flags & PICO_DETAIL_CHEATS)) ? SD_UNKNOWN_COUNT : 0;	// (a count: read when shown)
 			e->cht_on = 0;
-			memcpy(e->name, d + pos + 2, len);
+			memcpy(e->name, d + pos + 2 + details, len);
 			e->name[len] = 0;
 			sd_list[sd_count + n] = e;
 			p += (sizeof(SdEntry) + len + 2) & ~1;	// (index: 2-byte aligned)
 			n++;
 		}
-		pos += 2 + len;
+		pos += 2 + details + len;
 	}
 	return (-1);
 }
@@ -265,8 +332,8 @@ static int	SdCompare(const SdEntry *a, const SdEntry *b)
 	const char	*p = a->name, *q = b->name;
 	int			c, d;
 
-	if (a->dir != b->dir)
-		return (b->dir - a->dir);
+	if ((a->dir != SD_FILE) != (b->dir != SD_FILE))	// (a folder's kind may be known: not sorted by it)
+		return ((b->dir != SD_FILE) - (a->dir != SD_FILE));
 	for (;; p++, q++)
 	{
 		c = *p - (((*p >= 'a') && (*p <= 'z')) ? 32 : 0);
@@ -291,7 +358,8 @@ static bool	Pico_List(int cmd, int arg)
 		{
 			if (!(tries % 3))
 			{
-				if (!Pico_Command(cmd, arg))
+				if (((sd_devcart & PICO_FEATURE_DETAILS) && !Pico_Command(PICO_EXTENDED, PICO_EXT_DEVCART_DETAILS)) ||
+					!Pico_Command(cmd, arg))
 					continue;
 				cmd = PICO_NEXT;	// Done once: asked again, the same directory (no side effect)
 				arg = sd_count;
@@ -302,7 +370,10 @@ static bool	Pico_List(int cmd, int arg)
 			SD_DEBUG(5, ret);
 		}
 		if (ret < 0)
+		{
+			SdLog(PICO_EV_LIST, cmd);
 			return (false);
+		}
 		cmd = PICO_NEXT;
 		arg = sd_count;
 	}
@@ -368,6 +439,7 @@ static int	Pico_Cover(int index)
 			return (COV_IMAGE);
 		}
 	}
+	SdLog(PICO_EV_COVER, 0);
 	return (COV_NONE);
 }
 
@@ -453,7 +525,8 @@ static int	Pico_Cheats(int index)
 
 	for (tries = 0; tries < 3; tries++)
 	{
-		if (!Pico_Command(PICO_CHEATS, index) || !Pico_Read(PICO_CHEAT_LBA, PICO_CHEAT_PARTS))
+		if (!Pico_Command((sd_devcart & PICO_FEATURE_CHEATS) ? PICO_DEVCART_CHEATS : PICO_CHEATS, index) ||
+			!Pico_Read(PICO_CHEAT_LBA, PICO_CHEAT_PARTS))
 			continue;
 		for (part = 0; part < PICO_CHEAT_PARTS; part++)
 		{
@@ -472,7 +545,214 @@ static int	Pico_Cheats(int index)
 		if (part == PICO_CHEAT_PARTS)	// (6KB: as much as the PicoStation reads)
 			return (true);
 	}
+	SdLog(PICO_EV_CHEATS, 0);
 	return (false);
+}
+
+// An entry's .cht (Pico_Cheats): a folder's game's is asked for the folder itself with the details (the PicoStation
+// looks into it), else the folder is looked into (SdInFolder: it may turn out to be a folder)
+static int	SdEntryCheats(SdEntry *e)
+{
+	if ((e->dir == SD_FILE) || ((sd_devcart & PICO_FEATURE_DETAILS) && ((e->dir == SD_GAME) || (e->dir == SD_DISCS))))
+		return (Pico_Cheats(e->index));
+	return ((e->dir != SD_FOLDER) && SdInFolder(e, Pico_Cheats));
+}
+
+// The extra commands' information sector (features, the last write's status), false when the PicoStation doesn't
+// answer it (RC5: the menu disc's own sector there)
+static bool	Pico_DevcartInfo(int *features, int *status)
+{
+	uint8_t	*s;
+
+	if (!Pico_Command(PICO_EXTENDED, PICO_EXT_DEVCART_INFO) || !Pico_Read(PICO_DEVCART_INFO_LBA, 1))
+		return (false);
+	s = PICO_SECTOR(0);
+	if (memcmp(s, "DCX1", 4))
+		return (false);
+	*features = s[4] | (s[5] << 8);
+	if (status)
+		*status = s[6] | (s[7] << 8);
+	return (true);
+}
+
+static const char * const	sd_view_names[SD_VIEWS] = {"list", "grid", "flow"};
+
+// devcart.cfg's value of key ("key=value" lines) copied to value (at most n - 1 characters), false if not there
+static bool	SdCfgValue(const char *text, const char *key, char *value, int n)
+{
+	const char	*p = text;
+	int			len = strlen(key), i;
+
+	while (*p)
+	{
+		if (!strncmp(p, key, len) && (p[len] == '='))
+		{
+			p += len + 1;
+			for (i = 0; (i < n - 1) && ((uint8_t)p[i] >= ' '); i++)	// (the line: a name has spaces)
+				value[i] = p[i];
+			while (i && (value[i - 1] == ' '))
+				i--;
+			value[i] = 0;
+			return (true);
+		}
+		while (*p && (*p != '\n'))
+			p++;
+		if (*p)
+			p++;
+	}
+	return (false);
+}
+
+// devcart.cfg (cmd PICO_EXTENDED, arg PICO_EXT_DEVCART_CFG) or a game's .cfg (PICO_DEVCART_GAME_CFG, its entry) as
+// text (up to DEVCART_CFG_TEXT characters): 1 read, 0 no such file, -1 not answered (each asked up to 3 times)
+static int	Pico_CfgRead(int cmd, int arg, char *text)
+{
+	uint8_t	*s;
+	int		tries, len;
+
+	for (tries = 0; tries < 3; tries++)
+	{
+		if (!Pico_Command(cmd, arg) || !Pico_Read(PICO_DEVCART_CFG_LBA, 1))
+			continue;
+		s = PICO_SECTOR(0);
+		if (!memcmp(s, "DCF0", 4))
+			return (0);
+		if (memcmp(s, "DCF1", 4))
+			continue;
+		len = s[4] | (s[5] << 8);
+		len = (len < DEVCART_CFG_TEXT) ? len : DEVCART_CFG_TEXT;
+		memcpy(text, s + 6, len);
+		text[len] = 0;
+		return (1);
+	}
+	SdLog(PICO_EV_CFG_READ, cmd != PICO_EXTENDED);
+	return (-1);
+}
+
+// text written to devcart.cfg (file PICO_FILE_CFG) or a game's .cfg (PICO_FILE_GAME + its entry): 2 bytes a command,
+// then the PicoStation's own check and its safe write (a .tmp then renamed). False if the write failed.
+static bool	Pico_CfgWrite(int file, char *text)
+{
+	int		len = strlen(text), sum = 0, status = 0, features, i;
+
+	for (i = 0; i < len; i++)
+		sum += (uint8_t)text[i];	// (a last odd byte sent with the 0 after it)
+	if (!Pico_Command(PICO_IO_COMMAND, (PICO_OP_BEGIN << 12) | file) ||
+		!Pico_Command(PICO_IO_COMMAND, (PICO_OP_LENGTH << 12) | len))
+		return (false);
+	for (i = 0; i < len; i += 2)
+		if (!Pico_Command(PICO_IO_DATA, (uint8_t)text[i] | ((uint8_t)text[i + 1] << 8)))
+			return (false);
+	if (!Pico_Command(PICO_IO_COMMAND, (PICO_OP_COMMIT << 12) | (sum & 0xFFF)))
+		return (false);
+	for (i = 0; i < 10; i++)	// (until written: its sector isn't served while the PicoStation writes)
+		if (Pico_DevcartInfo(&features, &status) && (status != PICO_WRITE_RECEIVING))
+			break;
+	if (status != PICO_WRITE_OK)
+		SdLog(PICO_EV_CFG_WRITE, status);
+	return (status == PICO_WRITE_OK);
+}
+
+// The place the screen was left at (devcart.cfg "folder=" and "selected=": the SD card's, they win over the RAM's
+// SD_LAST_ADRS): the folder ("" the root, "/A/B"), its entry selected. sd_place_*: as read then as kept,
+// sd_cfg_*: as devcart.cfg has them.
+#define	SD_PLACE_NAME	128
+static char	sd_place_folder[sizeof(sd_path)], sd_place_name[SD_PLACE_NAME];
+static char	sd_cfg_folder[sizeof(sd_path)], sd_cfg_name[SD_PLACE_NAME];
+
+// The screen's settings from devcart.cfg on the SD card (they win over the cartridge's): the view, the game settings
+// screen (gamescreen=off: X boots at once), the place. Nothing without the file or the extra commands.
+static void	SdCfgLoad(void)
+{
+	char	text[DEVCART_CFG_TEXT + 1], value[8];
+	int		i;
+
+	sd_place_folder[0] = sd_place_name[0] = sd_cfg_folder[0] = sd_cfg_name[0] = 0;
+	if (!(sd_devcart & PICO_FEATURE_CFG_READ) || (Pico_CfgRead(PICO_EXTENDED, PICO_EXT_DEVCART_CFG, text) <= 0))
+		return;
+	if (!SdCfgValue(text, "folder", sd_place_folder, sizeof(sd_place_folder)) || (sd_place_folder[0] != '/'))
+		sd_place_folder[0] = 0;
+	SdCfgValue(text, "selected", sd_place_name, sizeof(sd_place_name));
+	strcpy(sd_cfg_folder, sd_place_folder);
+	strcpy(sd_cfg_name, sd_place_name);
+	if (SdCfgValue(text, "view", value, sizeof(value)))
+		for (i = 0; i < SD_VIEWS; i++)
+			if (!strcmp(value, sd_view_names[i]))
+				sd_view = i;
+	if (SdCfgValue(text, "gamescreen", value, sizeof(value)))
+		saver_cfg[SAVER_OPTS] = strcmp(value, "off") ? (saver_cfg[SAVER_OPTS] & ~OPT_NO_GAME_SCREEN) :
+			(saver_cfg[SAVER_OPTS] | OPT_NO_GAME_SCREEN);
+	if (SdCfgValue(text, "autostart", value, sizeof(value)))
+		saver_cfg[SAVER_OPTS] = strcmp(value, "on") ? (saver_cfg[SAVER_OPTS] & ~OPT_PICO_START) :
+			(saver_cfg[SAVER_OPTS] | OPT_PICO_START);
+}
+
+// The settings as devcart.cfg has them (read or written last): written again only when they changed
+static int		sd_cfg_view = -1;
+static uint8_t	sd_cfg_opts;
+
+#define	SD_CFG_OPTS	(OPT_NO_GAME_SCREEN | OPT_PICO_START)
+
+static void	SdCfgKeep(void)
+{
+	char	text[DEVCART_CFG_TEXT];
+
+	if (!(sd_devcart & PICO_FEATURE_CFG_WRITE) || ((sd_view == sd_cfg_view) &&
+		((saver_cfg[SAVER_OPTS] & SD_CFG_OPTS) == sd_cfg_opts) && !strcmp(sd_place_folder, sd_cfg_folder) &&
+		!strcmp(sd_place_name, sd_cfg_name)))
+		return;
+	sprintf(text, "# PS1 DEV CART: the PicoStation screen's settings (they win over the cartridge's)\n"
+		"view=%s\ngamescreen=%s\nautostart=%s\nfolder=%s\nselected=%s\n", sd_view_names[sd_view],
+		(saver_cfg[SAVER_OPTS] & OPT_NO_GAME_SCREEN) ? "off" : "on", (saver_cfg[SAVER_OPTS] & OPT_PICO_START) ? "on" : "off",
+		sd_place_folder, sd_place_name);
+	if (Pico_CfgWrite(PICO_FILE_CFG, text))
+	{
+		sd_cfg_view = sd_view;
+		sd_cfg_opts = saver_cfg[SAVER_OPTS] & SD_CFG_OPTS;
+		strcpy(sd_cfg_folder, sd_place_folder);
+		strcpy(sd_cfg_name, sd_place_name);
+	}
+}
+
+// The place kept (the first len characters of sd_path: the folder; name: its entry selected), devcart.cfg written
+static void	SdKeepPlace(int len, const char *name)
+{
+	int		i;
+
+	memcpy(sd_place_folder, sd_path, len);
+	sd_place_folder[len] = 0;
+	for (i = 0; (i < SD_PLACE_NAME - 1) && name[i]; i++)
+		sd_place_name[i] = name[i];
+	sd_place_name[i] = 0;
+	SdCfgKeep();
+}
+
+// A game's settings (SdGameScreen): the PicoStation's EDC correction and bootsector fix, each game its own (its .cfg
+// beside its .cue, with PICO_FEATURE_GAME_CFG). Without it: on, as the PicoStation has them.
+static bool	sd_game_edc, sd_game_bootfix;
+
+static void	SdGameLoad(const SdEntry *e)
+{
+	char	text[DEVCART_CFG_TEXT + 1], value[8];
+
+	sd_game_edc = sd_game_bootfix = true;
+	if (!(sd_devcart & PICO_FEATURE_GAME_CFG) || (Pico_CfgRead(PICO_DEVCART_GAME_CFG, e->index, text) <= 0))
+		return;
+	if (SdCfgValue(text, "edc", value, sizeof(value)))
+		sd_game_edc = strcmp(value, "off");
+	if (SdCfgValue(text, "bootfix", value, sizeof(value)))
+		sd_game_bootfix = strcmp(value, "off");
+}
+
+static bool	SdGameSave(const SdEntry *e)
+{
+	char	text[DEVCART_CFG_TEXT];
+
+	if (!(sd_devcart & PICO_FEATURE_GAME_CFG) || (e->index > PICO_FILE_GAME_MAX))
+		return (false);
+	sprintf(text, "# PS1 DEV CART: this game's settings (the cartridge's PicoStation screen)\nedc=%s\nbootfix=%s\n",
+		sd_game_edc ? "on" : "off", sd_game_bootfix ? "on" : "off");
+	return (Pico_CfgWrite(PICO_FILE_GAME + e->index, text));
 }
 
 // A hex number of n digits in v: false if it isn't one
@@ -570,6 +850,7 @@ static int	SdCheatText(char *text, int n, uint8_t *rec, uint8_t *rec_end)
 #define	SD_HELP_Y		(SCREEN_HEIGHT - SD_MARGIN - SD_HELP_H)
 #define	SD_BODY_Y		(SD_TITLE_Y + SD_TITLE_H + 4)
 #define	SD_BODY_H		(SD_HELP_Y - 4 - SD_BODY_Y)
+#define	SD_GAME_CHARS	(SD_WIDTH / FONT_CHAR_W - 2)	// A game's name on a whole line
 #define	SD_ROW_H		10
 #define	SD_ROWS			((SD_BODY_H - 8) / SD_ROW_H)
 #define	SD_LIST_W		172
@@ -745,26 +1026,83 @@ static void	SdDrawScreen(void)
 }
 
 // A game (a .cue of the directory the PicoStation is in) mounted and booted by the cartridge (cheats: the cheat screen
-// first). The PicoStation's menu disc is gone (RESET held 1 second brings it back): the game's name is kept for the
-// menu after a reset. Returns if the boot failed (its message in the log).
-static void	SdBoot(SdEntry *e, bool cheats)
+// With PICO_FEATURE_PREPARE: a game's .cue opened (PICO_PREPARE), its status read until it is done (the
+// mount is quick then). 0 opened, else why not (FatFs' result; 255 no answer, 254 audio only: nothing to boot).
+static int	Pico_Prepare(int index)
 {
-	int	i;
+	uint8_t	*s;
+	int		tries, result;
 
+	if (!Pico_Command(PICO_PREPARE, index) && !Pico_Command(PICO_PREPARE, index))
+		return (255);
+	for (tries = 0; tries < 40; tries++)	// (well under a second: 4 seconds at most)
+	{
+		DelayUs(100000);
+		if (!Pico_Read(PICO_MOUNT_STATUS_LBA, 1))
+			return (255);	// (not answering: it stopped, each read already tried for long)
+		s = PICO_SECTOR(0);
+		if (memcmp(s, "MNT1", 4) || ((s[4] | (s[5] << 8)) != index))
+			continue;	// (all 0 until it is opened)
+		if ((result = s[6] | (s[7] << 8)))
+			return ((result < 254) ? result : 253);
+		return ((s[8] & 1) ? 254 : 0);
+	}
+	return (255);
+}
+
+// first), with its settings (sd_game_edc, sd_game_bootfix: SdGameLoad). The PicoStation's menu disc is gone (RESET
+// held 1 second brings it back): the game's name is kept for the menu after a reset. This screen stays up meanwhile
+// (the drive unlocked, the game read: the log kept, console_hold). False if the game couldn't be opened (PICO_FEATURE_PREPARE:
+// still on its menu disc, nothing changed); else returns if the boot failed, on the menu with the log.
+static bool	SdBoot(SdEntry *e, bool cheats)
+{
+	char	text[SD_GAME_CHARS + 1];
+	int		i;
+
+	FillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, UI_BG);
+	SdDrawTitle();
+	FillRect(SD_MARGIN, SD_BODY_Y, SD_WIDTH, SD_BODY_H, UI_PANEL);
+	for (i = 0; (i < SD_GAME_CHARS) && e->name[i]; i++)
+		text[i] = e->name[i];
+	text[i] = 0;
+	DrawTextColor(SD_MARGIN + 8, SD_BODY_Y + 8, text, TEXT_ACCENT);
+	DrawText(SD_MARGIN + 8, SD_BODY_Y + 30, "Booting the game...");
+	FillRect(SD_MARGIN, SD_HELP_Y, SD_WIDTH, SD_HELP_H, UI_PANEL);
+	DrawSync(0);
+	// The PicoStation's processing as the game has it, both sent each time: it keeps them until power off (with
+	// PICO_FEATURE_PREPARE, through the mount too)
+	Pico_Command(PICO_EXTENDED, PICO_EXT_SKIP_BOOT | (sd_game_bootfix ? 0 : 1));
+	Pico_Command(PICO_EXTENDED, PICO_EXT_SKIP_EDC | (sd_game_edc ? 0 : 1));
+	if (sd_devcart & PICO_FEATURE_PREPARE)	// Opened first: the mount is quick, a game that can't be is told
+	{
+		if ((i = Pico_Prepare(e->index)))
+		{
+			SdLog(PICO_EV_PREPARE, i);
+			return (false);
+		}
+		Pico_Command(PICO_MOUNT, e->index);
+		DelayUs(200000);
+	}
+	else
+	{
+		Pico_Command(PICO_MOUNT, e->index);
+		DelayUs(500000);
+	}
 	for (i = 0; (i < PICO_GAME_NAME - 1) && e->name[i]; i++)
 		pico_game->name[i] = e->name[i];
 	pico_game->name[i] = 0;
 	pico_game->name[PICO_GAME_NAME - 1] = 0;
 	pico_game->magic = PICO_GAME_MAGIC;
+	console_hold = true;
+	console_held_n = 0;
+	PrintConsole(e->name);
+	BootDisc(cheats);
+	SdLog(PICO_EV_BOOT, 0);
+	console_hold = false;	// Failed: the menu, with the log
 	MenuDraw();
 	PrintUSBStatus();
-	PrintConsole(e->name);
-	// The PicoStation's processing as chosen (SdOptions), both sent each time: it keeps them until power off
-	Pico_Command(PICO_EXTENDED, PICO_EXT_SKIP_BOOT | ((saver_cfg[SAVER_OPTS] & OPT_NO_BOOTFIX) ? 1 : 0));
-	Pico_Command(PICO_EXTENDED, PICO_EXT_SKIP_EDC | ((saver_cfg[SAVER_OPTS] & OPT_NO_EDC) ? 1 : 0));
-	Pico_Command(PICO_MOUNT, e->index);
-	DelayUs(500000);
-	BootDisc(cheats);
+	ConsoleReplay();
+	return (true);
 }
 
 // An entry's cover at SD_COVER_ADRS, its game ID in sd_serial (COV_NONE, COV_IMAGE or COV_ID): one of the last ones
@@ -791,7 +1129,8 @@ static int	SdFetchCover(SdEntry *e)
 			found = Pico_Cover(e->index);
 		SD_DEBUG(7, SD_TIME_SINCE(t0));	// (test: display lines, the cover beside it)
 		t0 = SD_TIME();
-		if ((found == COV_NONE) && (e->cov != SD_COV_NONE) && ((e->dir == SD_UNKNOWN) || (e->dir == SD_GAME) || (e->dir == SD_DISCS)))
+		if ((found == COV_NONE) && (e->cov != SD_COV_NONE) && !(sd_devcart & PICO_FEATURE_DETAILS) &&
+			((e->dir == SD_UNKNOWN) || (e->dir == SD_GAME) || (e->dir == SD_DISCS)))	// (with the details: looked into already)
 		{
 			found = SdInFolder(e, Pico_Cover);
 			if (found != COV_NONE)
@@ -1062,6 +1401,7 @@ static void	SdGridDraw(int sel)
 	int	i, first = sel - sel % GRID_N;
 
 	FillRect(SD_MARGIN, SD_BODY_Y, SD_WIDTH, GRID_PANEL_H, UI_PANEL);
+	FillRect(SD_MARGIN, SD_BODY_Y + GRID_PANEL_H, SD_WIDTH, GRID_INFO_Y - SD_BODY_Y - GRID_PANEL_H, UI_BG);
 	if (!sd_count)
 		DrawText(SD_MARGIN + 8, SD_BODY_Y + 6, "No games");
 	for (i = first; (i < first + GRID_N) && (i < sd_count); i++)
@@ -1155,6 +1495,7 @@ static void	SdFlowCenter(int sel, bool load)
 static void	SdFlowDraw(int sel)
 {
 	FillRect(SD_MARGIN, SD_BODY_Y, SD_WIDTH, FLOW_PANEL_H, UI_PANEL);
+	FillRect(SD_MARGIN, SD_BODY_Y + FLOW_PANEL_H, SD_WIDTH, FLOW_INFO_Y - SD_BODY_Y - FLOW_PANEL_H, UI_BG);
 	if (!sd_count)
 	{
 		DrawText(SD_MARGIN + 8, SD_BODY_Y + 6, "No games");
@@ -1226,11 +1567,9 @@ static void	SdLoadDetails(int sel, int top)
 	SdEntry	*e = sd_list[sel];
 	int		ok, n = 0, on = 0, i;
 
-	if (e->dir == SD_FILE)
-		ok = Pico_Cheats(e->index);
-	else
+	ok = SdEntryCheats(e);
+	if (e->dir != SD_FILE)
 	{
-		ok = SdInFolder(e, Pico_Cheats);
 		if ((e->dir == SD_FOLDER) && !sd_view)	// (looked into: not a game)
 			SdDrawRow(sel - top, sel, sel, 0);
 		else if ((e->dir == SD_FOLDER) && (sd_view == SD_VIEW_GRID))
@@ -1275,12 +1614,12 @@ static int	SdLetter(int i)
 // before (its own menu turns them off unless chosen, the bootsector fix always on a non-Japanese console). Saved in the
 // cartridge flash with the screensavers (saver.h OPT_*).
 
-#define	SD_OPTIONS		3
+#define	SD_OPTIONS		3	// (EDC correction, bootsector fix: each game's, SdGameScreen)
 #define	SD_OPTIONS_HELP	"LEFT/RIGHT:CHANGE " ICON_CIRCLE "DONE"
 
 static void	SdDrawOptions(int cur)
 {
-	static const char *const	names[SD_OPTIONS] = {"VIEW", "EDC CORRECTION", "BOOTSECTOR FIX"};
+	static const char *const	names[SD_OPTIONS] = {"VIEW", "GAME SETTINGS SCREEN", "OPEN AT POWER ON"};
 	static const char *const	views[SD_VIEWS] = {"LIST", "GRID", "COVER FLOW"};
 	char						text[20];
 	int							i, y;
@@ -1293,8 +1632,8 @@ static void	SdDrawOptions(int cur)
 		if (i == cur)
 			FillRect(SD_MARGIN + 4, y - 4, SD_WIDTH - 8, 16, UI_SELECT);
 		DrawText(SD_MARGIN + 12, y, names[i]);
-		sprintf(text, "< %s >", i ? ((saver_cfg[SAVER_OPTS] & ((i == 1) ? OPT_NO_EDC : OPT_NO_BOOTFIX)) ? "OFF" : "ON") :
-			views[sd_view]);
+		sprintf(text, "< %s >", !i ? views[sd_view] : (i == 1) ? ((saver_cfg[SAVER_OPTS] & OPT_NO_GAME_SCREEN) ? "OFF" : "ON") :
+			((saver_cfg[SAVER_OPTS] & OPT_PICO_START) ? "ON" : "OFF"));
 		if (i == cur)
 			DrawText(SD_MARGIN + SD_WIDTH - 12 - strlen(text) * FONT_CHAR_W, y, text);
 		else
@@ -1304,7 +1643,7 @@ static void	SdDrawOptions(int cur)
 	DrawTextIcons(SD_MARGIN + (SD_WIDTH - IconTextWidth(SD_OPTIONS_HELP)) / 2, SD_HELP_Y + 3, SD_OPTIONS_HELP, TEXT_DIM);
 }
 
-// Until O or START (the screen drawn again by the caller); the PicoStation settings saved when changed
+// Until O or START (the screen drawn again by the caller); saved when changed (the cartridge's flash, devcart.cfg)
 static void	SdOptions(void)
 {
 	uint32_t	pad, old = 0xFFFF;	// (START, that opened it: released first)
@@ -1327,24 +1666,159 @@ static void	SdOptions(void)
 			break;
 		if (i & (PADLup | PADLdown))
 			cur = (cur + ((i & PADLup) ? SD_OPTIONS - 1 : 1)) % SD_OPTIONS;
+		else if ((i & (PADLleft | PADLright | PADRdown)) && !cur)
+			sd_view = (sd_view + ((i & PADLleft) ? SD_VIEWS - 1 : 1)) % SD_VIEWS;
 		else if (i & (PADLleft | PADLright | PADRdown))
-		{
-			if (!cur)
-				sd_view = (sd_view + ((i & PADLleft) ? SD_VIEWS - 1 : 1)) % SD_VIEWS;
-			else
-				saver_cfg[SAVER_OPTS] ^= (cur == 1) ? OPT_NO_EDC : OPT_NO_BOOTFIX;
-		}
+			saver_cfg[SAVER_OPTS] ^= (cur == 1) ? OPT_NO_GAME_SCREEN : OPT_PICO_START;
 		else
 			continue;
 		SdDrawOptions(cur);
 	}
+	SdDrawHelp("Saving the settings...");
 	if (saver_cfg[SAVER_OPTS] != opts)
 		SaveDeviceId(&chip);
+	SdCfgKeep();	// (and on the SD card, with the extra commands: they win there)
+}
+
+// A game's cheats in cheat_list / cheat_on (none ticked), the cheat screen's title in title: the cartridge's (by its
+// game ID, sd_serial: SdFetchCover) and its .cht beside its .cue. Returns how many.
+static int	SdGameCheats(const SdEntry *e, char *title)
+{
+	int		n = 0, k;
+
+	strcpy(title, "CHEATS: ");
+	if (sd_serial[0])
+		n = CheatFind(sd_serial, cheat_list, title + 8);
+	memset(cheat_on, 0, sizeof(cheat_on));
+	if (!n)
+	{
+		for (k = 0; (k < CHEAT_DB_TITLE - 1) && e->name[k]; k++)
+			title[8 + k] = e->name[k];
+		title[8 + k] = 0;
+	}
+	if (Pico_Cheats(e->index))
+		n = SdCheatText((char *)SD_CHT_ADRS, n, (uint8_t *)SD_COVER_ADRS, (uint8_t *)SD_IMAGE_ADRS);
+	return (n);
+}
+
+// The settings screen before a game is booted (X): boot, its cheats, the PicoStation's EDC correction and bootsector
+// fix (each game its own, kept in its .cfg on the SD card with PICO_FEATURE_GAME_CFG)
+#define	SD_GAME_ITEMS	4
+#define	SD_GAME_HELP	ICON_CROSS "SELECT " ICON_START "BOOT " ICON_CIRCLE "BACK"
+
+static void	SdDrawGame(const SdEntry *e, int cur, int n, const char *note)
+{
+	static const char *const	names[SD_GAME_ITEMS] = {"BOOT THE GAME", "CHEATS", "EDC CORRECTION", "BOOTSECTOR FIX"};
+	char						text[SD_GAME_CHARS + 1];
+	int							i, k, on, x, y;
+
+	FillRect(SD_MARGIN, SD_BODY_Y, SD_WIDTH, SD_BODY_H, UI_PANEL);
+	for (k = 0; (k < SD_GAME_CHARS) && e->name[k]; k++)
+		text[k] = e->name[k];
+	text[k] = 0;
+	DrawTextColor(SD_MARGIN + 8, SD_BODY_Y + 8, text, TEXT_ACCENT);
+	for (i = 0; i < SD_GAME_ITEMS; i++)
+	{
+		y = SD_BODY_Y + 30 + i * 18;
+		if (i == cur)
+			FillRect(SD_MARGIN + 4, y - 4, SD_WIDTH - 8, 16, UI_SELECT);
+		DrawText(SD_MARGIN + 12, y, names[i]);
+		if (!i)
+			continue;
+		if ((i == 1) && n)
+		{
+			for (on = k = 0; k < n; k++)
+				on += cheat_on[k] ? 1 : 0;
+			sprintf(text, "%d OF %d ON", on, n);
+		}
+		else if (i == 1)
+			strcpy(text, "NONE");
+		else
+			sprintf(text, "< %s >", ((i == 2) ? sd_game_edc : sd_game_bootfix) ? "ON" : "OFF");
+		x = SD_MARGIN + SD_WIDTH - 12 - strlen(text) * FONT_CHAR_W;
+		if (i == cur)
+			DrawText(x, y, text);
+		else
+			DrawTextColor(x, y, text, TEXT_DIM);
+	}
+	DrawTextColor(SD_MARGIN + 12, SD_BODY_Y + 30 + SD_GAME_ITEMS * 18 + 10, note, TEXT_DIM);
+	FillRect(SD_MARGIN, SD_HELP_Y, SD_WIDTH, SD_HELP_H, UI_PANEL);
+	DrawTextIcons(SD_MARGIN + (SD_WIDTH - IconTextWidth(SD_GAME_HELP)) / 2, SD_HELP_Y + 3, SD_GAME_HELP, TEXT_DIM);
+}
+
+// e (a .cue of the directory the PicoStation is in): its settings read, then the screen until it is booted (1: the
+// cheats ticked in the code engine's table, the settings in sd_game_*) or left (0, O). The settings are saved when
+// changed (-1: back, but they couldn't be).
+static int	SdGameScreen(SdEntry *e)
+{
+	char		title[CHEAT_DB_TITLE + 8];
+	const char	*note;
+	uint32_t	pad, old = 0xFFFF;	// (the button that opened it: released first)
+	int			cur = 0, n, ret, i;
+	bool		edc, bootfix;
+
+	SdDrawHelp("Reading the game's settings...");
+	SdFetchCover(e);	// (its game ID: the cartridge's cheats)
+	n = SdGameCheats(e, title);
+	SdGameLoad(e);
+	edc = sd_game_edc;
+	bootfix = sd_game_bootfix;
+	note = (sd_devcart & PICO_FEATURE_GAME_CFG) ? "Kept for this game on the SD card" :
+		"This PicoStation can't keep them";
+	SdDrawGame(e, cur, n, note);
+	for (;;)
+	{
+		VSync(0);
+		if (!(USB_STATUS & USB_STATUS_MASK_USB_READY))
+			USB_Process(0, 0, NULL, 0, NULL);
+		pad = MenuPad();
+		if (pad == 0xFFFF)
+			continue;
+		i = pad & ~old;
+		old = pad;
+		if (i & PADRright)
+		{
+			ret = 0;
+			break;
+		}
+		if ((i & PADstart) || ((i & PADRdown) && !cur))
+		{
+			ret = 1;
+			break;
+		}
+		if (i & (PADLup | PADLdown))
+			cur = (cur + ((i & PADLup) ? SD_GAME_ITEMS - 1 : 1)) % SD_GAME_ITEMS;
+		else if ((i & PADRdown) && (cur == 1) && n)	// The cheat screen: START there boots
+		{
+			if (CheatScreen(n, title))
+			{
+				ret = 1;
+				break;
+			}
+			old = 0xFFFF;	// (back: the screen restored, the buttons released first)
+		}
+		else if ((i & (PADLleft | PADLright | PADRdown)) && (cur == 2))
+			sd_game_edc = !sd_game_edc;
+		else if ((i & (PADLleft | PADLright | PADRdown)) && (cur == 3))
+			sd_game_bootfix = !sd_game_bootfix;
+		else
+			continue;
+		SdDrawGame(e, cur, n, note);
+	}
+	if ((sd_game_edc != edc) || (sd_game_bootfix != bootfix))
+	{
+		SdDrawHelp("Saving the game's settings...");
+		if (!SdGameSave(e) && !ret)
+			ret = -1;
+	}
+	if (ret == 1)
+		CheatApply(n);	// (none ticked: no table)
+	return (ret);
 }
 
 // The root's entry selected now (in a folder: the folder's), for the next opening
-#define	SD_KEEP_SELECTION()	(*(volatile uint32_t *)SD_LAST_ADRS = SD_LAST_MAGIC | (sd_view << 16) | \
-								(depth ? parent_sel[0] : sel))
+#define	SD_KEEP_SELECTION(_len_, _name_)	(SdKeepPlace(_len_, _name_), \
+	*(volatile uint32_t *)SD_LAST_ADRS = SD_LAST_MAGIC | (sd_view << 16) | (depth ? parent_sel[0] : sel))
 
 // START + SELECT on the menu with the PicoStation's menu disc in the drive. Returns after a boot that failed (its
 // message in the menu's log) or when closed: the menu is drawn again (MenuScreen).
@@ -1354,7 +1828,8 @@ void	SdBrowser(void)
 	int			sel = 0, top = 0, held = 0, depth = 0, still = 0, scroll = 0, cover = -1, notice = 0, idle = 0, i;
 	int			grid_page = -1, grid_sel = 0;	// (grid: the page and the selection drawn)
 	uint16_t	parent_sel[16];
-	bool		redraw = true;
+	bool		redraw = true, chosen;	// (chosen: booted without the settings screen: the cheats chosen with Triangle,
+										// or the screen set off in the options)
 	SdEntry		*e;
 
 	sd_path[0] = 0;
@@ -1372,8 +1847,26 @@ void	SdBrowser(void)
 #ifdef MONITOR_IN_RAM
 	*(volatile uint16_t *)0x1F801114 = 0x0100;	// (test: timer 1 counts display lines, SD_TIME)
 #endif
+	// With the extra commands: the settings on the SD card win (before the list: the
+	// PicoStation's answers share the sector buffer)
+	sd_devcart = 0;
+	sd_cfg_view = -1;
+	sd_place_folder[0] = sd_place_name[0] = 0;	// (none without devcart.cfg: the RAM's selection)
+	if (Pico_DevcartInfo(&sd_devcart, NULL))
+	{
+		uint8_t		opts = saver_cfg[SAVER_OPTS];
+		uint16_t	chip;
+
+		if (sd_devcart & PICO_FEATURE_IDS)	// (the covers with their game's ID)
+			Pico_Command(PICO_EXTENDED, PICO_EXT_DEVCART_IDS | 1);
+		SdCfgLoad();
+		sd_cfg_view = sd_view;
+		sd_cfg_opts = saver_cfg[SAVER_OPTS] & SD_CFG_OPTS;
+		if ((saver_cfg[SAVER_OPTS] ^ opts) & OPT_PICO_START)	// (the SD card's wins: the flash has it from now)
+			SaveDeviceId(&chip);
+	}
 	SdDrawScreen();
-	SdDrawMessage("Reading the SD card...");
+	SdDrawHelp("Reading the SD card...");
 	if (!Pico_List(PICO_GOTO_ROOT, 0) ||
 		((sd_count == 1) && sd_list[0]->dir && !strcmp(sd_list[0]->name, "No SD Card")))
 	{
@@ -1381,8 +1874,47 @@ void	SdBrowser(void)
 		PrintConsole(sd_count ? "No SD card in the PicoStation" : "PicoStation not answering");
 		return;
 	}
+	SdDrawHelp(NULL);
+	// The place kept in devcart.cfg (it wins over the RAM's): its folders opened again, its entry selected
+	if (sd_place_folder[0] || sd_place_name[0])
+	{
+		const char	*p = sd_place_folder;
+		int			n, len;
+
+		while ((*p == '/') && (depth < sizeof(parent_sel) / sizeof(parent_sel[0])))
+		{
+			for (n = 1; p[n] && (p[n] != '/'); n++)
+				;
+			for (i = 0; i < sd_count; i++)
+				if ((sd_list[i]->dir != SD_FILE) && (strlen(sd_list[i]->name) == n - 1) &&
+					!strncmp(sd_list[i]->name, p + 1, n - 1))
+					break;
+			if ((i == sd_count) || ((len = strlen(sd_path)) + n >= sizeof(sd_path)))
+				break;		// (gone: as far as it is)
+			memcpy(sd_path + len, p, n);
+			sd_path[len + n] = 0;
+			parent_sel[depth++] = i;
+			if (!Pico_List(PICO_GOTO_DIR, sd_list[i]->index))
+			{
+				depth = 0;	// (back at the root)
+				sd_path[0] = 0;
+				Pico_List(PICO_GOTO_ROOT, 0);
+				break;
+			}
+			p += n;
+		}
+		for (i = 0; i < sd_count; i++)
+			if (!strncmp(sd_list[i]->name, sd_place_name, SD_PLACE_NAME - 1))
+			{
+				sel = i;
+				break;
+			}
+		top = (sel > SD_ROWS / 2) ? sel - SD_ROWS / 2 : 0;
+		top = (top + SD_ROWS > sd_count) ? ((sd_count > SD_ROWS) ? sd_count - SD_ROWS : 0) : top;
+		SdDrawTitle();
+	}
 	// The entry selected last time (after a reset too)
-	if (((*(volatile uint32_t *)SD_LAST_ADRS & 0xFF000000) == SD_LAST_MAGIC) &&
+	else if (((*(volatile uint32_t *)SD_LAST_ADRS & 0xFF000000) == SD_LAST_MAGIC) &&
 		((*(volatile uint32_t *)SD_LAST_ADRS & 0xFFFF) < sd_count))
 	{
 		sel = *(volatile uint32_t *)SD_LAST_ADRS & 0xFFFF;
@@ -1489,6 +2021,7 @@ void	SdBrowser(void)
 		old = pad;
 		if (!i)
 			continue;
+		chosen = false;
 		if (sd_count && (i & PADRup) && (sd_list[sel]->dir == SD_DISCS))	// A game's discs: chosen first (their
 			i = PADRdown;													// cheats: each disc's)
 
@@ -1519,7 +2052,7 @@ void	SdBrowser(void)
 				sel = ((k == sel) && sel) ? SdLetter(sel - 1) : k;
 			redraw = (sel != was);
 		}
-		else if (i & PADstart)	// START: the options (the view, the PicoStation's processing)
+		else if (i & PADstart)	// START: the options (the view, the game settings screen)
 		{
 			SdOptions();
 			old = 0xFFFF;	// (the buttons released first)
@@ -1540,7 +2073,7 @@ void	SdBrowser(void)
 		{
 			if (!depth)
 				break;
-			SdDrawMessage("Reading the SD card...");
+			SdDrawHelp("Reading the SD card...");
 			if (!Pico_List(PICO_GOTO_PARENT, 0))
 				break;
 			for (i = strlen(sd_path); i && (sd_path[--i] != '/'); )	// The last directory taken off
@@ -1550,6 +2083,7 @@ void	SdBrowser(void)
 			sel = (sel < sd_count) ? sel : 0;
 			top = (sel > SD_ROWS / 2) ? sel - SD_ROWS / 2 : 0;
 			SdDrawTitle();
+			SdDrawHelp(NULL);
 			redraw = true;
 			cover = -1;	// (entry numbers: of this directory)
 			grid_page = -1;
@@ -1579,7 +2113,7 @@ void	SdBrowser(void)
 				title[8 + k] = 0;
 			}
 			SdDrawHelp("Reading the SD card's cheats...");
-			if ((e->dir == SD_FILE) ? Pico_Cheats(e->index) : (e->dir != SD_FOLDER) && SdInFolder(e, Pico_Cheats))
+			if (SdEntryCheats(e))
 				n = SdCheatText((char *)SD_CHT_ADRS, n, (uint8_t *)SD_COVER_ADRS, (uint8_t *)SD_IMAGE_ADRS);
 			if ((e->dir == SD_FOLDER) && !sd_view)	// (looked into: not a game)
 				SdDrawRow(sel - top, sel, sel, 0);
@@ -1601,13 +2135,17 @@ void	SdBrowser(void)
 				old = 0xFFFF;	// (back: the buttons released first)
 				if (!CheatScreen(n, title))
 					continue;	// (O: the screen as it was)
-				// START: the cheats chosen are in the code engine's table, the game booted (as X)
+				// START: the cheats chosen are in the code engine's table, the game booted (as X, with its saved
+				// settings: no settings screen)
+				chosen = true;
 				i = PADRdown;
 			}
 		}
-		if (sd_count && (i & PADRdown))	// X: open or boot
+		if (sd_count && (i & PADRdown))	// X: open, or the game's settings screen then boot
 		{
-			bool	cheats = false;	// (chosen before: Triangle)
+			int		r = 1;
+
+			chosen |= (saver_cfg[SAVER_OPTS] & OPT_NO_GAME_SCREEN) != 0;	// (set off: booted at once)
 
 			e = sd_list[sel];
 			if (e->dir)
@@ -1623,14 +2161,36 @@ void	SdBrowser(void)
 					sd_path[len] = '/';
 					strcpy(sd_path + len + 1, e->name);
 				}
-				SdDrawMessage("Reading the SD card...");
+				SdDrawHelp("Reading the SD card...");
 				if (!Pico_List(PICO_GOTO_DIR, e->index))
 					break;
 				if (game && (sd_count == 1) && (sd_list[0]->dir == SD_FILE))
 				{
-					SD_KEEP_SELECTION();
-					SdBoot(sd_list[0], cheats);
-					return;	// (failed: its message is in the log)
+					if (chosen)
+						SdGameLoad(sd_list[0]);
+					if (chosen || ((r = SdGameScreen(sd_list[0])) > 0))
+					{
+						SD_KEEP_SELECTION(len, (sd_path[len] == '/') ? sd_path + len + 1 : "");
+						if (SdBoot(sd_list[0], false))
+							return;	// (failed: its message is in the log)
+						r = -2;		// (not opened: back)
+					}
+					// O: back in the directory, as it was
+					sd_path[len] = 0;
+					SdDrawHelp("Reading the SD card...");
+					if (!Pico_List(PICO_GOTO_PARENT, 0))
+						break;
+					SdDrawScreen();
+					old = 0xFFFF;	// (the button that closed it: released first)
+					if (r < 0)
+					{
+						SdDrawHelp((r == -2) ? "This game can't be opened" : "The settings couldn't be saved");
+						notice = 150;
+					}
+					redraw = true;
+					cover = -1;
+					grid_page = -1;
+					continue;
 				}
 				// A game's discs (.cue files only): each one of them shows the game's count
 				for (i = 0; (i < sd_count) && (sd_list[i]->dir == SD_FILE); i++)
@@ -1641,19 +2201,36 @@ void	SdBrowser(void)
 				parent_sel[depth++] = sel;
 				sel = top = 0;
 				SdDrawTitle();
+				SdDrawHelp(NULL);
 				redraw = true;
 				cover = -1;
 				grid_page = -1;
 			}
 			else
 			{
-				SD_KEEP_SELECTION();
-				SdBoot(e, cheats);
-				return;	// (failed: its message is in the log)
+				if (chosen)
+					SdGameLoad(e);
+				if (chosen || ((r = SdGameScreen(e)) > 0))
+				{
+					SD_KEEP_SELECTION(strlen(sd_path), e->name);
+					if (SdBoot(e, false))
+						return;	// (failed: its message is in the log)
+					r = -2;		// (not opened: the screen again)
+				}
+				SdDrawScreen();	// (O: the screen as it was)
+				old = 0xFFFF;	// (the button that closed it: released first)
+				if (r < 0)
+				{
+					SdDrawHelp((r == -2) ? "This game can't be opened" : "The settings couldn't be saved");
+					notice = 150;
+				}
+				redraw = true;
+				cover = -1;
+				grid_page = -1;
 			}
 		}
 	}
-	SD_KEEP_SELECTION();
+	SD_KEEP_SELECTION(strlen(sd_path), sd_count ? sd_list[sel]->name : "");
 	MenuScreen(true);
 }
 

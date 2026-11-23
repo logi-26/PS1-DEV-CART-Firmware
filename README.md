@@ -334,7 +334,12 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
   "START + SELECT: PicoStation games"), START + SELECT opens the cartridge's PicoStation screen instead: the SD card's
   folders and `.cue` files, sorted, folders first, with the cover of the selected one (a `.cov` file next to the
   `.cue`, or next to a folder for the folder; "NO COVER" without). D-pad to choose (left/right: a page), X opens a
-  folder or boots the game, TRIANGLE boots it with the cheat screen, O goes back up (closes at the top), START closes.
+  folder, or the game's settings screen: boot it, its cheats, and the PicoStation's EDC correction and bootsector fix
+  for that game (START there boots too, O goes back). TRIANGLE boots it with the cheat screen, O goes back up (closes
+  at the top), SELECT changes the view (list, grid, cover flow). START opens the options: the view, the game settings
+  screen (off: X boots the game at once, as before), and OPEN AT POWER ON (the screen opens by itself at power on or
+  reset when the PicoStation's menu disc is in the drive; a button held at power on keeps the menu). While a game is
+  booted the screen stays up ("Booting the game..."); the menu comes back only if the boot fails, with its messages.
   The game is mounted, then booted by the cartridge as a disc: it keeps the kernel hook, which the PicoStation's own
   menu loses (it restarts the BIOS). Once a game is mounted, START + SELECT boots it again; RESET held one second
   brings the PicoStation's menu disc (and its games) back. The menu names the mounted game (START + SELECT: boot

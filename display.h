@@ -177,9 +177,27 @@ void	InitConsole(void)
 	ConsoleCurLine = CONSOLE_OFFSET_Y;
 }
 
+// While a game is booted from the PicoStation screen (sdbrowser.h SdBoot, console_hold): the log's last lines kept
+// instead of drawn (that screen stays up), shown on the menu if the boot fails (ConsoleReplay)
+#define	CONSOLE_HELD		6
+#define	CONSOLE_HELD_W		48
+static bool	console_hold;
+static char	console_held[CONSOLE_HELD][CONSOLE_HELD_W];
+static int	console_held_n;
+
 // A line of the activity log in a color (sprite tint, 128 = the font as it is: white)
 void	PrintConsoleColor(char *text, int r, int g, int b)
 {
+	if (console_hold)
+	{
+		char	*line = console_held[console_held_n++ % CONSOLE_HELD];
+		int		i;
+
+		for (i = 0; (i < CONSOLE_HELD_W - 1) && text[i]; i++)
+			line[i] = text[i];
+		line[i] = 0;
+		return;
+	}
 	if (ConsoleCurLine >= (CONSOLE_OFFSET_Y + CONSOLE_HEIGHT))
 	{
 		RECT	scroll = {CONSOLE_OFFSET_X, CONSOLE_OFFSET_Y + FONT_CHAR_H, CONSOLE_WIDTH, CONSOLE_HEIGHT - FONT_CHAR_H};
@@ -196,3 +214,13 @@ void	PrintConsoleColor(char *text, int r, int g, int b)
 }
 
 #define	PrintConsole(_text_)	PrintConsoleColor(_text_, TEXT_WHITE)
+
+// The lines kept while console_hold was set, drawn (in white)
+static void	ConsoleReplay(void)
+{
+	int	i = (console_held_n > CONSOLE_HELD) ? console_held_n - CONSOLE_HELD : 0;
+
+	for (; i < console_held_n; i++)
+		PrintConsole(console_held[i % CONSOLE_HELD]);
+	console_held_n = 0;
+}

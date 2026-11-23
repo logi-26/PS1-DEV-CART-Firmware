@@ -27,8 +27,12 @@
 
 #define	SAVER_OPTS		2		// saver_cfg[SAVER_OPTS]: the menu's options, OPT_*
 #define	OPT_NO_DETAILS	0x01	// The PicoStation screen's list: no discs and cheats counts (faster: nothing read)
-#define	OPT_NO_EDC		0x02	// The PicoStation's EDC correction off for the games mounted (sdbrowser.h SdOptions)
-#define	OPT_NO_BOOTFIX	0x04	// Its bootsector fix off
+// (0x02, 0x04: once the PicoStation's EDC correction and bootsector fix for all games; now each game's own, see
+// sdbrowser.h SdGameScreen. Left unused: a cartridge's flash may still have them set.)
+#define	OPT_NO_GAME_SCREEN	0x08	// The PicoStation screen: X boots a game at once (its saved settings), no settings
+									// screen first (sdbrowser.h SdOptions, devcart.cfg "gamescreen=off")
+#define	OPT_PICO_START		0x10	// The PicoStation screen opened at power on / reset (its menu disc in the drive, no
+									// button held: ps1devcart.c main; SdOptions, devcart.cfg "autostart=on")
 
 uint8_t			saver_cfg[3];	// (read from the flash: LoadDeviceId)
 uint8_t			saver_rx[3];	// Received by the 'S' command, see usb.h
