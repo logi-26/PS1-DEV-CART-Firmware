@@ -30,6 +30,7 @@ import ttkbootstrap as tb
 
 import aad
 import akao
+import assetscan
 import audioconv
 import discimage
 import movieconv
@@ -995,6 +996,8 @@ class ConvertTab(tb.Frame):
 
     def build_scan(self, tab):
         tb.Label(tab, text="Finds every music in a disc image (.bin, .cue, .iso, .ecm) or game archive, to SEQ + VAB:\n"
+                           "  • Sony SEQ + VAB, the standard format (Resident Evil 2 and most games): each music "
+                           "with its sound bank\n"
                            "  • Sony SQ + HD + BD (Ape Escape, Alundra 2, The Legend of Dragoon)\n"
                            "  • Crystal Dynamics SND + SMP music and SNF + SMF sound effects (Gex 2, Gex 3, "
                            "Akuji, Soul Reaver)\n"
@@ -1049,13 +1052,35 @@ class ConvertTab(tb.Frame):
 
         def work(progress):
             # (the game's file read where needed, never whole: a disc image is hundreds of MB)
+            standard = assetscan.disc_music(src, lambda d, t: progress(d, t * 4))
             with discimage.Image(src) as img:
-                musics = sshd.scan(img, lambda d, t: progress(d, t * 3))
-            banks = aad.scan(src, lambda d, t: progress(t + d, t * 3))
+                musics = sshd.scan(img, lambda d, t: progress(t + d, t * 4))
+            banks = aad.scan(src, lambda d, t: progress(2 * t + d, t * 4))
             effects = aad.scan_sfx(src)
-            squares = akao.scan(src, lambda d, t: progress(2 * t + d, t * 3))
+            squares = akao.scan(src, lambda d, t: progress(3 * t + d, t * 4))
             os.makedirs(out, exist_ok=True)
             rows = []
+            names = set()
+            for m in standard:                  # (Sony's SEQ + VAB: written as found, with the bank it plays with)
+                name = m["name"]
+                while name.lower() in names:    # (the same file name in two folders)
+                    name += "_"
+                names.add(name.lower())
+                base = os.path.join(out, name)
+                ext = ".sep" if m["kind"] == "SEP" else ".seq"
+                with open(base + ext, "wb") as f:
+                    f.write(m["seq"])
+                seconds, notes = assetscan.seq_seconds(m["seq"])
+                files, bank, coverage = [base + ext], "none found", None
+                if m["vh"] is not None:
+                    with open(base + ".vh", "wb") as f:
+                        f.write(m["vh"])
+                    with open(base + ".vb", "wb") as f:
+                        f.write(m["vb"])
+                    files = [base + ".vh", base + ".vb", base + ext]
+                    bank = "%s (%d KB of samples)" % (m["bank_file"], len(m["vb"]) // 1024)
+                    coverage = assetscan.seq_coverage(m["seq"], m["vh"])
+                rows.append((name, "SEQ + VAB", dict(seconds=seconds, notes=notes), bank, coverage, m["note"], files))
             for n, m in enumerate(musics):
                 base = os.path.join(out, "%02d" % n)
                 if original:                    # (the game's own files, not changed)
@@ -1125,7 +1150,8 @@ class ConvertTab(tb.Frame):
             self.scan_open.configure(state="normal")
             self.scan_play.configure(state="disabled")
             if not rows:
-                return self.set_status("No music found in %s (formats known: SQ/HD, Crystal Dynamics' SND, AKAO)." %
+                return self.set_status("No music found in %s (formats known: SEQ + VAB, SQ/HD, Crystal Dynamics' "
+                                       "SND, AKAO)." %
                                        os.path.basename(src), True)
             alone = sum(1 for r in rows if r[4] is None)
             self.set_status("%d musics written in %s%s." % (len(rows), out, (" (%d with no bank found: SEQ only)" %

@@ -10,6 +10,9 @@ Found by their headers, each one checked before it is kept (a header alone is of
   sample's last ADPCM block has its end flag). A VH alone (the samples already sent to the SPU, the VB freed): its
   samples are looked for in the SPU RAM of the snapshot (the VAG sizes of the VH, one after the other, each ending on
   an end flag), and the VAB put together again.
+- Resident Evil 2's music files (MAINnn.BGM, SUB_nn.BGM: VH, SEQ and VB in one file, their offsets in its last
+  words): the VH with its VB. Its sound effect banks (NAME.EDH: a table, then the VH; the samples in NAME.VB) are
+  paired by the Asset Extractor's disc scan.
 - SEQ music ("pQES", version 1) up to its end of track, SEP ("pQES", version 0) with its SEQs.
 - VAG samples ("VAGp" and the data size).
 - TMD models: ID 0x41, the object table (vertices, normals and primitives inside the file).
@@ -273,11 +276,48 @@ def samples_valid(buf, start, sizes):
     return set(last.tolist()) <= set(ends.tolist()) and len(np.setdiff1d(ends, last)) == 0
 
 
+def bgm_banks(d):
+    """Resident Evil 2's music files (Resident Evil 2's decompilation, github.com/MeganGrass/bio2-ds, Bio2/prog/SND.C,
+    Snd_bgm_main and Snd_bgm_sub): the VH, the SEQs and the VB in one file, their offsets in the file's last words.
+    MAINnn.BGM ends with the VB's offset (also the size of the VH + SEQ part), the VH's and the SEQ's; SUB_nn.BGM (two
+    SEQs, the first at 0, played together on the bank) with the VB's, the VH's, the second SEQ's and a word not read.
+    (VH offset, VB offset, [SEQ offsets in the order the game opens them]) or None."""
+    n = len(d)
+    if n < 16:
+        return None
+    for words in (3, 4):                            # (main: vb vh seq; sub: vb vh seq1 -)
+        vb, vh = u32(d, n - 4 * words), u32(d, n - 4 * words + 4)
+        seq_offs = ([0] if words == 4 else []) + [u32(d, n - 4 * words + 8)]
+        if not vh < vb < n or not vh_at(d, vh):
+            continue
+        if all(o < vb and d[o:o + 4] == b"pQES" for o in seq_offs):
+            return vh, vb, seq_offs
+    return None
+
+
+def bgm_vh(vh):
+    """A Resident Evil 2 music bank's VH made playable as it is: the game sets its programs' volumes for each room
+    (Snd_bgm_ctr: a room's table writes them into the loaded VH, a layer of the music left silent where it isn't
+    heard); the programs at 0 in the file are raised to 127. (vh, number raised)"""
+    vh, raised = bytearray(vh), 0
+    for p in range(128):
+        o = VH_HEADER + p * 16
+        if vh[o] and not vh[o + 1]:                     # (tones, volume 0)
+            vh[o + 1] = 127
+            raised += 1
+    return bytes(vh), raised
+
+
 # ---------------------------------------------------------------------------------------------------- SEQ
 
 def seq_end(d, p):
     """Offset after the end of track of the SEQ events starting at p, or None (bad data or no end)."""
-    status, n, limit = 0, 0, min(len(d), p + 0x100000)
+    return seq_walk(d, p)[0]
+
+
+def seq_walk(d, p):
+    """The SEQ events starting at p: (offset after the end of track or None (bad data or no end), notes played)."""
+    status, n, notes, limit = 0, 0, 0, min(len(d), p + 0x100000)
 
     def varlen():
         nonlocal p
@@ -292,7 +332,7 @@ def seq_end(d, p):
                 return v
         return None
     if varlen() is None:
-        return None
+        return None, 0
     while p + 1 < limit:
         n += 1
         s = d[p]
@@ -305,19 +345,21 @@ def seq_end(d, p):
             typ = d[p]
             p += 1
             if typ == 0x2F:
-                return p + 1 if p < len(d) and d[p] == 0 else p
+                return (p + 1 if p < len(d) and d[p] == 0 else p), notes
             if typ == 0x51:
                 p += 3
             else:
-                return None     # (SEQ files hold no other meta events)
+                return None, notes      # (SEQ files hold no other meta events)
         else:
             if s < 0x80 or s >= 0xF0:
-                return None
+                return None, notes
             status = s
+            if s & 0xF0 == 0x90 and p + 1 < limit and d[p + 1]:
+                notes += 1
             p += 1 if s & 0xF0 in (0xC0, 0xD0) else 2
         if varlen() is None:
-            return None
-    return None
+            return None, notes
+    return None, notes
 
 
 def seq_at(d, o):
@@ -329,10 +371,11 @@ def seq_at(d, o):
         res, tempo = be(d[h:h + 2]), be(d[h + 2:h + 5])
         if not res or not tempo:
             return None
-        end = seq_end(d, h + 7)
+        end, notes = seq_walk(d, h + 7)
         if not end:
             return None
-        return end - o, "SEQ", "%d ticks a beat, %d BPM" % (res, round(60000000 / tempo))
+        return end - o, "SEQ", "%d ticks a beat, %d BPM, %d note%s" % (res, round(60000000 / tempo), notes,
+                                                                      "" if notes == 1 else "s")
     if be(d[o + 4:o + 6]) != 0:
         return None
     p, n = o + 6, 0
@@ -389,6 +432,9 @@ def scan_bytes(d, where="RAM", spu_ram=None, progress=None):
             candidates.append((int(i) * 4, kind))
     candidates.sort()
     covered = 0                     # (assets inside an asset already found: skipped)
+    bgm = bgm_banks(d) if where != "RAM" else None
+    if bgm:                                         # (its SEQs with notes: a SUB file's second is often empty)
+        bgm = bgm[:2] + ([o for o in bgm[2] if (seq_at(d, o) or (0, 0, " 0 notes"))[2].find(" 0 notes") < 0],)
     for n, (o, kind) in enumerate(candidates):
         if progress and not n % 2000:
             progress(n, len(candidates))
@@ -409,6 +455,14 @@ def scan_bytes(d, where="RAM", spu_ram=None, progress=None):
             sizes = vag_sizes(vh, size, vs)
             total = sum(sizes)
             text = "%d programs, %d tones, %d samples (%d KB)" % (ps, ts, vs, total // 1024)
+            vb = bgm[1] if bgm and bgm[0] == o else None
+            if vb is not None and vb + total <= len(d) and len(samples_at(d[vb:vb + total], sizes, [0])) == 1:
+                vh, raised = bgm_vh(vh)
+                found.append(Asset("VAB", where, o, vh, text + ", with its samples (Resident Evil 2 music file)%s" % (
+                    ("; %d program%s at volume 0 in the file (the game sets them for each room) raised to 127" % (
+                        raised, "s" if raised > 1 else "")) if raised else ""), ".vh", {".vb": bytes(d[vb:vb + total])}))
+                covered = o + size
+                continue
             vb_here = o + size + total <= len(d) and len(samples_at(d[o + size:o + size + total], sizes, [0])) == 1
             if vb_here:
                 data = vh + bytes(d[o + size:o + size + total])
@@ -425,6 +479,13 @@ def scan_bytes(d, where="RAM", spu_ram=None, progress=None):
             covered = o + size
         elif kind == "SEQ":
             s = seq_at(d, o)
+            if s and bgm and s[2].endswith(" 0 notes"):    # (Resident Evil 2: an empty SEQ, left out)
+                covered = o + s[0]
+                continue
+            if s and bgm and o in bgm[2]:
+                if len(bgm[2]) > 1:
+                    s = s[:2] + (s[2] + "; SEQ %d of 2, played together with the other on the bank" % (
+                        bgm[2].index(o) + 1),)
             if s:
                 found.append(Asset(s[1], where, o, bytes(d[o:o + s[0]]), s[2], ".seq" if s[1] == "SEQ" else ".sep"))
                 covered = o + s[0]
@@ -565,6 +626,135 @@ def akao_music(d, where="RAM"):
         except Exception:
             continue
     return found
+
+
+# ---------------------------------------------------------------------------------------------------- disc music
+
+DISC_SKIP = (".XA", ".STR", ".DA", ".MOV", ".AV")   # (audio and movie sectors: no SEQ or VAB in them)
+DISC_FILE_MAX = 32 << 20                            # a file bigger than this: not read (a disc's file, not a disc)
+MUSIC_MAGICS = (b"pQES", b"SEQp")
+
+
+def seq_seconds(data):
+    """A SEQ's length (or a SEP's first SEQ) read straight through, its tempo changes followed: seconds, notes."""
+    import audioconv
+    try:
+        res, tempo, _, _, body = audioconv.seq_tracks(data)[0]
+        events, _ = audioconv._seq_events(body)
+    except Exception:       # noqa: BLE001 (damaged data: no length)
+        return 0.0, 0
+    res, tempo = res or 480, tempo or 500000
+    seconds, last, notes = 0.0, 0, 0
+    for tick, kind, ev in events:
+        seconds += (tick - last) * tempo / res / 1e6
+        last = tick
+        if kind != "ev":
+            continue
+        if ev[:2] == b"\xFF\x51":
+            tempo = int.from_bytes(ev[3:6], "big") or tempo
+        elif ev[0] & 0xF0 == 0x90 and len(ev) > 2 and ev[2]:
+            notes += 1
+    return seconds, notes
+
+
+def disc_music(path, progress=None):
+    """Sony's standard music in a disc image (.bin/.cue/.iso/.ecm) or a game archive: each SEQ (and SEP) with the
+    sound bank it plays with, its files read one by one (never the whole image; assetscan's checks):
+    - a bank in the same file (a game's music file: Resident Evil 2's MAINnn.BGM and SUB_nn.BGM, an archive);
+    - else NAME.VAB, or NAME.VH + NAME.VB, beside NAME.SEQ on the disc; a VH alone: its samples in NAME.VB.
+    [dict(name, where (the disc's file), seq (bytes), kind ("SEQ"/"SEP"), vh, vb (bytes or None), info (the
+    scanner's), bank_file, note (about the bank))], in the disc's order."""
+    import aad
+    import discimage
+    out = []
+    with discimage.Image(path) as img:
+        files = aad.iso_files(img)
+        if not files:           # (a game's archive, or an image without a file system: read whole if small)
+            if img.size > DISC_FILE_MAX:
+                return []
+            files = [(os.path.basename(path), 0, img.size)]
+        by_name = {}
+        for name, start, size in files:
+            by_name[name.upper()] = (start, size)
+        total = len(files)
+        for n, (name, start, size) in enumerate(files):
+            if progress and not n % 20:
+                progress(n, total)
+            if not 16 <= size <= DISC_FILE_MAX or name.upper().endswith(DISC_SKIP):
+                continue
+            data = img.read(start, size)
+            if not any(m in data for m in MUSIC_MAGICS):
+                continue
+            base = name.rsplit("/", 1)[-1]
+            found = scan_bytes(data, base)
+            seqs = [a for a in found if a.kind in ("SEQ", "SEP")]
+            if not seqs:
+                continue
+            banks = [a for a in found if a.kind in ("VAB", "VH")]
+            stem = os.path.splitext(name)[0].upper()
+            vh = vb = None
+            bank_file, note = "", ""
+            whole = next((b for b in banks if b.kind == "VAB"), None)
+            if whole:           # (the bank in the same file)
+                vh = whole.data if whole.parts else whole.data[:vh_at(whole.data, 0)[0]]
+                vb = whole.parts.get(".vb") or whole.data[len(vh):]
+                bank_file = base
+                if "raised to 127" in whole.info:
+                    note = "programs at volume 0 in the file raised to 127 (the game sets them for each room)"
+            else:
+                lone = banks[0].data if banks else None
+                for ext_vh, ext_vb in ((".VAB", None), (".VH", ".VB")):
+                    if lone is None and stem + ext_vh in by_name:
+                        s, z = by_name[stem + ext_vh]
+                        lone = img.read(s, min(z, DISC_FILE_MAX))
+                    if lone is not None:
+                        v = vh_at(lone, 0)
+                        if not v:
+                            lone = None
+                            continue
+                        need = sum(vag_sizes(lone, v[0], v[3]))
+                        if len(lone) >= v[0] + need:                    # (a whole VAB)
+                            vh, vb = lone[:v[0]], lone[v[0]:v[0] + need]
+                        elif stem + ".VB" in by_name and by_name[stem + ".VB"][1] >= need:
+                            s, _ = by_name[stem + ".VB"]
+                            vh, vb = lone[:v[0]], img.read(s, need)
+                        if vh is not None:
+                            bank_file = "%s%s" % (stem.rsplit("/", 1)[-1], ext_vh if ext_vh == ".VAB" else ".VH + .VB")
+                            break
+            for i, s in enumerate(seqs):
+                label = os.path.splitext(base)[0] + ("" if len(seqs) == 1 else "_%d" % (i + 1))
+                out.append(dict(name=label, where=name, seq=s.data, kind=s.kind, vh=vh, vb=vb, info=s.info,
+                                bank_file=bank_file, note=note))
+    if progress:
+        progress(total, total)
+    return out
+
+
+def seq_coverage(seq, vh):
+    """The share of a SEQ's notes that have a tone with a sample in the bank (its programs and key ranges): 0-1, None
+    without notes or a bank."""
+    import audioconv
+    import vab as vabmod
+    try:
+        bank = vabmod.Vab(vh)
+        _, _, _, _, body = audioconv.seq_tracks(seq)[0]
+        events, _ = audioconv._seq_events(body)
+    except Exception:       # noqa: BLE001
+        return None
+    progs, played, sounding = {}, 0, 0
+    for _, kind, ev in events:
+        if kind != "ev" or ev[:1] == b"\xFF":
+            continue
+        ch = ev[0] & 15
+        if ev[0] & 0xF0 == 0xC0:
+            progs[ch] = ev[1]
+        elif ev[0] & 0xF0 == 0x90 and len(ev) > 2 and ev[2]:
+            played += 1
+            p = progs.get(ch, 0)
+            if p in bank.blocks and any(t["min"] <= ev[1] <= t["max"] and 1 <= t["vag"] <= bank.vs
+                                        for t in bank.tones(p)):
+                sounding += 1
+    return sounding / played if played else None
 
 
 def scan_spu(dump):

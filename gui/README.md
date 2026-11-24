@@ -225,7 +225,10 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     WAV/MP3/OGG/FLAC (the WAV keeps the loop, or the loop is played again), VAB → its samples in a folder (WAVs with
     their root note and loop) and a list of its programs and tones, SEQ → MIDI (the loop as loopStart/loopEnd
     markers, or written again), XA (or an STR movie's sound) → one audio file per channel.
-    - **Game music**: games' music as SEQ + VAB for the tester, the samples kept as they are: Sony's later format
+    - **Game music**: games' music as SEQ + VAB for the tester, the samples kept as they are: Sony's standard SEQ
+      + VAB itself (Resident Evil 2 and most libsnd games: each SEQ found in the image's files, one by one, with the
+      bank it plays with: in the same file (Resident Evil 2's MAINnn.BGM and SUB_nn.BGM), else NAME.VAB or NAME.VH +
+      NAME.VB beside it; `assetscan.disc_music`), Sony's later format
       (SQ/HD, 1999: Ape Escape, Alundra 2, The Legend of Dragoon, Wild Arms 2...; `sshd.py`) and Crystal Dynamics'
       (SND + SMP: Gex 2, Gex 3, Akuji, Soul Reaver...; their BIGFILE.DAT unpacked; `aad.py`; Soul Reaver's tracks,
       each looping over its own length, merged with one loop where they all start again together) and Square's AKAO
@@ -328,14 +331,17 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
     - **Disc**: **Read the disc** starts the disc reader on the console (`ps1transfer -disc`, commands on its input,
       see `ps1transfer/disclive.c`): the disc identified (licensed or not, region, volume name), its tracks and its
       files listed with their type (the extension and the XA attributes of the directory: Form 2 sectors are XA audio
-      or STR movies). Only the directories are read. **Save selected** copies the files chosen (a folder: its files):
-      XA and STR files with their whole 2336-byte sectors (what the Convert tab and the Movie Tools read), the others
-      as their 2048-byte data; **XA audio: also as WAV** converts each XA channel. **Save and scan for assets** copies
-      the file and looks inside it for the formats below (games often keep them in archive files). **Scan the whole disc** copies every data file (XA, STR and CD
-      audio left out) into the settings folder (`gamedata/disc/VOLUME`) and scans each one, the assets of all of them
-      in Assets found (named after their file; a NAME.VH with its NAME.VB: the whole bank). **Stop** drops the
-      files waiting and stops the one being copied or the track being recorded (nothing is written for it; a file
-      stops between its reads of about 900 KB). About 100 KB/s.
+      or STR movies). Only the directories are read. Select files or folders, then **Extract assets...**: they are
+      copied into the settings folder (`gamedata/disc/VOLUME`, the disc's folders kept), each one scanned for the
+      formats below (games often keep them in archive files), and what is found is written to the folder chosen: each
+      music with the sound bank(s) of its file, side by side (`Music and sound banks/MAIN01`: SEQ, VH, VB; a NAME.VH,
+      or Resident Evil 2's NAME.EDH, with its NAME.VB: the whole bank), the other types in a folder each; XA audio,
+      movies and CD audio tracks chosen are saved there as they are. That folder is opened at the end; what was found
+      is also listed in Assets found. One progress bar for all of it (copying, scanning, writing). **Copy the files
+      as they are...** copies the files chosen unchanged: XA and STR files with their whole 2336-byte sectors (what
+      the Convert tab and the Movie Tools read), the others as their 2048-byte data; **XA audio: also as WAV**
+      converts each XA channel. **Stop** drops the files waiting and stops the one being copied or the track being
+      recorded (nothing is written for it; a file stops between its reads of about 900 KB). About 100 KB/s.
       CD audio tracks are saved as WAV files (44100 Hz stereo). The drive gives no CD audio sectors to a read, so
       the disc reader plays the track and records it from the SPU's capture buffers (what the SPU receives from the
       drive, 512 samples a channel, each half copied while the SPU writes the other one) and sends each half to the
@@ -355,18 +361,27 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
       own colors, **Save PNG**/**Save TIM** (4/8-bit TIMs with their CLUT), **All textures...** (TIM and PNG each),
       or the whole VRAM as PNG. **SPU RAM Viewer** opens the snapshot's SPU RAM there.
     - **Assets found**: the textures in use, and what the scanner found in the snapshot (RAM and SPU RAM) or the
-      disc file (**Show**: all, textures and images, sound banks and music, samples, models), checked beyond
-      their headers: TIM images (previewed), VAB banks (a VH alone in RAM: its samples found in SPU RAM, the VAG
+      disc files, listed by type (music, sound banks, games' own music, samples, images, textures, models: how many
+      of each; a type opened to see its assets, sorted by name, each one under the file name it is extracted as).
+      **Find** keeps the ones whose name, file or details have the words typed (e.g. `MAIN`, `120 BPM`). Checked
+      beyond their headers: TIM images (previewed), VAB banks (a VH alone in RAM: its samples found in SPU RAM, the VAG
       sizes of the VH one after the other each ending on an end flag, and put together as VH + VB; the sound
-      library's values in the VH reset as in the files), SEQ and SEP music, VAG samples, TMD models, and the SPU RAM
+      library's values in the VH reset as in the files; Resident Evil 2's music files, VH + SEQs + VB in one file:
+      the bank whole, from the offsets in their last words; the game sets the programs' volumes for each room, so
+      those at 0 in the file are raised to 127 to hear every layer; a SUB file's two SEQs play together on its bank,
+      an empty one left out), SEQ and SEP music, VAG samples, TMD models, and the SPU RAM
       samples as VAGs. Also games' music in other formats, saved as found and converted for the tester (SEQ + VH
       + VB): **SQ** (Sony's SQ/HD/BD: Ape Escape, Alundra 2...), **SND** (Crystal Dynamics' bank with its SMP
       samples and one SEQ for each of its musics: Gex 3, Akuji...; also inside a Gex-style BIGFILE.DAT, its
       compression undone) and **AKAO** (Square's sequences and sample sets: FF7, FF8, Vagrant Story...; also inside
       FF7's LZS files; a sequence converted when its sample set is in the same file, else saved as found: the Game
-      music scan of the whole disc image converts it). **Save selected**/**Save all**, or **Open in the tools**: TIMs in the VRAM Viewer, a bank,
-      music and samples in Sound Tools (an SQ or SND: its converted files, a bank's first music), a TMD in the Model
-      Viewer. Other compressed data isn't found: only the formats as they are stored. `python assetscan.py FILE_OR_SNAPSHOT_FOLDER [OUT_FOLDER]` does the same from the command
+      music scan of the whole disc image converts it). **Extract selected** (a type selected: all of its assets) or
+      **Extract all**: a music always with the sound bank(s) of the file it was found in, and a bank with its music,
+      side by side in a folder for that file (`Music and sound banks/MAIN01`: its SEQ, VH and VB), the other types in a
+      folder each (Images, Samples...); or a folder for each file they were found in, or all in one folder; written in
+      the background, the progress bar following. **Open in the tools** (or a double-click): TIMs in the VRAM
+      Viewer, a bank, music and samples in Sound Tools (a SEQ with the bank of its file; an
+      SQ or SND: its converted files, a bank's first music), a TMD in the Model Viewer. **Clear the list** empties it. Other compressed data isn't found: only the formats as they are stored. `python assetscan.py FILE_OR_SNAPSHOT_FOLDER [OUT_FOLDER]` does the same from the command
       line.
   - **Memory Card Tools**: backup and restore of the whole card in slot 1 or 2, and a save browser with the icons and
     titles: export (.mcs), import, copy (to an image or a card slot), delete, new blank image. It works on a card

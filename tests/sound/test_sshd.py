@@ -554,8 +554,11 @@ class NativeTests(unittest.TestCase):
                      ((0xB0, 99, 30), 30)], programs=(0, 3, 5))
 
     @staticmethod
-    def lines(h):
-        return [l for l in h.raw.splitlines() if l.split(" ")[0] in ("SCAN", "NOTE", "VOICE", "STOP", "DONE")]
+    def lines(h, volumes=True):
+        """What was played; volumes=False: a voice's two volumes left out (a converted music plays on libsnd's squared
+        volumes, an SQ with its HD on the driver's, not known: linear in the tester)."""
+        lines = [l for l in h.raw.splitlines() if l.split(" ")[0] in ("SCAN", "NOTE", "VOICE", "STOP", "DONE")]
+        return lines if volumes else [" ".join(l.split()[:-2]) if l.startswith("VOICE") else l for l in lines]
 
     def play(self, sq, hd, bd, **kw):
         import tempfile
@@ -587,7 +590,7 @@ class NativeTests(unittest.TestCase):
                 conv = self.converted(self.MUSIC, HD, BD, play_ms=4000, repeat=0, frame_us=frame_us)
                 self.assertIsNone(native.problem())
                 self.assertIsNone(conv.problem())
-                self.assertEqual(self.lines(conv), self.lines(native))
+                self.assertEqual(self.lines(conv, False), self.lines(native, False))
                 # The notes of each kind of program: a split, layers (two voices), a kit (37: no drum)
                 voices = [tuple(int(x) for x in l.split()[1:4]) for l in self.lines(native) if l.startswith("VOICE")]
                 self.assertIn((1, 60, 3), voices)
@@ -641,7 +644,8 @@ class NativeTests(unittest.TestCase):
                       ((62, 0), 0)], programs=(0,))
         native = self.play(sq, HD, BD, play_ms=2000, repeat=0)
         self.assertEqual([60, 62], [n[3] for n in native.notes])
-        self.assertEqual(self.lines(self.converted(sq, HD, BD, play_ms=2000, repeat=0)), self.lines(native))
+        self.assertEqual(self.lines(self.converted(sq, HD, BD, play_ms=2000, repeat=0), False),
+                         self.lines(native, False))
 
     def test_large_kit_every_note(self):
         hd = hd_file({0: (0xFF, [tone(0, 0, 60, 0, 0)] * 20, 40, 59)}, len(BD))

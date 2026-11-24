@@ -22,7 +22,7 @@ python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py
   - The real files of `PS1_SOUND_CORPUS`, each played for up to 3 minutes:
     - every note at its time
     - the length and the channels with notes
-    - each voice's pitch, volume and layered tones against the bank
+    - each voice's pitch, volume (libsnd's: squared, each pan on its side) and layered tones against the bank
     - the effects, seeks to several places
   - Damaged copies of those files (cut short, bytes changed): no hang, no read past the data.
 - `test_reverb.py`

@@ -20,6 +20,7 @@ import os
 import random
 import struct
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -271,6 +272,135 @@ class Scanner(unittest.TestCase):
         self.assertEqual(vb, found[0].parts[".vb"])
         self.assertIn("0x01010", found[0].info)
 
+    @staticmethod
+    def bgm_file(rng, sub=False, footer=None, empty2=False, silent=()):
+        """A Resident Evil 2 music file, as its loader reads it (Bio2/prog/SND.C, Snd_bgm_main / Snd_bgm_sub of
+        github.com/MeganGrass/bio2-ds): MAINnn.BGM a SEQ, the VH, the VB, the words VB VH SEQ; SUB_nn.BGM a SEQ at 0,
+        the VH, a second SEQ (empty2: no notes, as most of the game's), the VB, the words VB VH SEQ2 and one more.
+        silent: programs at volume 0 (the game sets them for each room). (vh, vb, file)"""
+        vh, vb = make_bank(rng, 3)
+        vh = bytearray(vh)
+        for prog in silent:
+            vh[32 + prog * 16 + 1] = 0
+        vh = bytes(vh)
+        seq, seq2 = make_seq(rng), make_seq(rng, 20)
+        if empty2:
+            seq2 = seq2[:15] + bytes((0, 0xFF, 0x51, 0x07, 0xA1, 0x20, 0, 0xFF, 0x2F, 0))
+        head = seq + bytes((-len(seq)) % 16)
+        vh_off = len(head)
+        head += vh
+        seq2_off = len(head)
+        if sub:
+            head += seq2 + bytes((-len(seq2)) % 16)
+        vb_off = len(head)
+        words = footer or ((vb_off, vh_off, seq2_off, 0) if sub else (vb_off, vh_off, 0))
+        return vh, vb, head + vb + struct.pack("<%dI" % len(words), *words)
+
+    def test_re2_music_files(self):
+        """Resident Evil 2's MAINnn.BGM and SUB_nn.BGM: the VH with its VB (from the file's last words), the SEQs."""
+        for sub in (False, True):
+            with self.subTest(sub=sub):
+                vh, vb, data = self.bgm_file(random.Random(12), sub)
+                found = assetscan.scan_bytes(data, "SUB_00.BGM" if sub else "MAIN00.BGM")
+                vabs = [a for a in found if a.kind == "VAB"]
+                self.assertEqual(1, len(vabs), [(a.kind, a.info) for a in found])
+                self.assertEqual(vh, vabs[0].data)
+                self.assertEqual(vb, vabs[0].parts[".vb"])
+                self.assertIn("Resident Evil 2", vabs[0].info)
+                seqs = [a for a in found if a.kind == "SEQ"]
+                self.assertEqual(2 if sub else 1, len(seqs))
+                self.assertEqual([True, True] if sub else [False],
+                                 [("SEQ %d of 2" % (i + 1)) in a.info for i, a in enumerate(seqs)])
+                self.assertIn("40 notes", seqs[0].info)
+
+    def test_re2_layers_and_empty_seq(self):
+        """A bank's programs at volume 0 (the game raises them for each room): at 127 in the VH saved, the others as
+        they are; a SUB file's second SEQ with no notes: left out, the first one alone."""
+        vh, vb, data = self.bgm_file(random.Random(15), sub=True, empty2=True, silent=(0, 2))
+        found = assetscan.scan_bytes(data, "SUB_07.BGM")
+        vab = next(a for a in found if a.kind == "VAB")
+        self.assertEqual([127, vh[32 + 16 + 1], 127], [vab.data[32 + p * 16 + 1] for p in range(3)])
+        self.assertEqual(vh[:32 + 1] + vh[32 + 2:32 + 16 * 2 + 1], vab.data[:32 + 1] + vab.data[32 + 2:32 + 16 * 2 + 1])
+        self.assertEqual(vh[32 + 16 * 3:], vab.data[32 + 16 * 3:])
+        self.assertIn("2 programs at volume 0", vab.info)
+        seqs = [a for a in found if a.kind == "SEQ"]
+        self.assertEqual([0], [a.offset for a in seqs])
+        self.assertNotIn("of 2", seqs[0].info)
+        vh2, _, data = self.bgm_file(random.Random(15))
+        vab = next(a for a in assetscan.scan_bytes(data, "MAIN01.BGM") if a.kind == "VAB")
+        self.assertEqual(vh2, vab.data)                         # (no program at 0: as it is)
+        self.assertNotIn("volume 0", vab.info)
+
+    def test_re2_music_files_damaged(self):
+        """Footers that don't fit (offsets past the end, no VH or SEQ there, too short): the VH alone, no exception."""
+        rng = random.Random(13)
+        vh, vb, good = self.bgm_file(rng)
+        n, (vb_off, vh_off, seq_off) = len(good), struct.unpack("<3I", good[-12:])
+        self.assertEqual((vh_off, vb_off, [seq_off]), assetscan.bgm_banks(good))
+        for footer in ((n + 16, vh_off, seq_off), (vb_off, vh_off + 4, seq_off), (vb_off, vh_off, seq_off + 4),
+                       (vh_off - 16, vh_off, seq_off), (0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF)):
+            with self.subTest(footer=footer):
+                data = good[:-12] + struct.pack("<3I", *footer)
+                found = assetscan.scan_bytes(data, "MAIN00.BGM")
+                self.assertEqual([], [a for a in found if a.kind == "VAB" and "Resident" in a.info])
+        for short in (b"", b"pBAV", good[-15:]):
+            self.assertIsNone(assetscan.bgm_banks(short))
+        self.assertIsNone(assetscan.bgm_banks(vh + vb))          # (an ordinary VAB: no footer)
+
+    def test_re2_effect_banks_paired(self):
+        """The disc scan: Resident Evil 2's NAME.EDH (a table, then the VH) and its NAME.VB beside it, a VAB."""
+        from pages.gamedata import GameDataPage     # noqa: E402
+        vh, vb = make_bank(random.Random(14), 2)
+        edh = bytes(range(256)) * 3 + vh + struct.pack("<II", 768, 0)
+        with tempfile.TemporaryDirectory() as folder:
+            os.makedirs(os.path.join(folder, "COMMON", "SOUND"))
+            for name, data in (("ARMS01.EDH", edh), ("ARMS01.VB", vb), ("ARMS02.EDH", edh), ("ARMS02.VB", vb[:-16])):
+                with open(os.path.join(folder, "COMMON", "SOUND", name), "wb") as f:
+                    f.write(data)
+            found = []
+            for name in ("ARMS01.EDH", "ARMS02.EDH"):
+                found += [a for a in assetscan.scan_bytes(edh, name) if a.kind in ("VH", "VAB")]
+            self.assertEqual(["VH", "VH"], [a.kind for a in found])
+            GameDataPage.pair_banks({"found": found, "folder": folder})
+        self.assertEqual("VAB", found[0].kind)
+        self.assertEqual(vb, found[0].parts[".vb"])
+        self.assertEqual("VH", found[1].kind)                   # (its VB a block short: not its samples)
+
+    def test_disc_music(self):
+        """Sound Tools' game music scan of a disc image (.bin): every SEQ with the bank it plays with: in its own file
+        (Resident Evil 2's MAINnn.BGM, SUB_nn.BGM: two SEQs), NAME.VH + NAME.VB or NAME.VAB beside NAME.SEQ, none
+        (a SEQ alone: listed without a bank); its length and how many of its notes have a tone."""
+        sys.path.insert(0, os.path.join(ROOT, "tests", "sound"))
+        from test_aad import iso, raw       # noqa: E402 (an ISO 9660 image made in the tests)
+        rng = random.Random(31)
+        vh1, vb1, main = self.bgm_file(rng)
+        vh2, vb2, sub = self.bgm_file(rng, sub=True, silent=(0,))
+        vh3, vb3 = make_bank(rng, 3)
+        vh4, vb4 = make_bank(rng, 2)
+        files = [("MAIN01.BGM", main), ("SUB_02.BGM", sub), ("SONG.SEQ", make_seq(rng)), ("SONG.VH", vh3),
+                 ("SONG.VB", vb3), ("TUNE.SEQ", make_seq(rng, 12)), ("TUNE.VAB", vh4 + vb4),
+                 ("ALONE.SEQ", make_seq(rng, 5)), ("MOVIE.STR", make_seq(rng))]
+        path = tmp_path("music.bin")
+        write(path, raw(iso(files)))
+        found = assetscan.disc_music(path)
+        self.assertEqual(["MAIN01", "SUB_02_1", "SUB_02_2", "SONG", "TUNE", "ALONE"], [m["name"] for m in found])
+        by = {m["name"]: m for m in found}
+        self.assertEqual((vh1, vb1), (by["MAIN01"]["vh"], by["MAIN01"]["vb"]))
+        self.assertEqual(vb2, by["SUB_02_1"]["vb"])
+        self.assertEqual(by["SUB_02_1"]["vh"], by["SUB_02_2"]["vh"])
+        self.assertEqual(127, by["SUB_02_1"]["vh"][32 + 1])                # (the program at 0: raised)
+        self.assertIn("raised to 127", by["SUB_02_1"]["note"])
+        self.assertEqual("", by["MAIN01"]["note"])
+        self.assertEqual((vh3, vb3, "SONG.VH + .VB"), (by["SONG"]["vh"], by["SONG"]["vb"], by["SONG"]["bank_file"]))
+        self.assertEqual((vh4, vb4, "TUNE.VAB"), (by["TUNE"]["vh"], by["TUNE"]["vb"], by["TUNE"]["bank_file"]))
+        self.assertIsNone(by["ALONE"]["vh"])
+        seconds, notes = assetscan.seq_seconds(by["SONG"]["seq"])
+        self.assertEqual(40, notes)
+        self.assertGreater(seconds, 1)
+        self.assertEqual(1.0, assetscan.seq_coverage(by["SONG"]["seq"], vh3))
+        self.assertIsNone(assetscan.seq_coverage(by["SONG"]["seq"][:15] + b"\x00\xFF\x2F\x00", vh3))
+        self.assertEqual([], assetscan.disc_music(write(tmp_path("none.bin"), raw(iso([("A.DAT", bytes(5000))])))))
+
     def test_random_data(self):
         rng = random.Random(7)
         for k in range(30):
@@ -417,6 +547,262 @@ class Textures(unittest.TestCase):
         self.assertIn(("512,256", "8"), rects, [a.info for a in found])
         self.assertTrue(rects[("512,256", "8")].info.startswith("64x41 8-bit"), rects[("512,256", "8")].info)
         self.assertIn(("768,0", "16"), rects)
+
+
+# ---------------------------------------------------------------------------------------------------- the page
+
+class FakeSettings:
+    def __init__(self):
+        self.values = {}
+
+    def field(self, key, default=""):
+        return self.values.get(key, default)
+
+    def set_field(self, key, value):
+        self.values[key] = value
+
+
+class FakeRunner:
+    """The disc reader: each command sent answered as ps1transfer -disc answers it (disclive.c), a copy written from
+    the test's files."""
+
+    def __init__(self, page, disc):
+        self.page, self.disc, self.sent = page, disc, []
+
+    def send(self, line):
+        self.sent.append(line)
+        page = self.page
+        if line.startswith("get "):
+            _, path, out = line.split(" ", 2)
+            data = self.disc[path]
+            sectors = (len(data) + 2047) // 2048
+            for done in (sectors // 2, sectors):
+                page.disc_line("DISCPROG %d %d" % (done, sectors))
+            with open(out, "wb") as f:
+                f.write(data)
+            page.disc_line("DISCSAVED %d 0 data %s" % (len(data), out))
+        page.after(1, page.disc_line, "DISCDONE")
+
+
+class FakeApp:
+    def __init__(self):
+        self.settings, self.errors = FakeSettings(), []
+
+    def error(self, text):
+        self.errors.append(text)
+
+
+class ExtractorPage(unittest.TestCase):
+    """The Asset Extractor page with a disc reader answering as the console's: files chosen on the disc copied and
+    scanned, the assets of all of them in one list (by type, found), extracted with the progress bar."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tkinter
+        import ttkbootstrap as tb
+        try:
+            cls.root = tb.Window(themename="bootstrap-dark")      # (as the GUI: ttkbootstrap's styles on its window)
+        except tkinter.TclError as e:
+            raise unittest.SkipTest("no display: %s" % e)
+        cls.root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.root.destroy()
+
+    def make_disc(self):
+        """COMMON\\SOUND of a Resident Evil 2 disc: two music files (MAIN, SUB with two SEQs and a program at 0), an
+        effect bank (EDH + VB), a TIM elsewhere."""
+        rng = random.Random(21)
+        _, _, main = Scanner.bgm_file(rng)
+        _, _, sub = Scanner.bgm_file(rng, sub=True, silent=(1,))
+        vh, vb = make_bank(rng, 2)
+        edh = bytes(range(256)) * 3 + vh + struct.pack("<II", 768, 0)
+        tim = make_tim(rng, 1, 32, 16, 1)[0]
+        return {"\\COMMON\\SOUND\\MAIN01.BGM": main, "\\COMMON\\SOUND\\SUB_02.BGM": sub,
+                "\\COMMON\\SOUND\\ARMS01.EDH": edh, "\\COMMON\\SOUND\\ARMS01.VB": vb, "\\COMMON\\DATA\\PIC.TIM": tim}
+
+    def pump(self, page, until, seconds=20):
+        import time
+        end = time.time() + seconds
+        while not until() and time.time() < end:
+            self.root.update()
+            time.sleep(0.01)
+        self.root.update()
+        self.assertTrue(until(), "timed out")
+
+    def test_extract_assets_button(self):
+        """What a user does: the SOUND folder selected, Extract assets, a folder chosen; every music is there with its
+        bank (SEQ + VH + VB in a folder for its file), the effect bank with its VB, nothing else copied there; one
+        progress bar from 0 to 100, only forward; the page says what it wrote."""
+        from unittest import mock
+        from pages.gamedata import GameDataPage
+        disc = self.make_disc()
+        app = FakeApp()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"PS1DEVCART_NO_OPEN": "1"}):
+            with mock.patch.object(GameDataPage, "out_dir", lambda self, *parts: os.makedirs(
+                    os.path.join(tmp, "gamedata", *parts), exist_ok=True) or os.path.join(tmp, "gamedata", *parts)):
+                page = GameDataPage(self.root, app)
+                app.runner = FakeRunner(page, disc)
+                page.disc_live = True
+                page.volume = "SLUS_00748"
+                page.tree.insert("", "end", iid="\\COMMON", text="COMMON")
+                for d in ("SOUND", "DATA"):
+                    page.tree.insert("\\COMMON", "end", iid="\\COMMON\\" + d, text=d)
+                for path, data in disc.items():
+                    page.files[path] = (0, len(data), 0)
+                    page.tree.insert(path.rsplit("\\", 1)[0], "end", iid=path, text=path.rsplit("\\", 1)[1])
+                texts = []
+
+                def walk(w):
+                    for c in w.winfo_children():
+                        try:
+                            texts.append(c.cget("text"))
+                        except Exception:       # noqa: BLE001 (widgets without text)
+                            pass
+                        walk(c)
+                walk(page)
+                self.assertIn("Extract assets...", texts)
+                self.assertEqual([], [t for t in texts if t in ("Save selected...", "Save and scan for assets",
+                                                                "Scan the whole disc")])
+
+                page.extract_from_disc()                            # (nothing selected: said so)
+                self.assertEqual(1, len(app.errors))
+                self.assertIn("Select files or folders", app.errors[0])
+                values = []
+                page.progress.configure = (lambda orig: lambda **kw: (values.append(kw.get("value")), orig(**kw)))(
+                    page.progress.configure)
+                page.tree.selection_set("\\COMMON\\SOUND")
+                out = os.path.join(tmp, "my assets")
+                with mock.patch("pages.gamedata.filedialog.askdirectory", return_value=out):
+                    page.extract_from_disc()
+                self.pump(page, lambda: page.batch is None and not page.extracting)
+                self.assertEqual(1, len(app.errors), app.errors)
+                sound = os.path.join(out, "Music and sound banks")
+                self.assertEqual(["Music and sound banks"], os.listdir(out))
+                self.assertEqual(["ARMS01", "MAIN01", "SUB_02"], sorted(os.listdir(sound)))
+                main = sorted(os.listdir(os.path.join(sound, "MAIN01")))
+                self.assertEqual([".seq", ".vb", ".vh"], [os.path.splitext(p)[1] for p in main])
+                sub = sorted(os.listdir(os.path.join(sound, "SUB_02")))
+                self.assertEqual([".seq", ".seq", ".vb", ".vh"], [os.path.splitext(p)[1] for p in sub])
+                self.assertEqual([".vb", ".vh"], sorted(os.path.splitext(p)[1] for p in os.listdir(
+                    os.path.join(sound, "ARMS01"))))
+                progress = [v for v in values if v is not None]
+                self.assertEqual(0, progress[0])
+                self.assertEqual(100, progress[-1])
+                self.assertEqual(sorted(progress), progress)
+                status = page.status.cget("text")
+                self.assertTrue(status.startswith("Done: 6 assets extracted"), status)
+                self.assertIn("music 3", status)
+                self.assertIn(out, status)
+                page.destroy()
+
+    def test_scan_and_extract(self):
+        from unittest import mock
+        from pages.gamedata import GameDataPage, CATEGORIES
+        disc = self.make_disc()
+        app = FakeApp()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(GameDataPage, "out_dir", lambda self, *parts: os.makedirs(
+                    os.path.join(tmp, "gamedata", *parts), exist_ok=True) or os.path.join(tmp, "gamedata", *parts)):
+                page = GameDataPage(self.root, app)
+                app.runner = FakeRunner(page, disc)
+                page.disc_live = True
+                page.volume = "SLUS_00748"
+                for path, data in disc.items():
+                    page.files[path] = (0, len(data), 0)
+                    parent = ""
+                    for part in path.strip("\\").split("\\")[:-1]:
+                        iid = parent + "\\" + part
+                        if not page.tree.exists(iid):
+                            page.tree.insert(parent, "end", iid=iid, text=part)
+                        parent = iid
+                    page.tree.insert(parent, "end", iid=path, text=path.rsplit("\\", 1)[1])
+                self.assertEqual([], [w for w in page.winfo_children() if "whole disc" in str(w)])
+
+                # The SOUND folder chosen: its 4 files copied, each one scanned, the assets of all of them in the list
+                page.tree.selection_set("\\COMMON\\SOUND")
+                values = []
+                page.progress.configure = (lambda orig: lambda **kw: (values.append(kw.get("value")), orig(**kw)))(
+                    page.progress.configure)
+                page.save_disc_files(True)
+                self.pump(page, lambda: page.batch is None)
+                self.assertEqual([], app.errors)
+                self.assertEqual(4, sum(1 for s in app.runner.sent if s.startswith("get")))
+                kinds = sorted(a.kind for a in page.assets)
+                self.assertEqual(["SEQ", "SEQ", "SEQ", "VAB", "VAB", "VAB"], kinds)       # (the EDH: with its VB)
+                progress = [v for v in values if v is not None]
+                self.assertEqual(100, progress[-1])
+                self.assertGreater(len(set(progress)), 4)
+                self.assertEqual(sorted(progress[:-1]), progress[:-1])               # (only forward)
+                self.assertIn("6 assets found", page.status.cget("text"))
+
+                # Grouped by type, how many of each
+                groups = {page.alist.item(c, "text"): len(page.alist.get_children(c)) for c in page.alist.get_children()}
+                self.assertEqual({CATEGORIES[0][0] + "  (3)": 3, CATEGORIES[1][0] + "  (3)": 3}, groups)
+                page.search.set("SUB_02")
+                self.root.update()
+                shown = [page.alist.item(i, "text") for c in page.alist.get_children() for i in page.alist.get_children(c)]
+                self.assertEqual(3, len(shown))
+                self.assertTrue(all(s.startswith("SUB_02") for s in shown), shown)
+                page.search.set("")
+
+                # A second scan adds to the list (a file already scanned: once)
+                page.tree.selection_set(("\\COMMON\\DATA", "\\COMMON\\SOUND\\MAIN01.BGM"))
+                page.save_disc_files(True)
+                self.pump(page, lambda: page.batch is None)
+                self.assertEqual(7, len(page.assets))
+                self.assertIn("TIM", [a.kind for a in page.assets])
+
+                # The music type selected: each SEQ extracted with the bank of its file, in one folder for the file
+                def names(where, *kinds):
+                    return sorted(p for x in page.assets if x.where == where and x.kind in kinds
+                                  for p in [x.name()] + [os.path.splitext(x.name())[0] + e for e in x.parts])
+                out = os.path.join(tmp, "out")
+                page.alist.selection_set("cat0")
+                self.root.update()
+                self.assertEqual(3, len(page.chosen_assets()))
+                with mock.patch("pages.gamedata.filedialog.askdirectory", return_value=out):
+                    page.extract_assets(False)
+                self.pump(page, lambda: not page.extracting)
+                sound = os.path.join(out, "Music and sound banks")
+                self.assertEqual(["MAIN01", "SUB_02"], sorted(os.listdir(sound)))       # (ARMS01: no music chosen)
+                for f in ("MAIN01", "SUB_02"):
+                    self.assertEqual(names(f + ".BGM", "SEQ", "VAB"), sorted(os.listdir(os.path.join(sound, f))))
+                self.assertEqual(4, len(os.listdir(os.path.join(sound, "SUB_02"))))      # (2 SEQs, VH, VB)
+                self.assertIn("5 assets extracted", page.status.cget("text"))
+
+                # One SEQ selected alone: its bank with it
+                one = next(i for i in page.alist.get_children("cat0") if page.alist.item(i, "text").startswith("MAIN01"))
+                page.alist.selection_set(one)
+                self.root.update()
+                with mock.patch("pages.gamedata.filedialog.askdirectory", return_value=out + "1"):
+                    page.extract_assets(False)
+                self.pump(page, lambda: not page.extracting)
+                self.assertEqual(names("MAIN01.BGM", "SEQ", "VAB"),
+                                 sorted(os.listdir(os.path.join(out + "1", "Music and sound banks", "MAIN01"))))
+                # The TIM: in Images
+                tim = next(i for c in page.alist.get_children() for i in page.alist.get_children(c)
+                           if page.assets[int(i[1:])].kind == "TIM")
+                page.alist.selection_set(tim)
+                self.root.update()
+                with mock.patch("pages.gamedata.filedialog.askdirectory", return_value=out + "1"):
+                    page.extract_assets(False)
+                self.pump(page, lambda: not page.extracting)
+                self.assertEqual(1, len(os.listdir(os.path.join(out + "1", "Images"))))
+
+                # Everything, one folder for each file found in
+                page.folders.set("A folder for each file found in")
+                with mock.patch("pages.gamedata.filedialog.askdirectory", return_value=out + "2"):
+                    page.extract_assets(True)
+                self.pump(page, lambda: not page.extracting)
+                self.assertEqual(["ARMS01", "MAIN01", "PIC", "SUB_02"], sorted(os.listdir(out + "2")))
+                self.assertEqual(["SUB_02_seq_000000.seq", "SUB_02_seq_%06X.seq" % next(
+                    a.offset for a in page.assets if a.where == "SUB_02.BGM" and a.kind == "SEQ" and a.offset),
+                    "SUB_02_vab_%06X.vb" % next(a.offset for a in page.assets if a.where == "SUB_02.BGM" and a.kind == "VAB"),
+                    "SUB_02_vab_%06X.vh" % next(a.offset for a in page.assets if a.where == "SUB_02.BGM" and a.kind == "VAB")],
+                    sorted(os.listdir(os.path.join(out + "2", "SUB_02"))))
+                page.destroy()
 
 
 if __name__ == "__main__":

@@ -152,7 +152,19 @@ def expected_pitch(note, tone, transpose=0):
     return max(1, min(0x3FFF, round(4096 * 2 ** (cents / 1200.0))))
 
 
-def expected_volumes(vel, ch, tone, prog, bank_mvol, master=100):
+def expected_volumes(vel, ch, tone, prog, bank_mvol, master=100, hd=False):
+    """A SEQ note's voice volumes (left, right), as libsnd's key on (Resident Evil 2's decompilation, VM_NOWON.S): the
+    volumes over 127 on the 3FFFh scale, each pan on its side, then squared. hd: an SQ with its HD, linear."""
+    if not hd:
+        vol = vel * ch["volume"] // 127 * ch["expression"] // 127
+        vol = vol * bank_mvol * 0x3FFF // (127 * 127) * prog["mvol"] * tone["vol"] // (127 * 127)
+        sides = [vol * master // 127] * 2
+        for pan in (tone["pan"], prog["mpan"], ch["pan"]):
+            if pan < 64:
+                sides[1] = sides[1] * pan // 63
+            else:
+                sides[0] = sides[0] * (127 - pan) // 63
+        return tuple(s * s // 0x3FFF for s in sides)
     vol = 0x3FFF * vel // 127
     for v in (ch["volume"], ch["expression"], tone["vol"], prog["mvol"], bank_mvol, master):
         vol = vol * v // 127

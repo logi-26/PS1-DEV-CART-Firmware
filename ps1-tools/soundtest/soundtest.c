@@ -668,14 +668,52 @@ static int		seq_sq;				// (the SEQ player's: the music is an SQ)
 static uint32_t	voice_age;
 static int		master_volume = 100;	// Triangle/Square
 
+// A pan (0-127) on a voice's two sides, as libsnd: below 64 the right side down to 0, else the left
+static void	PanSides(int *l, int *r, int pan)
+{
+	if (pan < 64)
+		*r = *r * pan / 63;
+	else
+		*l = *l * (127 - pan) / 63;
+}
+
+// A voice's volume, as libsnd's key on (_SsVmKeyOnNow, read in Resident Evil 2's decompilation: github.com/MeganGrass/
+// bio2-ds, Bio2/lib/VM_NOWON.S): the velocity, channel (and expression), bank, program and tone volumes over 127 each
+// on the SPU scale (0x3FFF), the tester's volume (as SsSeqSetVol); the tone's, the program's and the channel's pans
+// each on its side; a SEQ's notes then squared (L x L / 3FFFh: velocity 64 a quarter of 127's), the controller's linear
+// (libsnd's SsUtKeyOn: no square). An SQ played with its HD: Ape Escape's driver's law isn't known, so linear, its
+// three pans added.
 static void	VoiceVolume(int v)
 {
 	Voice	*vo = &voices[v];
 	Channel	*c = (vo->channel >= 0) ? &channels[vo->channel] : NULL;
-	int		vol = 0x3FFF, pan;
+	int		vol = 0x3FFF, pan, l, r;
 
-	// Velocity, channel, tone, program, bank and tester volumes (0-127 each), kept at the SPU scale (same values as
-	// libsnd's key on), then the pan: full volume on both sides at the center
+	if (!(bank_hd && seq_sq))
+	{
+		vol = vo->velocity * (c ? c->volume : 127) / 127;
+		vol = vol * (c ? c->expression : 127) / 127;
+		vol = vol * vab->mvol * 0x3FFF / (127 * 127);
+		vol = vol * prog_atr[vo->prog].mvol * vo->tone->vol / (127 * 127);
+		l = r = vol * master_volume / 127;
+		if (!fx_mono)
+		{
+			PanSides(&l, &r, vo->tone->pan);
+			PanSides(&l, &r, prog_atr[vo->prog].mpan);
+			PanSides(&l, &r, c ? c->pan : 64);
+		}
+		if (c)
+		{
+			l = l * l / 0x3FFF;
+			r = r * r / 0x3FFF;
+		}
+		SPU_VOICE(v)[0] = l;
+		SPU_VOICE(v)[1] = r;
+		return;
+	}
+
+	// (SQ + HD) velocity, channel, tone, program, bank and tester volumes (0-127 each), kept at the SPU scale, then
+	// the pan: full volume on both sides at the center
 	vol = vol * vo->velocity / 127;
 	vol = vol * (c ? c->volume : 127) / 127;
 	vol = vol * (c ? c->expression : 127) / 127;

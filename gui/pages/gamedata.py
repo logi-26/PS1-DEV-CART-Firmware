@@ -43,8 +43,18 @@ EXT_TYPES = {".STR": "Movie (STR)", ".XA": "XA audio", ".TIM": "Image (TIM)", ".
              ".EXE": "Program", ".CNF": "Boot settings", ".DA": "CD audio (the tracks)", ".MDEC": "Movie",
              ".BS": "Image (MDEC)", ".PAK": "Archive", ".BIN": "Data", ".DAT": "Data"}
 VRAM_SCALE = 0.75
-FILTERS = {"All": None, "Textures and images": ("Texture", "TIM"), "Sound banks and music": ("VAB", "VH", "SEQ", "SEP", "SQ", "SND", "SFX", "AKAO"),
-           "Samples": ("VAG", "Sample"), "Models": ("TMD",)}
+# The types of assets: (title in the list, the scanner's kinds, folder name when extracted)
+CATEGORIES = (("Music (SEQ, SEP)", ("SEQ", "SEP"), "Music"),
+              ("Sound banks (VAB, VH)", ("VAB", "VH"), "Sound banks"),
+              ("Games' own music (SQ, SND, AKAO...)", ("SQ", "SND", "SFX", "AKAO"), "Games music"),
+              ("Samples (VAG)", ("VAG", "Sample"), "Samples"),
+              ("Images (TIM)", ("TIM",), "Images"),
+              ("Textures the game draws", ("Texture",), "Textures"),
+              ("Models (TMD)", ("TMD",), "Models"))
+# How the files extracted are put in folders. Sound kept together in every one: a music with the bank(s) of the file
+# it was found in (what it plays with), in the same folder.
+FOLDER_MODES = ("Music with its bank, the rest by type", "A folder for each file found in", "All in one folder")
+SOUND_KINDS = ("SEQ", "SEP", "VAB", "VH", "SQ", "SND", "SFX", "AKAO")
 DRIVE_STATES = {2: "licensed disc", 5: "unlicensed disc or audio CD"}
 
 
@@ -75,7 +85,9 @@ class GameDataPage(Page):
         self.busy_cmd = None        # Command sent to the disc reader, its answer awaited
         self.cmd_started, self.cmd_name = 0.0, ""
         self.volume = "disc"
-        self.disc_scan = None       # Scan the whole disc: {"total", "saved", "scanned", "found", "folder"}
+        self.batch = None           # Files being copied (and scanned): see save_disc_files
+        self.extracting = False
+        self.asset_source = "snapshot"      # The list's assets: "snapshot" or "disc" (files scanned, added up)
         self.pending = []           # (command line, function called with its DISCSAVED fields)
         self.on_saved = None
         self.files = {}             # Disc path -> (lba, size, attr)
@@ -86,7 +98,6 @@ class GameDataPage(Page):
         self.tex_sel = None
         self.snap_text = ""
         self.assets = []
-        self.shown = []             # The assets in the list (the filter)
         self.asset_base = "snapshot"
 
         tb.Label(self, text=self.title, font=("", 16, "bold")).pack(anchor="w")
@@ -94,6 +105,12 @@ class GameDataPage(Page):
                  "you choose from the disc in the console's drive, or take a snapshot of what the running game has "
                  "loaded (RAM, VRAM, SPU RAM) and find its textures, sound banks, music and models.",
                  wraplength=900, justify="left").pack(anchor="w", pady=(2, 8))
+        bottom = tb.Frame(self)             # (packed first: always shown, whatever the window's height)
+        bottom.pack(side="bottom", fill="x", pady=(6, 0))
+        self.progress = tb.Progressbar(bottom, length=220, maximum=100, bootstyle="info-striped")
+        self.progress.pack(side="left")
+        self.status = tb.Label(bottom, text="", bootstyle="secondary", wraplength=900, justify="left")
+        self.status.pack(side="left", padx=10, fill="x", expand=True)
         self.tabs = tb.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
         for title, build in (("Disc", self.build_disc), ("Snapshot", self.build_snapshot),
@@ -101,13 +118,7 @@ class GameDataPage(Page):
             frame = tb.Frame(self.tabs, padding=8)
             self.tabs.add(frame, text=title)
             build(frame)
-        bottom = tb.Frame(self)
-        bottom.pack(fill="x", pady=(6, 0))
-        self.progress = tb.Progressbar(bottom, length=220, maximum=100, bootstyle="info-striped")
-        self.progress.pack(side="left")
-        self.status = tb.Label(bottom, text="", bootstyle="secondary", wraplength=900, justify="left")
-        self.status.pack(side="left", padx=10, fill="x", expand=True)
-        self.after(50, self.poll_events)
+        self.poll_id = self.after(50, self.poll_events)
 
     def post(self, fn, *args, **kwargs):
         """fn(*args, **kwargs) run on the main thread (from a worker thread)."""
@@ -120,7 +131,13 @@ class GameDataPage(Page):
                 fn(*args, **kwargs)
         except queue.Empty:
             pass
-        self.after(50, self.poll_events)
+        self.poll_id = self.after(50, self.poll_events)
+
+    def destroy(self):
+        if getattr(self, "poll_id", None):
+            self.after_cancel(self.poll_id)
+            self.poll_id = None
+        super().destroy()
 
     def out_dir(self, *parts):
         d = os.path.join(config_dir(), "gamedata", *parts)
@@ -143,8 +160,9 @@ class GameDataPage(Page):
         self.speed.set("2x")
         self.speed.pack(side="left")
         self.speed.bind("<<ComboboxSelected>>", lambda e: self.disc_command("speed %s" % self.speed.get()[0]))
-        self.disc_info = tb.Label(f, text="Put a disc in the console's drive, then Read the disc: the disc reader "
-                                  "runs on the console (the program running now is stopped).", bootstyle="secondary",
+        self.disc_info = tb.Label(f, text="1. Put a disc in the console's drive, then Read the disc (the disc reader "
+                                  "runs on the console; the program running now is stopped).  2. Select files or "
+                                  "folders below.  3. Extract assets.", bootstyle="secondary",
                                   wraplength=900, justify="left")
         self.disc_info.pack(anchor="w", pady=6)
 
@@ -158,23 +176,25 @@ class GameDataPage(Page):
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
-        self.tree.bind("<Double-1>", lambda e: self.save_disc_files(scan=False))
 
         row = tb.Frame(f)
-        row.pack(fill="x", pady=(6, 0))
-        tb.Button(row, text="Save selected...", bootstyle="primary", command=lambda: self.save_disc_files(False)).pack(
-            side="left")
-        tb.Button(row, text="Save and scan for assets", bootstyle="info-outline",
-                  command=lambda: self.save_disc_files(True)).pack(side="left", padx=6)
-        tb.Button(row, text="Scan the whole disc", bootstyle="info", command=self.scan_disc).pack(side="left",
-                                                                                                    padx=(0, 6))
+        row.pack(fill="x", pady=(8, 0))
+        tb.Button(row, text="Extract assets...", bootstyle="success", width=18,
+                  command=self.extract_from_disc).pack(side="left")
+        tb.Label(row, text="from the files and folders selected (Ctrl, Shift: several): the music (SEQ, each with its "
+                 "sound bank VH + VB), sound banks, samples, images, models found inside them, written to a folder "
+                 "you choose", wraplength=560, justify="left").pack(side="left", padx=10)
         self.stop_button = tb.Button(row, text="Stop", bootstyle="danger-outline", command=self.stop_saving,
                                      state="disabled")
-        self.stop_button.pack(side="left")
+        self.stop_button.pack(side="right")
+        tb.Button(row, text="Copy the files as they are...", bootstyle="secondary-outline",
+                  command=lambda: self.save_disc_files(False)).pack(side="right", padx=6)
+        row = tb.Frame(f)
+        row.pack(fill="x", pady=(6, 0))
         self.xa_wav = tk.BooleanVar(value=True)
-        tb.Checkbutton(row, text="XA audio: also as WAV", variable=self.xa_wav).pack(side="left", padx=10)
+        tb.Checkbutton(row, text="XA audio: also as WAV", variable=self.xa_wav).pack(side="left")
         self.track_secs = tk.StringVar(value="")
-        tb.Label(row, text="CD audio: first").pack(side="left", padx=(10, 4))
+        tb.Label(row, text="CD audio: first").pack(side="left", padx=(16, 4))
         tb.Entry(row, textvariable=self.track_secs, width=5).pack(side="left")
         tb.Label(row, text="seconds (empty: the whole track; recorded as it plays: as long as the track)").pack(
             side="left", padx=4)
@@ -211,6 +231,9 @@ class GameDataPage(Page):
         self.disc_live = False
         self.busy_cmd = None
         self.pending = []
+        if self.batch:
+            self.batch["stopped"] = True
+            self.batch_check()
         self.disc_start.configure(text="Read the disc")
         self.stop_button.configure(state="disabled")
 
@@ -282,11 +305,15 @@ class GameDataPage(Page):
             self.tree.insert(parent if parent and self.tree.exists(parent) else "", "end", iid=path,
                              text=path.rsplit("\\", 1)[-1], values=(size_text(size), file_type(path, attr), lba))
         elif kind == "DISCLS":
-            self.status.configure(text="%d files on the disc. Choose files, then Save selected." % len(self.files))
+            self.status.configure(text="%d files on the disc. Select files or folders (Ctrl and Shift: several), then "
+                                  "Extract assets." % len(self.files))
         elif kind == "DISCPROG" and len(f) >= 3:
             done, total = int(f[1]), int(f[2])
-            self.progress.configure(value=100 * done / max(1, total))
             secs = max(0.1, time.time() - self.cmd_started)
+            if self.batch and self.busy_cmd.startswith("get"):
+                self.batch_progress(done)
+                return
+            self.progress.configure(value=100 * done / max(1, total))
             if self.busy_cmd == "track":
                 self.status.configure(text="Recording %s: %d:%02d of %d:%02d (recorded as it plays)" % (
                     self.cmd_name, done // 4500, done // 75 % 60, total // 4500, total // 75 % 60))
@@ -296,7 +323,8 @@ class GameDataPage(Page):
                     self.cmd_name, done, total, done * 2048 / 1024 / secs,
                     (", %d more file%s after it" % (left, "" if left == 1 else "s")) if left else ""))
         elif kind == "DISCSAVED" and len(f) >= 5:
-            self.progress.configure(value=100)
+            if not self.batch:
+                self.progress.configure(value=100)
             if self.on_saved:
                 self.on_saved(line)
         elif kind == "DISCWARN":
@@ -307,14 +335,15 @@ class GameDataPage(Page):
                 self.disc_info.configure(text=" ".join(f[1:]).capitalize() + ". Put a disc in, then Read the disc again.")
         elif kind == "DISCSTOPPED":
             self.status.configure(text="Stopped: %s not saved." % (self.cmd_name or "the file"))
+            if self.batch:
+                self.batch["stopped"] = True
             self.progress.configure(value=0)
         elif kind == "DISCDONE":
             self.stop_button.configure(state="disabled")
             self.busy_cmd = None
             self.on_saved = None
             self.next_command()
-            if self.disc_scan is not None:
-                self.disc_scan_progress()
+            self.batch_check()
 
     def selected_files(self):
         """The disc files selected (a folder: its files), and the CD audio tracks."""
@@ -335,46 +364,111 @@ class GameDataPage(Page):
             add(iid)
         return list(dict.fromkeys(out)), list(dict.fromkeys(tracks))
 
-    def save_disc_files(self, scan):
+    def extract_from_disc(self):
+        """Extract assets: the files chosen copied (into the settings folder), scanned, and what is found in them
+        written to the folder chosen (a music with its sound bank, side by side), then that folder opened; XA audio,
+        movies and CD audio tracks chosen saved there as they are (XA also as WAV). One progress bar for all of it."""
         if not self.disc_live:
             return self.app.error("Read the disc first.")
+        if self.batch or self.extracting:
+            return self.app.error("Wait for the files being copied (or Stop them).")
         paths, tracks = self.selected_files()
         if not paths and not tracks:
-            return self.app.error("Select files on the disc.")
+            return self.app.error("Select files or folders on the disc first (Ctrl or Shift for several).")
+        folder = filedialog.askdirectory(title="Extract the assets to", parent=self,
+                                         initialdir=self.app.settings.field("gamedata.assets", ""))
+        if not folder:
+            return None
+        self.app.settings.set_field("gamedata.assets", folder)
+        return self.save_disc_files(True, extract_to=folder)
+
+    def save_disc_files(self, scan, extract_to=None):
+        """The files selected copied (a folder: its files), CD audio tracks recorded; scan: copied into the settings
+        folder (the disc's own folders kept: a bank's NAME.VB found beside it) and each one scanned, the assets of all of
+        them added to the Assets found list. The progress bar: the whole batch (bytes copied, files scanned)."""
+        if not self.disc_live:
+            return self.app.error("Read the disc first.")
+        if self.batch:
+            return self.app.error("Wait for the files being copied (or Stop them).")
+        paths, tracks = self.selected_files()
+        if not paths and not tracks:
+            return self.app.error("Select files or folders on the disc.")
         if scan:
-            folder = self.out_dir("disc")
+            folder = self.out_dir("disc", self.volume)
         else:
-            folder = filedialog.askdirectory(title="Save the files in", parent=self,
+            folder = filedialog.askdirectory(title="Copy the files (as they are on the disc) to", parent=self,
                                              initialdir=self.app.settings.field("gamedata.folder", ""))
             if not folder:
                 return None
             self.app.settings.set_field("gamedata.folder", folder)
         total = sum((self.files[p][1] for p in paths), 0)
-        self.status.configure(text="Copying %d file%s (%s) from the disc..." % (
-            len(paths) + len(tracks), "s" if len(paths) + len(tracks) > 1 else "", size_text(total)))
+        sectors = sum((self.files[p][1] + 2047) // 2048 for p in paths)
+        self.batch = {"scan": scan, "files": len(paths), "tracks": len(tracks), "copied": 0, "sectors": max(1, sectors),
+                      "sectors_done": 0, "cur": 0, "to_scan": 0, "scanned": 0, "found": [], "folder": folder, "stopped": False,
+                      "extract_to": extract_to}
+        if scan and self.asset_source != "disc":
+            self.show_assets([], self.volume, "Scanning the files chosen...", switch=False, source="disc")
+        self.progress.configure(value=0)
+        self.status.configure(text="Copying %d file%s (%s) from the disc%s..." % (
+            len(paths) + len(tracks), "s" if len(paths) + len(tracks) > 1 else "", size_text(total),
+            ", each one scanned for assets" if scan else ""))
         self.saved_now = []
         for p in paths:
-            out = os.path.join(folder, *p.strip("\\").split("\\"))
+            streamed = self.files[p][2] & (XA_FORM2 | XA_INTERLEAVED) or p.upper().endswith((".XA", ".STR"))
+            base = extract_to if extract_to and streamed else folder        # (audio and movies: as they are)
+            out = os.path.join(base, *p.strip("\\").split("\\"))
             os.makedirs(os.path.dirname(out), exist_ok=True)
             self.disc_command("get %s %s" % (p, out), lambda f, scan=scan: self.file_saved(f, scan))
         secs = self.track_secs.get().strip()
         for t in tracks:
-            out = os.path.join(folder, "track%02d.wav" % t)
+            out = os.path.join(extract_to or folder, "track%02d.wav" % t)
             self.disc_command("track %d %s %s" % (t, secs if secs.isdigit() else "0", out),
                               lambda f: self.file_saved(f, False))
         return None
+
+    def batch_progress(self, sectors_done=0):
+        """The progress bar and the status of the batch: the sectors copied (the file being copied: sectors_done), then
+        the files scanned."""
+        b = self.batch
+        if not b:
+            return
+        if sectors_done:
+            b["cur"] = sectors_done
+        copied = min(b["sectors"], b["sectors_done"] + b["cur"])
+        value = 100 * copied / b["sectors"]
+        if b["scan"]:       # (copying 90 %, scanning the rest: the scans follow the copies closely)
+            value = 90 * copied / b["sectors"] + 10 * b["scanned"] / max(1, b["files"])
+        if b["extract_to"]:     # (then writing the assets: the last 20 %)
+            value *= 0.8
+        self.progress.configure(value=value)
+        if sectors_done:
+            left = b["files"] - b["copied"] - 1
+            secs = max(0.1, time.time() - self.cmd_started)
+            self.status.configure(text="Copying %s (file %d of %d): %.0f KB/s%s%s" % (
+                self.cmd_name, b["copied"] + 1, b["files"], sectors_done * 2048 / 1024 / secs,
+                (", %d more after it" % left) if left > 0 else "",
+                (", %d asset%s found so far" % (len(b["found"]), "" if len(b["found"]) == 1 else "s"))
+                if b["scan"] else ""))
 
     def file_saved(self, line, scan):
         # DISCSAVED BYTES RETRIES MODE OUT
         f = line.split(None, 4)
         size, retries, mode, out = int(f[1]), int(f[2]), f[3], f[4]
         self.saved_now.append(out)
+        b = self.batch
+        if b and mode != "audio":
+            b["copied"] += 1
+            b["sectors_done"] += max(b["cur"], (size + 2047) // 2048 if mode == "data" else size // 2336)
+            b["cur"] = 0
         self.status.configure(text="Saved %s (%s%s)" % (out, size_text(size), (", %d sectors read again" % retries)
                                                         if retries else ""))
         if mode == "xa" and out.upper().endswith(".XA") and self.xa_wav.get():
             threading.Thread(target=self.xa_to_wav, args=(out,), daemon=True).start()
         if scan and mode == "data":
-            threading.Thread(target=self.scan_file, args=(out, scan == "disc"), daemon=True).start()
+            if b:
+                b["to_scan"] += 1
+            threading.Thread(target=self.scan_file, args=(out, b), daemon=True).start()
+        self.batch_progress()
 
     def xa_to_wav(self, path):
         import audioconv
@@ -385,84 +479,74 @@ class GameDataPage(Page):
         except Exception as e:      # (an XA file without audio sectors: a movie's)
             self.post(self.status.configure, text="%s: no XA audio to convert (%s)" % (os.path.basename(path), e))
 
-    def scan_file(self, path, whole_disc=False):
+    def scan_file(self, path, batch):
+        """A copied file scanned (a worker thread), its assets added to the batch's."""
         try:
             with open(path, "rb") as f:
                 data = f.read()
             found = assetscan.scan_bytes(data, os.path.basename(path))
-        except (OSError, ValueError, MemoryError):
-            found = []
-        if whole_disc:
-            self.post(self.disc_file_scanned, found)
+            error = None
+        except Exception as e:      # noqa: BLE001 (a scanner error: the file's assets lost, not the batch's)
+            found, error = [], "%s: %s" % (type(e).__name__, e)
+        self.post(self.file_scanned, path, found, error, batch)
+
+    def file_scanned(self, path, found, error, batch):
+        if batch is None or batch is not self.batch:
             return
-        self.post(self.show_assets, found, os.path.splitext(os.path.basename(path))[0],
-                  "%s: %d asset%s found" % (os.path.basename(path), len(found), "" if len(found) == 1 else "s"))
+        batch["scanned"] += 1
+        batch["found"] += found
+        if error:
+            batch.setdefault("errors", []).append("%s (%s)" % (os.path.basename(path), error))
+        self.add_assets(found)
+        self.batch_progress()
+        self.batch_check()
 
-    # Scan the whole disc: every data file copied (into the settings folder) and scanned, the results added up
-
-    def scan_disc(self):
-        if not self.disc_live or not self.files:
-            return self.app.error("Read the disc first.")
-        skip = (XA_FORM2 | XA_INTERLEAVED | XA_CDDA)
-        paths = [p for p, (lba, size, attr) in sorted(self.files.items(), key=lambda kv: kv[1][0])
-                 if not attr & skip and os.path.splitext(p)[1].upper() not in (".STR", ".XA", ".DA") and size]
-        if not paths:
-            return self.app.error("No data files on this disc (only audio and movies).")
-        folder = self.out_dir("disc", self.volume)
-        total = sum(self.files[p][1] for p in paths)
-        self.disc_scan = {"total": len(paths), "saved": 0, "scanned": 0, "found": [], "folder": folder}
-        self.saved_now = []
-        self.show_assets([], self.volume, "Scanning the disc: 0 of %d files" % len(paths), switch=False)
-        self.status.configure(text="Scanning the whole disc: %d files (%s; XA, STR and CD audio left out)..." % (
-            len(paths), size_text(total)))
-        for p in paths:
-            out = os.path.join(folder, *p.strip("\\").split("\\"))
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            self.disc_command("get %s %s" % (p, out), lambda f: self.disc_file_copied(f))
-        return None
-
-    def disc_file_copied(self, line):
-        if self.disc_scan is None:
-            return self.file_saved(line, False)
-        self.disc_scan["saved"] += 1
-        self.file_saved(line, "disc")
-        return None
-
-    def disc_file_scanned(self, found):
-        d = self.disc_scan
-        if d is None:
+    def batch_check(self):
+        """The batch over (nothing copied or recorded any more, every file copied scanned): its summary."""
+        b = self.batch
+        if not b:
             return
-        d["scanned"] += 1
-        d["found"] += found
-        self.disc_scan_progress()
-
-    def disc_scan_progress(self, stopped=False):
-        d = self.disc_scan
-        if d is None:
+        busy = (self.busy_cmd or "").startswith(("get", "track")) or any(
+            l.startswith(("get", "track")) for l, _ in self.pending)
+        if busy or b["scanned"] < b["to_scan"]:
             return
-        copying = self.busy_cmd == "get" or any(l.startswith("get") for l, _ in self.pending)
-        finished = not copying and d["scanned"] >= d["saved"]
-        text = "Disc scan: %d of %d files, %d asset%s found" % (d["scanned"], d["total"], len(d["found"]),
-                                                                "" if len(d["found"]) == 1 else "s")
-        if finished:
-            text = ("Disc scan %s: %d of %d files scanned, %d asset%s found (the files copied to %s)" % (
-                "stopped" if d["scanned"] < d["total"] else "done", d["scanned"], d["total"], len(d["found"]),
-                "" if len(d["found"]) == 1 else "s", d["folder"]))
-        if finished:
-            self.pair_banks(d)
-        self.show_assets(d["found"], self.volume, text, switch=finished and bool(d["found"]))
-        if finished:
-            self.disc_scan = None
+        self.batch = None
+        self.progress.configure(value=80 if b["extract_to"] and b["found"] else 100)
+        what = "%d of %d file%s copied%s" % (b["copied"], b["files"], "" if b["files"] == 1 else "s",
+                                            " (stopped)" if b["stopped"] else "")
+        if b["tracks"]:
+            what += ", %d CD audio track%s" % (b["tracks"], "" if b["tracks"] == 1 else "s")
+        if not b["scan"]:
+            self.status.configure(text="Done: %s to %s." % (what, b["folder"]))
+            return
+        self.pair_banks({"found": self.assets, "folder": b["folder"]})
+        self.fill_assets()
+        errors = b.get("errors", [])
+        if b["extract_to"]:
+            if not b["found"]:
+                self.status.configure(text="Done: %s, but no assets found in them (a game's own compressed archives "
+                                      "can't be read)%s." % (what, ("; not scanned: " + ", ".join(errors[:3]))
+                                                              if errors else ""))
+                return
+            self.start_extraction(self.with_related(b["found"]), b["extract_to"], start=80, open_after=True)
+            return
+        self.status.configure(text="Done: %s and scanned, %d asset%s found in them%s. See Assets found." % (
+            what, len(b["found"]), "" if len(b["found"]) == 1 else "s",
+            ("; not scanned: " + ", ".join(errors[:3])) if errors else ""))
+        if self.assets:
+            self.tabs.select(2)
 
     @staticmethod
     def pair_banks(d):
-        """A VH found in a file NAME.VH with a NAME.VB beside it on the disc (the samples of a bank are often a file of
-        their own): a whole VAB (VH + VB), if the VB's size is the VH's samples."""
+        """A VH found in a file NAME.VH (or Resident Evil 2's NAME.EDH: its sound effects' table, then the VH) with a
+        NAME.VB beside it on the disc (the samples of a bank are often a file of their own): a whole VAB (VH + VB), if
+        the VB's size is the VH's samples."""
         for a in d["found"]:
-            if a.kind != "VH" or not a.where.upper().endswith(".VH"):
+            stem, ext = os.path.splitext(a.where.upper())
+            if a.kind != "VH" or ext not in (".VH", ".EDH"):
                 continue
             for root, _, files in os.walk(d["folder"]):
-                vb = next((f for f in files if f.upper() == a.where.upper()[:-3] + ".VB"), None)
+                vb = next((f for f in files if f.upper() == stem + ".VB"), None)
                 if not vb:
                     continue
                 with open(os.path.join(root, vb), "rb") as f:
@@ -647,7 +731,7 @@ class GameDataPage(Page):
                                                               len(found) - len(self.textures)))
         self.draw_vram()
         self.show_assets(found, base, "Snapshot: %d asset%s found" % (len(found), "" if len(found) == 1 else "s"),
-                         switch=False)
+                         switch=False, source="snapshot")
 
     # VRAM view: the textures in use outlined, one chosen
 
@@ -875,21 +959,28 @@ class GameDataPage(Page):
     # ------------------------------------------------------------------------------------------------ Assets
 
     def build_assets(self, f):
-        self.assets_info = tb.Label(f, text="Nothing scanned yet: take a snapshot, or save a disc file with Save and "
-                                    "scan for assets.", bootstyle="secondary", wraplength=900, justify="left")
+        self.assets_info = tb.Label(f, text="Nothing scanned yet: select files or folders in the Disc tab and press "
+                                    "Extract assets (or take a snapshot): what was found is listed here to browse.", bootstyle="secondary",
+                                    wraplength=1000, justify="left")
         self.assets_info.pack(anchor="w")
         row = tb.Frame(f)
         row.pack(fill="x", pady=(6, 0))
-        tb.Label(row, text="Show").pack(side="left")
-        self.filter = tb.Combobox(row, values=list(FILTERS), state="readonly", width=24)
-        self.filter.set("All")
-        self.filter.pack(side="left", padx=6)
-        self.filter.bind("<<ComboboxSelected>>", lambda e: self.fill_assets())
+        tb.Label(row, text="Find").pack(side="left")
+        self.search = tk.StringVar(value="")
+        entry = tb.Entry(row, textvariable=self.search, width=28)
+        entry.pack(side="left", padx=6)
+        self.search.trace_add("write", lambda *a: self.fill_assets())
+        tb.Label(row, text="a name, a file found in or a detail (e.g. MAIN, 120 BPM, 4-bit)",
+                 bootstyle="secondary").pack(side="left")
+        tb.Button(row, text="Open all", bootstyle="secondary-link",
+                  command=lambda: self.open_groups(True)).pack(side="right")
+        tb.Button(row, text="Close all", bootstyle="secondary-link",
+                  command=lambda: self.open_groups(False)).pack(side="right")
+
         body = tb.Frame(f)
         body.pack(fill="both", expand=True, pady=6)
-        self.alist = tb.Treeview(body, columns=("kind", "where", "offset", "size", "info"), show="headings",
-                                 selectmode="extended")
-        for col, text, w in (("kind", "Type", 70), ("where", "Found in", 110), ("offset", "Offset", 80),
+        self.alist = tb.Treeview(body, columns=("where", "size", "info"), show="tree headings", selectmode="extended")
+        for col, text, w in (("#0", "Asset (its file name when extracted)", 300), ("where", "Found in", 130),
                              ("size", "Size", 80), ("info", "Details", 420)):
             self.alist.heading(col, text=text, anchor="w")
             self.alist.column(col, width=w, stretch=(col == "info"))
@@ -897,70 +988,222 @@ class GameDataPage(Page):
         self.alist.configure(yscrollcommand=sb.set)
         self.alist.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
-        self.alist.bind("<<TreeviewSelect>>", lambda e: self.preview_asset())
-        self.preview = ImageView(body, width=280)
-        self.preview.pack(side="left", fill="both", padx=(8, 0))
+        self.alist.bind("<<TreeviewSelect>>", lambda e: self.asset_selected())
+        self.alist.bind("<Double-1>", lambda e: self.open_assets())
+        self.preview = ImageView(body, width=280)       # (shown for an image or a texture selected)
 
         row = tb.Frame(f)
         row.pack(fill="x")
-        tb.Button(row, text="Save selected...", bootstyle="primary", command=lambda: self.save_assets(False)).pack(
-            side="left")
-        tb.Button(row, text="Save all...", bootstyle="primary-outline", command=lambda: self.save_assets(True)).pack(
-            side="left", padx=6)
-        tb.Button(row, text="Open in the tools", bootstyle="info-outline", command=self.open_assets).pack(side="left")
-        tb.Label(row, text="Textures and TIMs: VRAM Viewer; VAB, SEQ, VAG: Sound Tools; TMD: Model Viewer",
-                 bootstyle="secondary").pack(side="left", padx=10)
+        self.extract_buttons = [
+            tb.Button(row, text="Extract selected...", bootstyle="primary", command=lambda: self.extract_assets(False)),
+            tb.Button(row, text="Extract all...", bootstyle="primary-outline", command=lambda: self.extract_assets(True)),
+            tb.Button(row, text="Open in the tools", bootstyle="info-outline", command=self.open_assets),
+            tb.Button(row, text="Clear the list", bootstyle="secondary-outline", command=self.clear_assets)]
+        for i, b in enumerate(self.extract_buttons):
+            b.pack(side="left", padx=(0 if i == 0 else 6, 0))
+        tb.Label(row, text="Folders").pack(side="left", padx=(16, 4))
+        self.folders = tb.Combobox(row, values=list(FOLDER_MODES), state="readonly", width=34)
+        self.folders.set(self.app.settings.field("gamedata.folders", FOLDER_MODES[0]) if hasattr(self.app, "settings")
+                         else FOLDER_MODES[0])
+        if self.folders.get() not in FOLDER_MODES:
+            self.folders.set(FOLDER_MODES[0])
+        self.folders.pack(side="left")
+        self.sel_label = tb.Label(row, text="", bootstyle="secondary")
+        self.sel_label.pack(side="left", padx=10)
+        tb.Label(f, text="Select a type to take all of its assets. Double-click: open in the tools (textures and TIMs: "
+                 "VRAM Viewer; banks, music and samples: Sound Tools; models: Model Viewer).",
+                 bootstyle="secondary", wraplength=1000, justify="left").pack(anchor="w")
+
+    @staticmethod
+    def category(kind):
+        return next((i for i, (_, kinds, _) in enumerate(CATEGORIES) if kind in kinds), len(CATEGORIES) - 1)
+
+    def asset_name(self, a):
+        return a.name(self.asset_base)
 
     def fill_assets(self):
-        kinds = FILTERS[self.filter.get()]
-        self.shown = [a for a in self.assets if not kinds or a.kind in kinds]
+        """The list: a row for each type with assets (how many), its assets under it; only the ones matching Find."""
+        words = self.search.get().lower().split()
+        opened = {iid for iid in self.alist.get_children() if self.alist.item(iid, "open")}
         self.alist.delete(*self.alist.get_children())
-        for i, a in enumerate(self.shown):
-            self.alist.insert("", "end", iid=str(i), values=(a.kind, a.where, "0x%06X" % a.offset, size_text(a.size),
-                                                             a.info))
+        groups = {}
+        for i, a in enumerate(self.assets):
+            text = " ".join((self.asset_name(a), a.where, a.info, a.kind)).lower()
+            if all(w in text for w in words):
+                groups.setdefault(self.category(a.kind), []).append(i)
+        for items in groups.values():       # (by name: the files are scanned as they come)
+            items.sort(key=lambda i: self.asset_name(self.assets[i]).lower())
+        for c, (title, _, _) in enumerate(CATEGORIES):
+            items = groups.get(c)
+            if not items:
+                continue
+            iid = "cat%d" % c
+            size = sum(self.assets[i].size + sum(len(p) for p in self.assets[i].parts.values()) for i in items)
+            self.alist.insert("", "end", iid=iid, text="%s  (%d)" % (title, len(items)),
+                              values=("", size_text(size), ""), open=bool(words) or iid in opened)
+            for i in items:
+                a = self.assets[i]
+                size = a.size + sum(len(p) for p in a.parts.values())
+                self.alist.insert(iid, "end", iid="a%d" % i, text=self.asset_name(a),
+                                  values=(a.where, size_text(size), a.info))
+        self.asset_selected()
 
-    def show_assets(self, found, base, text, switch=True):
-        self.assets, self.asset_base = found, base
+    def open_groups(self, state):
+        for iid in self.alist.get_children():
+            self.alist.item(iid, open=state)
+
+    def add_assets(self, found):
+        """Assets of another file scanned added to the list (the same asset found again: once)."""
+        seen = {(a.where, a.offset, a.kind, a.size) for a in self.assets}
+        new = [a for a in found if (a.where, a.offset, a.kind, a.size) not in seen]
+        if new:
+            self.assets += new
+            self.fill_assets()
+            self.summary()
+
+    def show_assets(self, found, base, text, switch=True, source="snapshot"):
+        """The list replaced (a snapshot's assets, or a new disc scan)."""
+        self.assets, self.asset_base, self.asset_source = list(found), base, source
         self.fill_assets()
-        counts = {}
-        for a in found:
-            counts[a.kind] = counts.get(a.kind, 0) + 1
-        detail = ", ".join("%d %s" % (n, k) for k, n in counts.items())
-        self.assets_info.configure(text=text + ((": " + detail) if detail else "") +
-                                   ". Textures: the ones the game draws, cut from VRAM. The others: the standard "
-                                   "formats as the game keeps them in memory (compressed data can't be found).")
+        self.summary(text)
         self.status.configure(text=text)
-        self.progress.configure(value=100)
+        if not self.batch:
+            self.progress.configure(value=100)
         if found and switch:
             self.tabs.select(2)
 
-    def chosen_assets(self):
-        return [self.shown[int(i)] for i in self.alist.selection()]
+    def summary(self, text=None):
+        counts = {}
+        for a in self.assets:
+            c = CATEGORIES[self.category(a.kind)][0]
+            counts[c] = counts.get(c, 0) + 1
+        detail = ", ".join("%s %d" % (c, n) for c, n in counts.items())
+        where = ("From the disc's files" if self.asset_source == "disc" else "From the snapshot")
+        self.assets_info.configure(text="%s%s: %d asset%s%s. Compressed data can't be found, only the formats as they "
+                                   "are stored." % (where, (" (" + text + ")") if text else "", len(self.assets),
+                                                     "" if len(self.assets) == 1 else "s",
+                                                     (" (" + detail + ")") if detail else ""))
 
-    def preview_asset(self):
+    def clear_assets(self):
+        self.show_assets([], self.asset_base, "List cleared", switch=False, source=self.asset_source)
+
+    def chosen_assets(self, everything=False):
+        """The assets selected (a type selected: all of its assets shown), or all the ones shown."""
+        rows = self.alist.get_children() if everything else self.alist.selection()
+        out = []
+        for iid in rows:
+            if iid.startswith("cat"):
+                out += [int(c[1:]) for c in self.alist.get_children(iid)]
+            else:
+                out.append(int(iid[1:]))
+        return [self.assets[i] for i in dict.fromkeys(out)]
+
+    def asset_selected(self):
         sel = self.chosen_assets()
-        if sel and sel[0].kind in ("TIM", "Texture"):
+        self.sel_label.configure(text=("%d selected" % len(sel)) if sel else "")
+        one = self.alist.selection()
+        a = self.assets[int(one[0][1:])] if len(one) == 1 and one[0].startswith("a") else None
+        image = None
+        if a and a.kind in ("TIM", "Texture"):
             try:
-                self.preview.show(assetscan.tim_image(sel[0].data))
+                image = assetscan.tim_image(a.data)
             except Exception:       # (a TIM the scanner kept but PIL can't draw)
-                self.preview.show(None)
-        else:
-            self.preview.show(None)
+                image = None
+        self.preview.show(image)
+        if image is not None and not self.preview.winfo_manager():
+            self.preview.pack(side="left", fill="both", padx=(8, 0))
+        elif image is None and self.preview.winfo_manager():
+            self.preview.pack_forget()
 
-    def save_assets(self, everything):
-        items = self.shown if everything else self.chosen_assets()
+    def asset_folder(self, folder, a):
+        """Where an asset is written: music and sound banks in "Music and sound banks/FILE" (the file they were found
+        in: a music with its bank), the other types in a folder each; or a folder for each file; or all in one."""
+        mode = self.folders.get()
+        source = (os.path.splitext(a.where)[0] if a.where not in ("RAM", "VRAM", "SPU RAM")
+                  else (self.asset_base or "snapshot"))
+        if mode == FOLDER_MODES[0]:
+            if a.kind in SOUND_KINDS:
+                return os.path.join(folder, "Music and sound banks", source)
+            return os.path.join(folder, CATEGORIES[self.category(a.kind)][2])
+        if mode == FOLDER_MODES[1]:
+            return os.path.join(folder, source)
+        return folder
+
+    def with_related(self, items):
+        """The assets chosen, and the sound that goes with them: a music's bank(s), a bank's music(s), found in the
+        same file (or the same snapshot)."""
+        out = list(items)
+        sources = {a.where for a in items if a.kind in SOUND_KINDS}
+        chosen = {id(a) for a in out}
+        for a in self.assets:
+            if a.kind in SOUND_KINDS and a.where in sources and id(a) not in chosen:
+                out.append(a)
+                chosen.add(id(a))
+        return out
+
+    def extract_assets(self, everything):
+        items = self.chosen_assets(everything)
         if not items:
-            return self.app.error("Nothing to save: select assets in the list.")
-        folder = filedialog.askdirectory(title="Save the assets in", parent=self,
-                                         initialdir=self.app.settings.field("gamedata.assets", ""))
+            return self.app.error("Nothing to extract: select assets, or a type, in the list." if not everything else
+                                  "Nothing in the list.")
+        if self.extracting:
+            return self.app.error("Wait for the extraction going on.")
+        items = self.with_related(items)
+        folder = filedialog.askdirectory(title="Extract %d asset%s to" % (len(items), "" if len(items) == 1 else "s"),
+                                         parent=self, initialdir=self.app.settings.field("gamedata.assets", ""))
         if not folder:
             return None
         self.app.settings.set_field("gamedata.assets", folder)
-        n = 0
-        for a in items:
-            n += len(a.save(folder, self.asset_base))
-        self.status.configure(text="%d file%s written to %s" % (n, "" if n == 1 else "s", folder))
+        self.app.settings.set_field("gamedata.folders", self.folders.get())
+        self.start_extraction(items, folder)
         return None
+
+    def start_extraction(self, items, folder, start=0, open_after=False):
+        """The assets written (a worker thread); the progress bar from start to 100; open_after: the folder opened."""
+        jobs = [(a, self.asset_folder(folder, a)) for a in items]
+        self.extracting = True
+        self.extract_range, self.open_after = (start, 100 - start), open_after
+        for b in self.extract_buttons[:2]:
+            b.configure(state="disabled")
+        self.progress.configure(value=start)
+        threading.Thread(target=self.extract_worker, args=(jobs, folder), daemon=True).start()
+
+    def extract_worker(self, jobs, folder):
+        self.last_extracted = [a for a, _ in jobs]
+        written, errors, last = 0, [], 0.0
+        for n, (a, sub) in enumerate(jobs, 1):
+            try:
+                written += len(a.save(sub, self.asset_base))
+            except OSError as e:
+                errors.append("%s: %s" % (self.asset_name(a), e))
+            if time.time() - last > 0.05 or n == len(jobs):
+                last = time.time()
+                self.post(self.extract_progress, n, len(jobs), self.asset_name(a))
+        self.post(self.extracted, len(jobs), written, errors, folder)
+
+    def extract_progress(self, n, total, name):
+        start, span = getattr(self, "extract_range", (0, 100))
+        self.progress.configure(value=start + span * n / total)
+        self.status.configure(text="Writing the assets found, %d of %d: %s" % (n, total, name))
+
+    def extracted(self, count, written, errors, folder):
+        self.extracting = False
+        for b in self.extract_buttons[:2]:
+            b.configure(state="normal")
+        self.progress.configure(value=100)
+        kinds = {}
+        for a in self.last_extracted:
+            c = CATEGORIES[self.category(a.kind)][0].split(" (")[0].lower()
+            kinds[c] = kinds.get(c, 0) + 1
+        self.status.configure(text="Done: %d asset%s extracted (%s: %d file%s) to %s%s" % (
+            count, "" if count == 1 else "s", ", ".join("%s %d" % kv for kv in kinds.items()), written,
+            "" if written == 1 else "s", folder, ("; not written: " + "; ".join(errors[:3])) if errors else ""))
+        if getattr(self, "open_after", False) and not errors and hasattr(os, "startfile") and \
+                not os.environ.get("PS1DEVCART_NO_OPEN"):
+            try:
+                os.startfile(folder)
+            except OSError:
+                pass
 
     @staticmethod
     def music_groups(saved):
@@ -981,6 +1224,7 @@ class GameDataPage(Page):
         if not items:
             return self.app.error("Select assets in the list.")
         folder = self.out_dir("assets", self.asset_base)
+        items = self.with_related(items)            # (a music with its bank: what the tester plays it with)
         paths = {a.kind: [] for a in items}
         for a in items:
             paths[a.kind] += a.save(folder, self.asset_base)

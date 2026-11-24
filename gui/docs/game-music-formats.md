@@ -153,8 +153,12 @@ semitone. Both tables and this code are identical in Gex 2, Gex 3, Akuji and Sou
 16-bit then 32-bit) start with 128, 135, 143... and 4587, 5242, 5898...
 
 Volume: the library squares each volume before applying it (`(v + 1)² - 1`, then `>> 14`): note velocity, channel
-volume, tone volume, program volume and the slot's volume are all on that curve. A VAB scales linearly, so balances
-can differ slightly *(not compared by ear)*.
+volume, tone volume, program volume and the slot's volume are all on that curve. Sony's libsnd plays a SEQ on the same
+curve: its key on multiplies the volumes (velocity, channel, bank, program, tone, the sequence's) over 127 each, then
+squares the result (`L × L / 3FFFh`; Resident Evil 2's decompilation, `Bio2/lib/VM_NOWON.S` in
+github.com/MeganGrass/bio2-ds). A product of squares is the square of the product, so a converted SEQ + VAB keeps the
+game's balances. Only the pan differs a little: libsnd scales one side linearly by each pan before squaring, and the
+library's pan law isn't compared yet.
 
 **Wave addresses** (32-bit each): where each wave starts in the samples.
 
@@ -705,7 +709,6 @@ are made of tracks looping over different lengths that drift against each other:
 
 | Format | Unknown | How it could be settled |
 |---|---|---|
-| AAD | How much the squared volume curve changes balances | Listen side by side with the game; read SPU voice volumes from a snapshot |
 | SQ/HD | The effect sequences' commands (data block 3) | The driver's effect sequence interpreter (`driver.psflib`) |
 | AKAO | What the commands VGMTrans leaves unknown do (E0h-E2h, FEh 13h, 1Ch, 1Fh in Vagrant Story...) and the exact note release in version 3 | The driver's code (its command table: FF7 80049AA8h; Vagrant Story and FF8 at the start of their 400-word tables, 800301A0h / 80052258h) |
 | AKAO | Whether a slurred or legato note restarts its vibrato | The note start code (FF7 80031500h) |
@@ -714,7 +717,7 @@ are made of tracks looping over different lengths that drift against each other:
 
 Settled since the first version of this page: the fine-tune unit (the same tables and code in all four games), the
 header bytes (read or not by the games' code; the older layout's version field), the reverb fields (libspu's types
-and depth), `FNSa` / `FMSa` (the sound effect sets, 1.5); and from Ape Escape's sound driver: the tone flags (bits 2
+and depth), the AAD volume curve (libsnd squares a SEQ's volumes too, 1.2), `FNSa` / `FMSa` (the sound effect sets, 1.5); and from Ape Escape's sound driver: the tone flags (bits 2
 and 3 unused, the noise flag), modulation (and its update rate: the VSync), which tones a note plays and that a note with no tone is silent, data
 block 4 and block 3's tables; from Dragoon's RAM in an emulator: that it plays a music with its bank alone, and
 which music a battle plays.
