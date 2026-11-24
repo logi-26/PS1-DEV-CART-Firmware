@@ -19,12 +19,16 @@ def _fast_scrollbar_thumbs(center=32):
     """ttkbootstrap 2.2's scrollbar thumb is a 17 px image whose middle (1 px) Tk repeats along the thumb: about one
     blend per pixel of length, 1.4 s to draw a horizontal scrollbar across the window, and some computers are much
     slower. The same thumb with a middle of `center` px (the shortest thumb is then 16 + center px). Nothing changed
-    if this ttkbootstrap draws its thumbs another way."""
+    if this ttkbootstrap draws its thumbs another way (2.2.7: two end caps around a fill, the slowness fixed: its
+    _scrollbar_thumb takes other arguments, and replacing it broke every window)."""
+    import inspect
     try:
         from ttkbootstrap.style.builders import scrollbar as sb
         inset, thick, min_thumb = sb._SCROLLBAR_THUMB_INSET, sb._SCROLLBAR_THICKNESS, sb._SCROLLBAR_MIN_THUMB
-        sb._scrollbar_thumb      # noqa: B018 (the function replaced)
-    except (ImportError, AttributeError):
+        params = list(inspect.signature(sb._scrollbar_thumb).parameters)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return
+    if params != ["builder", "color", "orient", "rounded"]:     # (only the 17 px image thumb of 2.2.0-2.2.6)
         return
 
     def thumb(builder, color, orient, rounded):
