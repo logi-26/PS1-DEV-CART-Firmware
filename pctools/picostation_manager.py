@@ -19,26 +19,35 @@ The game database: psio_assist.db of the PSIO Game Manager (github.com/logi-26/p
 parts joined): game IDs, titles, 80x84 covers. Chosen in the app, or downloaded by it.
 
     python picostation_manager.py            (needs Pillow and ttkbootstrap: python -m pip install pillow ttkbootstrap)
+    python picostation_manager.py --selftest (opens the app hidden, checks its files, closes: exit code 0 if good)
+    build_exe.bat                            (picostation_manager.exe, no Python needed: see picostation_manager.spec)
+
+The settings: %APPDATA%\\PicoStationManager\\settings.json (PICOSTATION_SETTINGS: another file, for the tests).
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
 
+import ctypes
 import io
 import json
 import os
 import pathlib
+import queue
 import re
 import sqlite3
 import sys
 import threading
 import urllib.request
+import tkinter
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 try:
     from PIL import Image, ImageTk
     import ttkbootstrap as tb
+    from ttkbootstrap.widgets.tooltip import ToolTip
 except ImportError:
     sys.exit("Pillow and ttkbootstrap are needed: python -m pip install pillow ttkbootstrap")
 
@@ -47,11 +56,17 @@ sys.path.insert(0, HERE)
 import picostation_covers as covers     # noqa: E402
 import picostation_ids as ids           # noqa: E402
 
+FROZEN = hasattr(sys, "_MEIPASS")       # The built program (PyInstaller): its files in manager_files\
+APP_DIR = os.path.dirname(sys.executable) if FROZEN else HERE
 APP_TITLE = "PicoStation Manager"
-SETTINGS = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "PicoStationManager", "settings.json")
+SETTINGS = os.environ.get("PICOSTATION_SETTINGS") or os.path.join(
+    os.environ.get("APPDATA") or os.path.expanduser("~"), "PicoStationManager", "settings.json")
 DB_PARTS = ["https://github.com/logi-26/psio-game-manager/raw/main/src/data/psio_assist_db_part_%d" % i
             for i in range(1, 5)]
-CHEAT_DB = os.path.join(HERE, "..", "gui", "data", "cheats.sqlite")
+# The PS1 DEV CART Manager's icon and cheat database (gui/): in the built program, beside its other files
+ICONS = os.path.join(sys._MEIPASS, "icons") if FROZEN else os.path.join(HERE, "..", "gui", "icons")
+ICON_SIZES = (256, 48, 32, 16)
+CHEAT_DB = os.path.join(sys._MEIPASS if FROZEN else os.path.join(HERE, "..", "gui"), "data", "cheats.sqlite")
 CHT_SIZE = 3 * 2048         # What the PicoStation sends of a .cht
 CHT_CHEATS = 256
 CODE = re.compile(r"^([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{4})$")
@@ -187,12 +202,89 @@ def scan(sd):
     return sorted(games, key=lambda g: g.name.lower())
 
 
+# ------------------------------------------------------------------------------------------------- widgets
+
+def title_bar_dark(window):
+    """Windows 10 (1809 and later) and 11: the window's title bar dark, like the theme (as the PS1 DEV CART
+    Manager's). Nothing elsewhere."""
+    if sys.platform != "win32":
+        return
+    try:
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1)
+        for attribute in (20, 19):      # DWMWA_USE_IMMERSIVE_DARK_MODE (19 before Windows 10 20H1)
+            if not ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value),
+                                                              ctypes.sizeof(value)):
+                break
+        active = ctypes.windll.user32.GetForegroundWindow() == hwnd     # (drawn again at once: WM_NCACTIVATE)
+        ctypes.windll.user32.SendMessageW(hwnd, 0x86, not active, 0)
+        ctypes.windll.user32.SendMessageW(hwnd, 0x86, active, 0)
+    except Exception:  # noqa: BLE001 (older Windows: the title bar stays as it is)
+        pass
+
+
+class _Tip(ToolTip):
+    """A tooltip shown only when it has a text (an ElidedLabel's whole text, when it is cut)."""
+    def show_tip(self, *args):
+        if self.text:
+            super().show_tip(*args)
+
+
+class ElidedLabel(tb.Label):
+    """A one-line label whose size never depends on its text: the layout gives it its width, a text too long for it
+    is cut with "..." (at the end, or in the middle for paths), the whole text in a tooltip. Set with .set()."""
+
+    def __init__(self, master, text="", middle=False, width=1, **kw):
+        super().__init__(master, width=width, **kw)
+        self.full, self.middle = "", middle
+        self.tip = _Tip(self, text="", wraplength=600)
+        self.bind("<Configure>", lambda e: self._fit())
+        self.set(text)
+
+    def set(self, text, **kw):
+        self.full = " ".join(str(text).split("\n"))
+        if kw:
+            self.configure(**kw)
+        self._fit()
+
+    def _font(self):
+        font = self.cget("font") or tb.Style().lookup(self.cget("style") or "TLabel", "font") or "TkDefaultFont"
+        try:
+            return tkfont.nametofont(str(font))
+        except Exception:  # noqa: BLE001 (a font description, not a named font)
+            return tkfont.Font(font=font)
+
+    def _fit(self):
+        text, room = self.full, self.winfo_width() - 4
+        font = self._font() if room > 1 else None
+        if font is None or font.measure(text) <= room:
+            self.configure(text=text)
+            self.tip.text = ""
+            return
+        lo, hi = 0, len(text)           # The most characters that fit with the "..."
+        while lo < hi:
+            n = (lo + hi + 1) // 2
+            if font.measure(self._cut(text, n)) <= room:
+                lo = n
+            else:
+                hi = n - 1
+        self.configure(text=self._cut(text, lo))
+        self.tip.text = text
+
+    def _cut(self, text, n):
+        if not self.middle:
+            return text[:n].rstrip() + "…"
+        head = (n + 1) // 2
+        return text[:head] + "…" + text[len(text) - (n - head):] if n > head else text[:head] + "…"
+
+
 # ------------------------------------------------------------------------------------------------- the app
 
 class App(tb.Window):
-    def __init__(self):
-        super().__init__(title=APP_TITLE, themename="bootstrap-dark", minsize=(1060, 680))
-        self.settings = load_settings()
+    def __init__(self, sd=None, load=True):
+        super().__init__(title=APP_TITLE, themename="bootstrap-dark", iconphoto=None)
+        self.settings = load_settings() if load else {}
         self.games, self.shown = [], []
         self.game = None            # The game in the panel, its disc
         self.disc = None
@@ -203,143 +295,254 @@ class App(tb.Window):
         self.cheat_db = None
         self.template = covers.to_cov(covers.no_cover())   # (the placeholder's image: "No cover" in the list)
         self.photo = None
+        self.calls = queue.Queue()  # What the threads ask the window to do (from_thread)
+        self._set_icon()
         self._build()
+        self._do_calls()
         self.open_db(self.settings.get("db") or self._find_db(), quiet=True)
         self._open_cheat_db()
-        if self.settings.get("sd") and os.path.isdir(self.settings["sd"]):
-            self.sd_var.set(self.settings["sd"])
+        sd = sd or self.settings.get("sd")
+        if sd and os.path.isdir(sd):
+            self.sd_var.set(sd)
             self.rescan()
+        title_bar_dark(self)
+
+    def _set_icon(self):
+        """The PS1 DEV CART Manager's icon (the cartridge), for every window."""
+        self.icons = []
+        try:
+            self.icons = [tb.PhotoImage(file=os.path.join(ICONS, "ps1devcart-%d.png" % s)) for s in ICON_SIZES]
+            self.iconphoto(False, *self.icons)
+        except Exception:  # noqa: BLE001 (icons missing: Windows' own)
+            pass
+
+    def dialog(self, title):
+        """A window of the app's (the icon, the dark title bar), modal."""
+        win = tb.Toplevel(self, title=title, iconphoto=None)
+        if self.icons:
+            win.iconphoto(False, *self.icons)
+        win.transient(self)
+        title_bar_dark(win)
+        win.grab_set()
+        return win
 
     # --------------------------------------------------------------------------------------------- layout
+    # Nothing in the window takes its size from what it shows: one-line labels cut to the room they have (the whole
+    # text in a tooltip), the same rows for every game, the buttons in grids of equal columns. A long title or path,
+    # a game of several discs or a cover being chosen moves nothing.
+    PAD = 12
+
     def _build(self):
-        top = tb.Frame(self, padding=(12, 10, 12, 4))
+        P = self.PAD
+        rows = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        tb.Style().configure("Treeview", rowheight=rows + 8)     # (the lists' rows: not packed tight)
+        # The card and the game database: the labels, the fields and the 4 buttons in the same columns
+        top = tb.Frame(self, padding=(P, P, P, 0))
         top.pack(fill="x")
         top.columnconfigure(1, weight=1)
-        tb.Label(top, text="SD card", width=14).grid(row=0, column=0, sticky="w")
+        top.columnconfigure((2, 3), uniform="top")
+        tb.Label(top, text="SD card", width=15).grid(row=0, column=0, sticky="w")
         self.sd_var = tb.StringVar()
-        tb.Entry(top, textvariable=self.sd_var).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        tb.Button(top, text="Browse...", bootstyle="secondary", command=self.choose_sd).grid(row=0, column=2)
-        tb.Button(top, text="Rescan", bootstyle="primary", width=9, command=self.rescan).grid(row=0, column=3,
-                                                                                             padx=(8, 0))
-        tb.Label(top, text="Game database", width=14).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.db_label = tb.Label(top, text="", bootstyle="secondary")
-        self.db_label.grid(row=1, column=1, sticky="w", pady=(6, 0))
-        bar = tb.Frame(top)
-        bar.grid(row=1, column=2, columnspan=2, sticky="e", pady=(6, 0))
-        tb.Button(bar, text="Choose...", bootstyle="secondary", command=self.choose_db).pack(side="left")
-        tb.Button(bar, text="Download", bootstyle="secondary-outline", command=self.download_db).pack(
-            side="left", padx=(8, 0))
+        self.sd_entry = tb.Entry(top, textvariable=self.sd_var)
+        self.sd_entry.grid(row=0, column=1, sticky="ew")
+        self.sd_entry.bind("<Return>", lambda e: self.rescan())
+        tb.Button(top, text="Browse...", bootstyle="secondary", command=self.choose_sd).grid(
+            row=0, column=2, sticky="ew", padx=(8, 0))
+        tb.Button(top, text="Rescan", bootstyle="primary", command=self.rescan).grid(
+            row=0, column=3, sticky="ew", padx=(8, 0))
+        tb.Label(top, text="Game database", width=15).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.db_label = ElidedLabel(top, middle=True, bootstyle="secondary")
+        self.db_label.grid(row=1, column=1, sticky="ew", pady=(8, 0))
+        tb.Button(top, text="Choose...", bootstyle="secondary", command=self.choose_db).grid(
+            row=1, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
+        tb.Button(top, text="Download", bootstyle="secondary-outline", width=10, command=self.download_db).grid(
+            row=1, column=3, sticky="ew", padx=(8, 0), pady=(8, 0))
+        tb.Separator(self).pack(fill="x", padx=P, pady=(P, 0))
 
-        body = tb.Panedwindow(self, orient="horizontal")
-        body.pack(fill="both", expand=True, padx=12, pady=8)
+        # The whole card's tools and the status, at the bottom (packed before the body: always shown)
+        bottom = tb.Frame(self, padding=(P, 8, P, P))
+        bottom.pack(side="bottom", fill="x")
+        tb.Separator(self).pack(side="bottom", fill="x", padx=P)
+        bottom.columnconfigure(3, weight=1)
+        tb.Label(bottom, text="Whole card", bootstyle="secondary").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self.card_buttons = [
+            tb.Button(bottom, text="Missing covers from the database...", bootstyle="secondary-outline",
+                      command=self.fill_covers),
+            tb.Button(bottom, text="Add game IDs to existing covers...", bootstyle="secondary-outline",
+                      command=self.write_ids)]
+        for c, b in enumerate(self.card_buttons, 1):
+            b.grid(row=0, column=c, padx=(8, 0))
+        self.status = ElidedLabel(bottom, bootstyle="secondary", anchor="e")
+        self.status.grid(row=0, column=3, sticky="ew", padx=(16, 0))
 
-        # The games
-        left = tb.Frame(body)
-        body.add(left, weight=3)
-        row = tb.Frame(left)
-        row.pack(fill="x", pady=(0, 6))
-        tb.Label(row, text="Search").pack(side="left")
+        body = tb.Frame(self, padding=(P, P, P, P))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        # The games: all the room the panel leaves
+        left = tb.Labelframe(body, text="Games", padding=10)
+        left.grid(row=0, column=0, sticky="nsew")
+        left.columnconfigure(1, weight=1)
+        left.rowconfigure(1, weight=1)
+        tb.Label(left, text="Search").grid(row=0, column=0, sticky="w")
         self.filter_var = tb.StringVar()
         self.filter_var.trace_add("write", lambda *_: self.show_list())
-        tb.Entry(row, textvariable=self.filter_var).pack(side="left", fill="x", expand=True, padx=8)
-        self.count_label = tb.Label(row, text="", bootstyle="secondary")
-        self.count_label.pack(side="left")
+        tb.Entry(left, textvariable=self.filter_var).grid(row=0, column=1, sticky="ew", padx=8)
+        self.count_label = tb.Label(left, text="", bootstyle="secondary", width=14, anchor="e")
+        self.count_label.grid(row=0, column=2, columnspan=2, sticky="e")
         cols = ("id", "region", "discs", "cover", "idcov", "cheats")
         self.tree = tb.Treeview(left, columns=cols, show="tree headings", selectmode="browse")
         self.tree.heading("#0", text="Game", anchor="w")
-        self.tree.column("#0", width=300)
-        for c, text, w in zip(cols, ("ID", "Region", "Discs", "Cover", "ID in cover", "Cheats"),
-                              (100, 60, 50, 90, 80, 60)):
-            self.tree.heading(c, text=text, anchor="w")
-            self.tree.column(c, width=w, stretch=c == "cover")
+        self.tree.column("#0", width=260, minwidth=160, stretch=True)
+        for c, text, w, anchor in zip(cols, ("ID", "Region", "Discs", "Cover", "ID in cover", "Cheats"),
+                                      (110, 70, 50, 80, 85, 60), ("w", "w", "center", "w", "center", "center")):
+            self.tree.heading(c, text=text, anchor=anchor)
+            self.tree.column(c, width=w, minwidth=w, stretch=False, anchor=anchor)
         sb = tb.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.tree.pack(fill="both", expand=True)
+        self.tree.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        sb.grid(row=1, column=3, sticky="ns", pady=(8, 0))
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.select())
 
-        # The game's panel
-        right = tb.Frame(body, padding=(12, 0, 0, 0))
-        body.add(right, weight=2)
-        self.title_label = tb.Label(right, text="Choose a game", font=("", 13, "bold"), wraplength=440)
-        self.title_label.pack(anchor="w")
-        self.info_label = tb.Label(right, text="", bootstyle="secondary", wraplength=440, justify="left")
-        self.info_label.pack(anchor="w", pady=(2, 6))
-        row = tb.Frame(right)
-        row.pack(fill="x")
-        tb.Label(row, text="Disc").pack(side="left")
+        # The game's panel: as wide as its buttons and the cover, whatever it shows
+        right = tb.Frame(body)
+        right.grid(row=0, column=1, sticky="ns", padx=(P, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(2, weight=1)
+
+        info = tb.Labelframe(right, text="Game", padding=10)
+        info.grid(row=0, column=0, sticky="ew")
+        info.columnconfigure(1, weight=1)
+        self.title_label = ElidedLabel(info, font=("", 13, "bold"))
+        self.title_label.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        tb.Label(info, text="Disc", width=9).grid(row=1, column=0, sticky="w")
         self.disc_var = tb.StringVar()
-        self.disc_box = tb.Combobox(row, textvariable=self.disc_var, state="readonly", width=40)
-        self.disc_box.pack(side="left", padx=8)
+        self.disc_box = tb.Combobox(info, textvariable=self.disc_var, state="disabled", width=1)
+        self.disc_box.grid(row=1, column=1, sticky="ew", pady=(0, 4))
         self.disc_box.bind("<<ComboboxSelected>>", lambda e: self.select_disc(self.disc_box.current()))
+        self.info = {}
+        for r, key in enumerate(("ID", "Region", "Folder", "Database"), 2):
+            tb.Label(info, text=key, width=9).grid(row=r, column=0, sticky="w", pady=1)
+            self.info[key] = ElidedLabel(info, middle=key == "Folder", bootstyle="secondary")
+            self.info[key].grid(row=r, column=1, sticky="ew", pady=1)
 
         cov = tb.Labelframe(right, text="Cover", padding=10)
-        cov.pack(fill="x", pady=(8, 0))
-        self.canvas = tb.Canvas(cov, width=PREVIEW, height=PREVIEW, highlightthickness=0, background="#000000")
-        self.canvas.grid(row=0, column=0, rowspan=8, sticky="n")
-        self.cover_note = tb.Label(cov, text="", bootstyle="secondary", wraplength=170, justify="left")
-        self.cover_note.grid(row=0, column=1, sticky="nw", padx=(12, 0))
-        self.cover_buttons = []
-        for r, (text, style, cmd) in enumerate((("Image file...", "primary", self.cover_from_file),
-                                                ("From database", "primary-outline", self.cover_from_db),
-                                                ("Save cover", "success", self.save_cover),
-                                                ("Cancel", "secondary", self.cancel_cover),
-                                                ("Save as PNG...", "secondary-outline", self.export_png)), 1):
-            b = tb.Button(cov, text=text, bootstyle=style, width=16, command=cmd)
-            b.grid(row=r, column=1, sticky="w", padx=(12, 0), pady=(4, 0))
-            self.cover_buttons.append(b)
+        cov.grid(row=1, column=0, sticky="ew", pady=(P, 0))
+        cov.columnconfigure(1, weight=1)
+        # (tkinter's canvas: ttkbootstrap's takes the theme's background, the cover's square wouldn't show)
+        self.canvas = tkinter.Canvas(cov, width=PREVIEW, height=PREVIEW, highlightthickness=1,
+                                     highlightbackground="#495057", background="#000000")
+        self.canvas.grid(row=0, column=0, rowspan=10, sticky="nw")
+        side = dict(column=1, sticky="ew", padx=(P, 0))
+        self.btn_file = tb.Button(cov, text="Image file...", bootstyle="primary", command=self.cover_from_file)
+        self.btn_file.grid(row=0, pady=(0, 6), **side)
+        self.btn_db = tb.Button(cov, text="From database", bootstyle="primary-outline", command=self.cover_from_db)
+        self.btn_db.grid(row=1, pady=(0, 6), **side)
         self.stretch_var = tb.BooleanVar(value=False)
-        tb.Checkbutton(cov, text="Fill the square", variable=self.stretch_var, bootstyle="round-toggle",
-                       command=self.restretch).grid(row=6, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
+        self.stretch_box = tb.Checkbutton(cov, text="Fill the square", variable=self.stretch_var,
+                                          bootstyle="round-toggle", command=self.restretch)
+        self.stretch_box.grid(row=2, pady=(2, 8), **side)
+        tb.Separator(cov).grid(row=3, pady=(0, 8), **side)
+        self.btn_save_cov = tb.Button(cov, text="Save cover", bootstyle="success", width=16,
+                                      command=self.save_cover)
+        self.btn_save_cov.grid(row=4, pady=(0, 6), **side)
+        self.btn_cancel_cov = tb.Button(cov, text="Cancel", bootstyle="secondary", command=self.cancel_cover)
+        self.btn_cancel_cov.grid(row=5, pady=(0, 6), **side)
+        self.btn_png = tb.Button(cov, text="Save as PNG...", bootstyle="secondary-outline", command=self.export_png)
+        self.btn_png.grid(row=6, **side)
+        cov.rowconfigure(7, weight=1)   # (the cover's file and state at the bottom, level with the square's)
+        self.cover_src = ElidedLabel(cov, middle=True)
+        self.cover_src.grid(row=8, **side)
+        self.cover_state = ElidedLabel(cov, bootstyle="secondary")
+        self.cover_state.grid(row=9, **side)
 
         ch = tb.Labelframe(right, text="Cheats", padding=10)
-        ch.pack(fill="both", expand=True, pady=(8, 0))
-        self.cheat_tree = tb.Treeview(ch, columns=("on", "codes"), show="tree headings", height=7,
+        ch.grid(row=2, column=0, sticky="nsew", pady=(P, 0))
+        ch.columnconfigure(0, weight=1)
+        ch.rowconfigure(0, weight=1)
+        tree = tb.Frame(ch)
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree.columnconfigure(0, weight=1)
+        tree.rowconfigure(0, weight=1)
+        self.cheat_tree = tb.Treeview(tree, columns=("on", "codes"), show="tree headings", height=4,
                                       selectmode="browse")
         self.cheat_tree.heading("#0", text="Cheat", anchor="w")
-        self.cheat_tree.heading("on", text="At boot", anchor="w")
-        self.cheat_tree.heading("codes", text="Codes", anchor="w")
-        self.cheat_tree.column("#0", width=230)
-        self.cheat_tree.column("on", width=60, stretch=False)
-        self.cheat_tree.column("codes", width=50, stretch=False)
-        self.cheat_tree.pack(fill="both", expand=True)
+        self.cheat_tree.heading("on", text="At boot", anchor="center")
+        self.cheat_tree.heading("codes", text="Codes", anchor="center")
+        self.cheat_tree.column("#0", width=200, minwidth=120, stretch=True)
+        self.cheat_tree.column("on", width=70, minwidth=70, stretch=False, anchor="center")
+        self.cheat_tree.column("codes", width=60, minwidth=60, stretch=False, anchor="center")
+        csb = tb.Scrollbar(tree, orient="vertical", command=self.cheat_tree.yview)
+        self.cheat_tree.configure(yscrollcommand=csb.set)
+        self.cheat_tree.grid(row=0, column=0, sticky="nsew")
+        csb.grid(row=0, column=1, sticky="ns")
         self.cheat_tree.bind("<Double-1>", lambda e: self.edit_cheat())
-        self.cheat_note = tb.Label(ch, text="", bootstyle="secondary")
-        self.cheat_note.pack(anchor="w", pady=(4, 0))
+        self.cheat_tree.bind("<Delete>", lambda e: self.delete_cheat())
+        self.cheat_tree.bind("<space>", lambda e: self.toggle_cheat())
+        self.cheat_note = ElidedLabel(ch, bootstyle="secondary")
+        self.cheat_note.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         bar = tb.Frame(ch)
-        bar.pack(fill="x", pady=(6, 0))
-        self.cheat_buttons = []
-        for text, style, cmd in (("Add", "primary", self.add_cheat), ("Edit", "secondary", self.edit_cheat),
-                                 ("On/Off", "secondary", self.toggle_cheat), ("Delete", "danger-outline",
-                                                                               self.delete_cheat),
-                                 ("From cheat database", "primary-outline", self.import_cheats),
-                                 ("Save", "success", self.save_cheats)):
-            b = tb.Button(bar, text=text, bootstyle=style, command=cmd)
-            b.pack(side="left", padx=(0, 6))
-            self.cheat_buttons.append(b)
+        bar.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        bar.columnconfigure((0, 1, 2, 3), weight=1, uniform="cheat")
+        self.btn_add = tb.Button(bar, text="Add", bootstyle="primary", command=self.add_cheat)
+        self.btn_edit = tb.Button(bar, text="Edit", bootstyle="secondary", command=self.edit_cheat)
+        self.btn_toggle = tb.Button(bar, text="On / Off", bootstyle="secondary", command=self.toggle_cheat)
+        self.btn_delete = tb.Button(bar, text="Delete", bootstyle="danger-outline", command=self.delete_cheat)
+        for c, b in enumerate((self.btn_add, self.btn_edit, self.btn_toggle, self.btn_delete)):
+            b.grid(row=0, column=c, sticky="ew", padx=(0 if c == 0 else 6, 0))
+        self.btn_import = tb.Button(bar, text="From cheat database...", bootstyle="primary-outline",
+                                    command=self.import_cheats)
+        self.btn_import.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self.btn_save_cht = tb.Button(bar, text="Save", bootstyle="success", command=self.save_cheats)
+        self.btn_save_cht.grid(row=1, column=3, sticky="ew", padx=(6, 0), pady=(6, 0))
 
-        bottom = tb.Frame(self, padding=(12, 0, 12, 10))
-        bottom.pack(fill="x")
-        tb.Label(bottom, text="Whole card:", bootstyle="secondary").pack(side="left")
-        tb.Button(bottom, text="Missing covers from the database...", bootstyle="secondary-outline",
-                  command=self.fill_covers).pack(side="left", padx=(8, 0))
-        tb.Button(bottom, text="Add game IDs to existing covers...", bootstyle="secondary-outline",
-                  command=self.write_ids).pack(side="left", padx=(8, 0))
-        self.status = tb.Label(bottom, text="", bootstyle="secondary")
-        self.status.pack(side="right")
-        self.panel_state()
+        self.show_game()
+        # The smallest window that shows everything, a little bigger to start with; never more than the screen
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        sw, sh = self.winfo_screenwidth() - 40, self.winfo_screenheight() - 100   # (the taskbar, the title bar)
+        self.minsize(min(w, sw), min(h, sh))
+        self.geometry("%dx%d+%d+%d" % (min(max(w + 200, 1200), sw), min(h + 40, sh), 20, 20))
+
+    def set_status(self, text):
+        self.status.set(text)
+
+    def from_thread(self, fn, *args):
+        """fn(*args) done by the window's thread (Tk is only used from it): for the card's reading and the
+        database's download."""
+        self.calls.put((fn, args))
+
+    def _do_calls(self):
+        while not self.calls.empty():
+            fn, args = self.calls.get_nowait()
+            fn(*args)
+        self.calls_timer = self.after(30, self._do_calls)
+
+    def destroy(self):
+        try:
+            self.after_cancel(self.calls_timer)
+        except (AttributeError, tkinter.TclError):
+            pass
+        super().destroy()
 
     def panel_state(self):
-        game = self.disc is not None
-        for b in self.cover_buttons:
-            b.configure(state="normal" if game else "disabled")
-        self.cover_buttons[1].configure(state="normal" if game and self.db else "disabled")
-        self.cover_buttons[2].configure(state="normal" if self.pending else "disabled")
-        self.cover_buttons[3].configure(state="normal" if self.pending else "disabled")
-        for b in self.cheat_buttons:
-            b.configure(state="normal" if game and self.disc.serial else "disabled")
-        self.cheat_buttons[4].configure(state="normal" if game and self.disc.serial and self.cheat_db else "disabled")
-        self.cheat_buttons[5].configure(state="normal" if game and self.cheats_changed else "disabled")
+        def state(button, on):
+            button.configure(state="normal" if on else "disabled")
+        disc = self.disc is not None
+        cheats = disc and bool(self.disc.serial)
+        state(self.btn_file, disc)
+        state(self.btn_db, disc and self.db)
+        self.stretch_box.configure(state="normal" if disc else "disabled")
+        state(self.btn_save_cov, self.pending)
+        state(self.btn_cancel_cov, self.pending)
+        state(self.btn_png, disc)
+        for b in (self.btn_add, self.btn_edit, self.btn_toggle, self.btn_delete):
+            state(b, cheats)
+        state(self.btn_import, cheats and self.cheat_db)
+        state(self.btn_save_cht, disc and self.cheats_changed)
+        for b in self.card_buttons:
+            state(b, self.games)
 
     # --------------------------------------------------------------------------------------------- databases
     def _find_db(self):
@@ -352,7 +555,7 @@ class App(tb.Window):
     def open_db(self, path, quiet=False):
         if not path or not os.path.exists(path):
             self.db = None
-            self.db_label.configure(text="none: Choose your psio_assist.db, or Download it (about 150 MB)")
+            self.db_label.set("none: Choose your psio_assist.db, or Download it (about 150 MB)")
             return
         try:
             db = sqlite3.connect(pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True,
@@ -364,7 +567,7 @@ class App(tb.Window):
                 messagebox.showerror(APP_TITLE, "Not a PSIO game database:\n%s\n\n%s" % (path, e))
             return
         self.db = db
-        self.db_label.configure(text="%s (%d games, %d covers)" % (path, n, c))
+        self.db_label.set("%s (%d games, %d covers)" % (path, n, c))
         self.settings["db"] = path
         save_settings(self.settings)
         for g in self.games:
@@ -420,17 +623,17 @@ class App(tb.Window):
                                     break
                                 out.write(block)
                                 got += len(block)
-                                self.after(0, self.status.configure,
-                                           {"text": "Downloading part %d of 4: %d MB" % (i, got >> 20)})
+                                self.from_thread(self.set_status,
+                                                 "Downloading part %d of 4: %d MB" % (i, got >> 20))
                 with open(target + ".part", "rb") as f:
                     if f.read(16) != b"SQLite format 3\0":
                         raise ValueError("the downloaded parts aren't a database")
                 os.replace(target + ".part", target)
-                self.after(0, lambda: (self.status.configure(text="Database downloaded"), self.open_db(target)))
+                self.from_thread(lambda: (self.set_status("Database downloaded"), self.open_db(target)))
             except (OSError, ValueError) as e:
                 msg = str(e)
-                self.after(0, lambda: (self.status.configure(text=""),
-                                       messagebox.showerror(APP_TITLE, "Download failed: %s" % msg)))
+                self.from_thread(lambda: (self.set_status(""),
+                                          messagebox.showerror(APP_TITLE, "Download failed: %s" % msg)))
         threading.Thread(target=work, daemon=True).start()
 
     # --------------------------------------------------------------------------------------------- the card
@@ -449,7 +652,7 @@ class App(tb.Window):
             return
         self.settings["sd"] = sd
         save_settings(self.settings)
-        self.status.configure(text="Reading the card...")
+        self.set_status("Reading the card...")
         self.tree.delete(*self.tree.get_children())
 
         def work():
@@ -460,8 +663,8 @@ class App(tb.Window):
                         d.serial = ids.game_id(d.cue)
                     except (OSError, ValueError) as e:
                         d.error = str(e)
-                self.after(0, self.status.configure, {"text": "Reading the card: %d of %d games" % (n, len(games))})
-            self.after(0, self.scanned, games)
+                self.from_thread(self.set_status, "Reading the card: %d of %d games" % (n, len(games)))
+            self.from_thread(self.scanned, games)
         threading.Thread(target=work, daemon=True).start()
 
     def scanned(self, games):
@@ -472,7 +675,7 @@ class App(tb.Window):
         self.game = self.disc = None
         self.show_list()
         self.show_game()
-        self.status.configure(text="%d games, %d discs" % (len(games), sum(len(g.discs) for g in games)))
+        self.set_status("%d games, %d discs" % (len(games), sum(len(g.discs) for g in games)))
 
     def refresh_game(self, g):
         """The list's cover and cheats columns of a game (its first disc's cover, all its discs' cheats)."""
@@ -539,17 +742,21 @@ class App(tb.Window):
         self.pending = None
         if not g:
             self.disc = None
-            self.title_label.configure(text="Choose a game")
-            self.info_label.configure(text="")
-            self.disc_box.configure(values=[])
+            self.title_label.set("Choose a game" if self.games else "Choose the PicoStation's SD card")
+            self.disc_box.configure(values=[], state="disabled")
             self.disc_var.set("")
-            self.draw_cover(None)
+            for label in self.info.values():
+                label.set("-", bootstyle="secondary")
+            self.draw_cover(None, "")
+            self.cover_src.set("")
+            self.cover_state.set("")
             self.load_cheats()
             return
-        self.title_label.configure(text=g.title or g.name)
-        self.disc_box.configure(values=["Disc %d: %s" % (i + 1, os.path.basename(d.cue))
+        self.title_label.set(g.title or g.name)
+        self.disc_box.configure(values=["Disc %d of %d: %s" % (i + 1, len(g.discs), os.path.basename(d.cue))
                                         for i, d in enumerate(g.discs)])
         self.disc_box.configure(state="readonly" if len(g.discs) > 1 else "disabled")
+        self.disc = None
         self.select_disc(0)
 
     def select_disc(self, i):
@@ -562,12 +769,12 @@ class App(tb.Window):
         self.disc_box.current(i)
         self.pending = None
         d, g = self.disc, self.game
-        info = ["ID: %s%s" % (d.serial or "not found", ("  (%s)" % d.error) if d.error else ""),
-                "Region: %s" % (covers.id_region(d.serial or "") or "unknown"),
-                "Folder: %s" % os.path.relpath(g.folder, g.sd)]
-        if not g.title:
-            info.append("Not in the game database" if self.db else "No game database")
-        self.info_label.configure(text="\n".join(info))
+        self.info["ID"].set("%s%s" % (d.serial or "not found", ("  (%s)" % d.error) if d.error else ""),
+                            bootstyle="secondary" if d.serial else "danger")
+        self.info["Region"].set(covers.id_region(d.serial or "") or "unknown")
+        self.info["Folder"].set(os.path.relpath(g.folder, g.sd))
+        self.info["Database"].set(g.title if g.title else
+                                  "not in the game database" if self.db else "no game database")
         self.show_cover()
         self.load_cheats()
 
@@ -576,23 +783,26 @@ class App(tb.Window):
         d = self.disc
         data = open(d.cov, "rb").read() if d and os.path.exists(d.cov) else b""
         img = cov_image(data) if data else None
-        if not data:
-            note = "No cover file: choose an image, or the database's cover."
+        if not d:
+            src, note = "", ""
+        elif not data:
+            src, note = "No cover file", "Choose an image"
         elif data[ids.COVER_IMAGE:ids.COVER_IMAGE + 4] == b"PSIX":
-            note = "A blank cover (made for the game's ID)."
+            src, note = "Blank cover", "Only the game's ID"
         elif data[:ids.COVER_IMAGE] == self.template:
-            note = "The \"NO COVER\" placeholder."
+            src, note = "NO COVER placeholder", "Choose an image"
         else:
-            note = os.path.basename(d.cov)
-        self.cover_note.configure(text=note)
-        self.draw_cover(img)
+            src, note = os.path.basename(d.cov), "On the card"
+        self.cover_src.set(src)
+        self.cover_state.set(note, bootstyle="secondary")
+        self.draw_cover(img, "No cover" if d else "")
         self.panel_state()
 
-    def draw_cover(self, img):
+    def draw_cover(self, img, empty="No cover"):
         self.canvas.delete("all")
         if img is None:
             self.photo = None
-            self.canvas.create_text(PREVIEW // 2, PREVIEW // 2, text="No cover", fill="#888888")
+            self.canvas.create_text(PREVIEW // 2, PREVIEW // 2, text=empty, fill="#888888")
             return
         self.photo = ImageTk.PhotoImage(img.resize((PREVIEW, PREVIEW), Image.NEAREST))
         self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
@@ -605,8 +815,9 @@ class App(tb.Window):
             return
         self.pending = (data, label, src)
         self.draw_cover(cov_image(data))
-        self.cover_note.configure(text="%s\n\nNot saved yet: Save cover writes it for %s." % (
-            label, "the game's %d discs" % len(self.game.discs) if len(self.game.discs) > 1 else "the game"))
+        self.cover_src.set(label)
+        self.cover_state.set("Not saved yet%s" % (
+            " (%d discs)" % len(self.game.discs) if len(self.game.discs) > 1 else ""), bootstyle="warning")
         self.panel_state()
 
     def restretch(self):
@@ -667,7 +878,7 @@ class App(tb.Window):
             messagebox.showerror(APP_TITLE, "Not saved: %s" % e)
             return
         self.pending = None
-        self.status.configure(text="Cover saved: %s" % (g.title or g.name))
+        self.set_status("Cover saved: %s" % (g.title or g.name))
         self.update_row(g)
         self.show_cover()
 
@@ -717,7 +928,7 @@ class App(tb.Window):
             note = "%d cheats, %d of %d bytes%s%s" % (len(self.cheats), size, CHT_SIZE,
                                                     ("  -  " + problem) if problem else "",
                                                     "  -  not saved" if self.cheats_changed else "")
-        self.cheat_note.configure(text=note, bootstyle="danger" if "most" in note else
+        self.cheat_note.set(note, bootstyle="danger" if "most" in note else
                                   ("warning" if self.cheats_changed else "secondary"))
         self.panel_state()
 
@@ -731,9 +942,7 @@ class App(tb.Window):
 
     def cheat_dialog(self, cheat):
         """A cheat edited in a window: (name, codes, on), None if cancelled."""
-        win = tb.Toplevel(self, title="Cheat")
-        win.transient(self)
-        win.grab_set()
+        win = self.dialog("Cheat")
         f = tb.Frame(win, padding=14)
         f.pack(fill="both", expand=True)
         tb.Label(f, text="Name").grid(row=0, column=0, sticky="w")
@@ -835,7 +1044,7 @@ class App(tb.Window):
             messagebox.showerror(APP_TITLE, "Not saved: %s" % e)
             return False
         self.cheats_changed = False
-        self.status.configure(text="Cheats saved: %s" % os.path.basename(d.cht))
+        self.set_status("Cheats saved: %s" % os.path.basename(d.cht))
         self.update_row(g)
         self.show_cheats(self.selected_cheat())
         return True
@@ -855,9 +1064,7 @@ class App(tb.Window):
     # --------------------------------------------------------------------------------------------- whole card
     def confirm_list(self, title, intro, lines, ok_text):
         """What would be done, listed: True if confirmed."""
-        win = tb.Toplevel(self, title=title)
-        win.transient(self)
-        win.grab_set()
+        win = self.dialog(title)
         win.geometry("760x480")
         f = tb.Frame(win, padding=14)
         f.pack(fill="both", expand=True)
@@ -905,7 +1112,7 @@ class App(tb.Window):
                 messagebox.showerror(APP_TITLE, "%s: not written: %s" % (g.name, e))
                 break
             self.update_row(g)
-        self.status.configure(text="%d covers written" % done)
+        self.set_status("%d covers written" % done)
         if self.game:
             self.show_cover()
 
@@ -940,10 +1147,46 @@ class App(tb.Window):
                 break
         for g in self.games:
             self.update_row(g)
-        self.status.configure(text="Game IDs added to %d covers" % len(todo))
+        self.set_status("Game IDs added to %d covers" % len(todo))
+
+
+def selftest():
+    """The app opened hidden (no settings read or written), its files checked: the problems, [] if none. Run by
+    the CI on the built program, whose files are in manager_files\\."""
+    problems = []
+    app = App(load=False)
+    try:
+        app.withdraw()
+        app.update()
+        if len(app.icons) != len(ICON_SIZES):
+            problems.append("the icon wasn't found in %s" % ICONS)
+        if not os.path.isfile(covers.TEMPLATE):
+            problems.append("no_cover_template.png wasn't found")
+        if app.cheat_db is None:
+            problems.append("the cheat database didn't open (%s)" % CHEAT_DB)
+        elif not app.cheat_db[2].execute("select count(*) from cheats").fetchone()[0]:
+            problems.append("the cheat database is empty")
+        if cov_image(covers.to_cov(Image.new("RGB", (300, 200), (200, 40, 40)))).size != (128, 128):
+            problems.append("covers aren't converted")
+    finally:
+        app.destroy()
+    return problems
 
 
 def main():
+    if "--selftest" in sys.argv[1:]:
+        try:
+            problems = selftest()
+        except Exception as e:  # noqa: BLE001
+            problems = ["%s: %s" % (type(e).__name__, e)]
+        report = "\n".join(problems) or "PicoStation Manager: self test passed"
+        i = sys.argv.index("--selftest")
+        if i + 1 < len(sys.argv):     # --selftest REPORT: written there too (the built program has no console)
+            with open(sys.argv[i + 1], "w") as f:
+                f.write(report + "\n")
+        if sys.stdout:
+            print(report)
+        sys.exit(1 if problems else 0)
     App().mainloop()
 
 

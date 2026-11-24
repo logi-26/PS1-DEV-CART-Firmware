@@ -351,7 +351,9 @@ a time, with the BIOS driver as a fallback. Measured on an official 128KB card (
   them, O goes back to the list. Covers: `pctools/picostation_covers.py` converts images and puts them on the card.
   **PicoStation Manager** (`python pctools/picostation_manager.py`): an app for the card's games: covers from any
   image or the PSIO game database (psio_assist.db), cheats edited or added from the cheat database, game IDs added
-  to the covers already on the card.
+  to the covers already on the card. `pctools/build_exe.bat` makes it a program of its own
+  (`pctools/dist/picostation_manager/picostation_manager.exe`, no Python needed, the PS1 DEV CART Manager's icon); the
+  CI builds it too (the `picostation_manager` artifact).
 - **Code engine**: cheats applied by the console at every interrupt while a game runs, like a cheat cartridge: up to
   216 PS1 GameShark codes (writes, tests, slides) set from the Manager's Cheats page. They stay on until the console
   is reset, without the computer.

@@ -1,5 +1,6 @@
 # PS1 DEV CART: builds ps1transfer (Windows and Linux) and the cartridge ROM, reports the firmware's room left, runs
-# the tests that need no console (tests/tools, tests/sound, tests/movie). The Windows tools are the ones of
+# the tests that need no console (tests/tools, tests/sound, tests/movie), builds and checks the PicoStation Manager
+# (pctools/picostation_manager.exe, kept as an artifact). The Windows tools are the ones of
 # buildtools/README.txt, downloaded by ci/setup_buildtools.sh (cached between runs).
 name: CI
 
@@ -72,6 +73,45 @@ jobs:
             cartrom/ps1devcart.rom
             ps1transfer/ps1transfer.exe
           if-no-files-found: ignore
+
+  picostation:
+    name: Windows - PicoStation Manager (tests, picostation_manager.exe)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Python packages
+        run: python -m pip install --quiet pillow ttkbootstrap pyinstaller
+
+      - name: Tests (files, disc IDs, the card, the window)
+        run: python -m unittest tests/tools/test_picostation.py -v
+
+      - name: Build picostation_manager.exe
+        working-directory: pctools
+        run: python -m PyInstaller --noconfirm picostation_manager.spec
+
+      - name: The built program's self test (icon, cheat database, covers)
+        working-directory: pctools
+        run: |
+          status=0
+          dist/picostation_manager/picostation_manager.exe --selftest dist/selftest.txt || status=$?
+          cat dist/selftest.txt || echo "no report written"
+          exit $status
+
+      - name: Keep the program
+        uses: actions/upload-artifact@v7
+        with:
+          name: picostation_manager
+          path: pctools/dist/picostation_manager/
+          if-no-files-found: error
 
   linux:
     name: Linux - ps1transfer

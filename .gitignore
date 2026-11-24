@@ -30,6 +30,8 @@ __pycache__/
 # GUI executable build (PyInstaller): publish gui/dist/ps1devcart_gui.exe as a release download instead
 gui/build/
 gui/dist/
+pctools/build/
+pctools/dist/
 
 # Local configuration and Sony license data (never published)
 config/Makefile.conf
