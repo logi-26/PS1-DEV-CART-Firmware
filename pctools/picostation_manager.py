@@ -1168,9 +1168,40 @@ def selftest():
             problems.append("the cheat database is empty")
         if cov_image(covers.to_cov(Image.new("RGB", (300, 200), (200, 40, 40)))).size != (128, 128):
             problems.append("covers aren't converted")
+        # The app's windows: the whole card's list and a cheat's, opened as their buttons do, closed once shown
+        for title, open_it in (("Self test", lambda: app.confirm_list("Self test", "", ["a line"], "OK")),
+                               ("Cheat", lambda: app.cheat_dialog(None))):
+            try:
+                seen = selftest_dialog(app, open_it)
+                if seen != title:
+                    problems.append("the %s window didn't show (%s)" % (title, seen or "nothing"))
+            except Exception as e:  # noqa: BLE001
+                problems.append("the %s window doesn't open: %s: %s" % (title, type(e).__name__, e))
     finally:
         app.destroy()
     return problems
+
+
+def selftest_dialog(app, open_it):
+    """open_it() (it waits for its window to close): the title of the window it showed, closed at once; None if
+    none showed (closed after 5 seconds so the test never hangs)."""
+    seen, start = [], [0]
+
+    def look():
+        wins = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel) and w.winfo_viewable()]
+        if wins:
+            seen.append(wins[-1].title())
+            wins[-1].destroy()
+        elif start[0] < 100:
+            start[0] += 1
+            app.after(50, look)
+        else:                   # (a window made but never shown: closed, or open_it would wait forever)
+            for w in app.winfo_children():
+                if isinstance(w, tkinter.Toplevel):
+                    w.destroy()
+    app.after(50, look)
+    open_it()
+    return seen[0] if seen else None
 
 
 def main():
