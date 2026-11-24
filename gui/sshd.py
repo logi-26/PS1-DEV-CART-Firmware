@@ -24,9 +24,20 @@ both are what a VAB's tones do. A program of type 0xFF is a drum kit (not only s
 byte 7 its LAST note, one tone for each note in between (its key range bytes 0, an unused note's sample 0xFFFF), the
 pitch still the note against the tone's root (most roots are the note + 12: a 22050 Hz sample).
 
-Not converted (a VAB and a SEQ have nothing for them): the breath waves (modulation, controllers 1 and 2: left in the
-SEQ, without effect), the noise flag, the sound effect sequences (data 3 and 4), a velocity table that isn't 1:1
-(none in Ape Escape), a drum kit's notes after its first 16 with a sample (a VAB program has 16 tones).
+Modulation (Ape Escape's driver, SCES_015.64 8009CEF8h, run from its VSync callback: 50 updates a second on a PAL
+disc, 60 on an NTSC one) becomes pitch bends written into the SEQ (to_seq with the HD): a note of a tone with flag bit
+5 is modulated if its channel's depth (controller 1; the SQ header's channel byte 9) isn't 0 at its key on; each
+update its phase (0 at key on) grows by the channel's speed (byte C; controller 2's value v sets 240 / (60 - 58 v /
+127): a cycle of 60 updates down to 2), past 240 it starts again at half the speed, and the pitch is moved by wave[phase / 4] x depth / 255 - (depth + 1) / 2 (1/64 semitone: a semitone either
+way at full depth, whatever the tone's bend range; the channel's own bend added as its tone's range has it). Controllers
+1 and 2 also change the notes already sounding (1 turns modulation on for them). A SEQ's bend is the channel's, so
+the channel's newest note leads (a chord's notes start together anyway); the VAB's tones with modulation and no bend
+range get a range of 1 semitone.
+
+Not converted (a VAB and a SEQ have nothing for them): the noise flag, the sound effect sequences (data 3 and 4), a
+velocity table that isn't 1:1 (none in Ape Escape), a drum kit's notes after its first 16 with a sample (a VAB program
+has 16 tones), controller 1 reaching a note of a tone without modulation (the driver modulates it too, with the wave
+its voice last had).
 
 Games keep these files inside their own archives, so "scan" looks for them in any file (a disc image too, 2352-byte
 sectors or 2048): every SQ, the banks near it, each bank's BD found as the place after it where all its samples
@@ -42,13 +53,14 @@ Some of its musics have notes for programs their bank lacks (a second bank the g
     python sshd.py scan game.bin out_folder     (every music found: NN.seq, NN.vh, NN.vb)
     python sshd.py extract game.bin out_folder  (every music found as the game has it: NN.sq, NN.hd, NN.bd)
     python sshd.py vab in.hd in.bd out.vh       (and out.vb; or out.vab: one file)
-    python sshd.py seq in.sq out.seq
+    python sshd.py seq in.sq out.seq [in.hd [50]]  (with its bank: the modulation as pitch bends; 50: a PAL game's)
 
 This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
 import os
+import re
 import struct
 import sys
 
@@ -63,6 +75,9 @@ SQ_CHANNELS = 16
 TONE_SIZE = 16
 FLAG_PRIORITY, FLAG_NOISE, FLAG_BEND_PROGRAM, FLAG_MODULATION, FLAG_BREATH_PROGRAM, FLAG_REVERB = 1, 2, 16, 32, 64, 128
 PROGRAM_KIT = 0xFF
+RATE_NTSC, RATE_PAL = 60, 50        # The driver's updates a second (its VSync)
+MOD_WAVE = 64                       # A breath wave's bytes (only the first 60 read: the phase stays under 240)
+MOD_RELEASE = 1.0                   # A modulated note's bends go on this long after its note off (its release), seconds
 
 
 class FormatError(Exception):
@@ -73,7 +88,8 @@ class FormatError(Exception):
 
 class Sshd:
     """An HD file: programs {number: dict(layered, kit, vol, pan, bend, breath, tones [dict])} (kit: a drum kit, one
-    tone for each of its notes), velocity (128 values or None), blocks (the numbers of the data blocks it has)."""
+    tone for each of its notes), velocity (128 values or None), blocks (the numbers of the data blocks it has), waves
+    (data block 2's breath waves: [bytes] of MOD_WAVE, 80h the centre)."""
 
     def __init__(self, d):
         if len(d) < 0x80 or d[12:16] != b"SShd":
@@ -86,6 +102,13 @@ class Sshd:
         self.velocity = None
         if offsets[1] != NONE32 and offsets[1] + 130 <= len(d):
             self.velocity = d[offsets[1] + 2:offsets[1] + 130]
+        self.waves = []
+        if offsets[2] != NONE32 and offsets[2] + 2 <= len(d):  # (a count - 1, then each wave's offset from the block)
+            at = offsets[2]
+            count = struct.unpack_from("<H", d, at)[0] + 1
+            for off in struct.unpack_from("<%dH" % count, d, at + 2) if at + 2 + count * 2 <= len(d) else ():
+                w = d[at + off:at + off + MOD_WAVE]
+                self.waves.append(bytes(w) if len(w) == MOD_WAVE else None)
         self.programs = {}
         base = offsets[0]
         if base == NONE32:
@@ -129,6 +152,12 @@ def sample_end(bd, start):
         if bd[p - 15] & 1:
             break
     return p
+
+
+def vab_bend(t):
+    """A tone's bend range in the VAB (semitones): the HD's; a tone with modulation and none, 1 (its modulation is
+    written as pitch bends, and a range of 0 would hold none)."""
+    return min(max(t["bend"], 1) if t["flags"] & FLAG_MODULATION else t["bend"], 127)
 
 
 def tune(root, fine):
@@ -183,7 +212,7 @@ def to_vab(hd, bd):
     vb = b"".join(samples)
     struct.pack_into("<4sIII4H4BI", vh, 0, b"pBAV", 7, 0, len(vh) + len(vb), 0xEEEE, ps, tones_total, len(samples),
                      127, 64, 0, 0, NONE32)
-    noise = modulated = 0
+    noise = 0
     for block, n in enumerate(sorted(programs)):
         p = programs[n]
         struct.pack_into("<6BH", vh, vab.HEADER_SIZE + n * vab.PROG_SIZE, len(p["tones"]), min(p["vol"], 127), 0, 0,
@@ -191,18 +220,15 @@ def to_vab(hd, bd):
         for i, t in enumerate(p["tones"]):
             center, shift = tune(t["root"], t["fine"])
             noise += bool(t["flags"] & FLAG_NOISE)
-            modulated += bool(t["flags"] & FLAG_MODULATION)
             struct.pack_into("<8B6B2xHHhh", vh, tones_at + (block * vab.TONES_PER_PROGRAM + i) * vab.TONE_SIZE,
                              127 if t["flags"] & FLAG_PRIORITY else 0, 4 if t["flags"] & FLAG_REVERB else 0,
                              min(t["vol"], 127), min(t["pan"], 127), center, shift, min(t["min"], 127),
-                             min(t["max"], 127), 0, 0, 0, 0, min(t["bend"], 127), min(t["bend"], 127), t["adsr1"],
+                             min(t["max"], 127), 0, 0, 0, 0, vab_bend(t), vab_bend(t), t["adsr1"],
                              t["adsr2"], n, number[t["adpcm"]])
     for i, data in enumerate(samples):
         struct.pack_into("<H", vh, sizes_at + (i + 1) * 2, len(data) // 8)
     if noise:
         skipped.append("noise on %d tones (they play their sample)" % noise)
-    if modulated:
-        skipped.append("the modulation (breath waves) of %d tones" % modulated)
     return bytes(vh), vb, dict(programs=sorted(programs), tones=tones_total, samples=len(samples), skipped=skipped)
 
 
@@ -230,7 +256,8 @@ def _write_varlen(v):
 
 
 class Ssq:
-    """An SQ file: volume, ppqn, tempo (beats per minute), channels [dict(channel, program or None, vol, pan)], events
+    """An SQ file: volume, ppqn, tempo (beats per minute), channels [dict(channel, program or None, vol, pan, depth,
+    speed)] (depth, speed: the modulation's, bytes 9 and C), events
     [(tick, kind, data)]: kind "ev" (the MIDI bytes of a channel event, its pitch bend still 1 byte) or "tempo" (beats
     per minute), ticks (the length), ended (the end event was there), size (the file's bytes, to its end event)."""
 
@@ -243,7 +270,8 @@ class Ssq:
         self.channels = []
         for c in range(SQ_CHANNELS):
             _, ch, prog, vol, pan = struct.unpack_from("<5B", d, 16 + c * 16)
-            self.channels.append(dict(channel=ch & 15, program=None if prog == 0xFF else prog, vol=vol, pan=pan))
+            self.channels.append(dict(channel=ch & 15, program=None if prog == 0xFF else prog, vol=vol, pan=pan,
+                                      depth=d[16 + c * 16 + 9], speed=d[16 + c * 16 + 12]))
         self.events, self.ended = [], False
         p, tick, running = SQ_EVENTS, 0, 0
         while p < len(d):
@@ -294,12 +322,70 @@ class Ssq:
         return total + (self.ticks - last) * 60.0 / bpm / self.ppqn
 
 
-def to_seq(sq):
+def _tones_played(hd, program, key):
+    """The tones of an HD a note plays: a drum kit's for its note, a layered program's in range, else the first in
+    range."""
+    p = hd.programs.get(program) if program is not None else None
+    if not p:
+        return []
+    if p["kit"]:
+        return [t for t in p["tones"] if t["min"] == key][:1]
+    tones = [t for t in p["tones"] if t["min"] <= key <= t["max"]]
+    return tones if p["layered"] else tones[:1]
+
+
+def mod_speed(value):
+    """The modulation speed controller 2's value sets (the driver: a cycle of 60 - 58 x value / 127 updates, so from 1
+    a second on NTSC down to 2 updates)."""
+    return 240 // (60 - 58 * value // 127)
+
+
+class _ModVoice:
+    """A note as the driver's voice has it for its modulation (see the module's text)."""
+
+    def __init__(self, key, tone, wave, on, depth, speed, start):
+        self.key, self.wave, self.on, self.depth, self.speed = key, wave, on, depth, speed
+        self.range, self.vab_range = tone["bend"], vab_bend(tone)
+        self.phase, self.value, self.start, self.released, self.quirk = 0, None, start, None, False
+
+    def step(self, phase):
+        phase += self.speed & 0xFFF
+        return (self.speed & 0xFFF) >> 1 if phase >= 240 else phase
+
+    def mod(self):
+        """The modulation now (64 none): wave x depth / 255 - (depth + 1) / 2 + 64 (before its first update: the value
+        that update gives, its key on and that update being at the same time on the console)."""
+        if self.value is not None:
+            return self.value
+        return self.wave[self.step(self.phase) >> 2] * self.depth // 255 - ((self.depth + 1) >> 1) + 64
+
+    def update(self):
+        if self.on:
+            self.phase = self.step(self.phase)
+            self.value = self.wave[self.phase >> 2] * self.depth // 255 - ((self.depth + 1) >> 1) + 64
+
+    def bend(self, channel_bend):
+        """The SEQ bend (0-16383) giving this note the driver's pitch over its VAB tone's range: the channel's bend
+        (its tone's range) and the modulation (1 semitone at 64 from the centre), in 1/16 semitones as the driver."""
+        x = (channel_bend - 64) * self.range
+        if not self.on:
+            if self.vab_range == self.range:
+                return channel_bend << 7                    # (as the SQ has it)
+            return max(0, min(16383, 8192 + int(round(x * 128.0 / self.vab_range))))
+        sixteenths = (x // 4 if x >= 0 else -(-x // 4)) + ((self.mod() - 64) >> 2)
+        return max(0, min(16383, 8192 + int(round(sixteenths * 512.0 / self.vab_range))))
+
+
+def to_seq(sq, hd=None, rate=RATE_NTSC):
     """An SQ (Ssq or its bytes) as a SEQ: (bytes, info). Each channel's program, volume and pan of the SQ's header
     are set at the start (the SQ's own events after them); a pitch bend is MIDI's 14 bits; the loop is the same
-    controllers."""
+    controllers. With its HD (Sshd or bytes): the modulation (see the module's text) as pitch bends, the driver
+    updating it rate times a second (RATE_PAL, RATE_NTSC). info: ppqn, tempo, notes, channels, seconds, loop,
+    loop_end, volume, modulated (notes), bends (written for the modulation), skipped (texts)."""
     if not isinstance(sq, Ssq):
         sq = Ssq(sq)
+    if hd is not None and not isinstance(hd, Sshd):
+        hd = Sshd(hd)
     usec = lambda bpm: max(1, min(0xFFFFFF, int(round(60000000.0 / bpm))))
     out = bytearray(b"pQES" + struct.pack(">IH", 1, sq.ppqn) + usec(sq.tempo).to_bytes(3, "big") + bytes((4, 2)))
     body = []
@@ -308,27 +394,134 @@ def to_seq(sq):
             ch = c["channel"]
             body += [(0, bytes((0xC0 | ch, c["program"] & 127))), (0, bytes((0xB0 | ch, 7, min(c["vol"], 127)))),
                      (0, bytes((0xB0 | ch, 10, min(c["pan"], 127))))]
+    # The modulation: each channel's state as the driver's (program, bend, depth, speed: the header's at the start)
+    mod = hd is not None and any(t["flags"] & FLAG_MODULATION for p in hd.programs.values() for t in p["tones"])
+    state = [dict(program=None, bend=64, depth=0, speed=0, voices=[], sent=8192) for _ in range(16)]
+    for c in sq.channels:
+        state[c["channel"]].update(program=c["program"], depth=c["depth"], speed=c["speed"])
+    modulated = bends = quirks = layered = 0
+
+    def lead(s):
+        return max(s["voices"], key=lambda v: v.start) if s["voices"] else None
+
+    def target(s):
+        v = lead(s)
+        return v.bend(s["bend"]) if v else s["bend"] << 7
+
+    def send(tick, ch, value, force=False):
+        nonlocal bends
+        s = state[ch]
+        if value != s["sent"] or force:
+            body.append((tick, bytes((0xE0 | ch, value & 127, value >> 7))))
+            s["sent"] = value
+            bends += 1
+
+    seg_tick, seg_time, bpm, frame, last_tick = 0, 0.0, sq.tempo, 1, 0
+
+    def frames_until(time, limit_tick):
+        """The driver's updates before time: each modulated note's phase, the channels' bends where they moved. Update
+        n is at the end of the nth frame (n / rate): the frame plays its events up to that time, then updates its
+        voices (a note keyed in it has its first update then: the value its key on was given)."""
+        nonlocal frame, last_tick
+        while frame / float(rate) < time:
+            t = frame / float(rate)
+            # (the tick the frame has reached, as a player counts them: down, so a bend isn't a frame late)
+            tick = min(limit_tick, max(last_tick, seg_tick + int((t - seg_time) * bpm * sq.ppqn / 60.0 + 1e-6)))
+            for ch, s in enumerate(state):
+                if not s["voices"]:
+                    continue
+                s["voices"] = [v for v in s["voices"] if v.released is None or t - v.released < MOD_RELEASE]
+                for v in s["voices"]:
+                    v.update()
+                if any(v.on or v.vab_range != v.range for v in s["voices"]) or s["sent"] != s["bend"] << 7:
+                    send(tick, ch, target(s))
+            frame += 1
+
     notes, chans, loop = 0, set(), [None, None]
     for tick, kind, v in sq.events:
+        time = seg_time + (tick - seg_tick) * 60.0 / (bpm * sq.ppqn)
+        if mod:
+            frames_until(time, tick)
+        last_tick = tick
         if kind == "tempo":
             body.append((tick, b"\xFF\x51" + usec(v).to_bytes(3, "big")))
+            seg_tick, seg_time, bpm = tick, time, v
             continue
-        hi = v[0] & 0xF0
+        hi, ch = v[0] & 0xF0, v[0] & 15
+        s = state[ch]
         if hi == 0xE0:
+            s["bend"] = v[1] & 127
+            if mod:
+                value = target(s)
+                body.append((tick, bytes((v[0], value & 127, value >> 7))))
+                s["sent"] = value
+                continue
             v = bytes((v[0], 0, v[1] & 127))
         elif hi == 0x90 and v[2]:
             notes += 1
-            chans.add(v[0] & 15)
+            chans.add(ch)
+            if mod:
+                s["voices"] = [x for x in s["voices"] if x.released is None]
+                tones = _tones_played(hd, s["program"], v[1])
+                tone = next((t for t in tones if t["flags"] & FLAG_MODULATION), tones[0] if tones else None)
+                if tone:
+                    wave = None
+                    if tone["flags"] & FLAG_MODULATION and tone["breath"] < len(hd.waves):
+                        wave = hd.waves[tone["breath"]]
+                    voice = _ModVoice(v[1], tone, wave, wave is not None and s["depth"] != 0, s["depth"], s["speed"],
+                                      time)
+                    s["voices"].append(voice)
+                    modulated += voice.on
+                    # (layers each with its own wave, or one without: a channel's bend moves them all as the first)
+                    layered += voice.on and len({t["breath"] if t["flags"] & FLAG_MODULATION else None
+                                                 for t in tones}) > 1
+                    body.append((tick, bytes(v)))
+                    if voice.on or voice.vab_range != voice.range:
+                        send(tick, ch, target(s), force=True)   # (a SEQ player's new note: unbent until a bend)
+                    else:
+                        send(tick, ch, target(s))
+                    continue
+        elif hi == 0x80 or hi == 0x90:
+            if mod:
+                held = [x for x in s["voices"] if x.key == v[1] and x.released is None]
+                if held:
+                    held[0].released = time
+        elif hi == 0xC0:
+            s["program"], s["bend"] = v[1], 64             # (the driver: a program change sets the bend back)
+        elif hi == 0xB0 and v[1] in (1, 2) and mod:         # (also the notes sounding: their depth, their speed)
+            if v[1] == 1:
+                s["depth"] = v[2]
+            else:
+                s["speed"] = mod_speed(v[2])
+            for x in s["voices"]:
+                if v[1] == 2:
+                    x.speed = s["speed"]
+                elif x.wave is not None:
+                    modulated += not x.on and x.value is None
+                    x.on, x.depth = True, v[2]
+                elif v[2] and not x.quirk:
+                    x.quirk = True
+                    quirks += 1
         elif hi == 0xB0 and v[1] == 99 and v[2] in (20, 30):
             loop[v[2] == 30] = tick
         body.append((tick, bytes(v)))
+    if mod:
+        frames_until(seg_time + (sq.ticks - seg_tick) * 60.0 / (bpm * sq.ppqn), sq.ticks)
     last = 0
     for tick, data in body:
         out += _write_varlen(tick - last) + data
         last = tick
     out += _write_varlen(sq.ticks - last) + b"\xFF\x2F\x00"
+    skipped = []
+    if quirks:
+        skipped.append("the modulation of %d notes of tones without it (controller 1 turning it on: the game uses the "
+                       "wave their voice last had)" % quirks)
+    if layered:
+        skipped.append("the modulation of the other layers of %d notes (layers on different waves: a channel's bend "
+                       "moves them all as its first)" % layered)
     return bytes(out), dict(ppqn=sq.ppqn, tempo=sq.tempo, notes=notes, channels=sorted(chans), seconds=sq.seconds(),
-                            loop=loop[0], loop_end=loop[1], volume=sq.volume)
+                            loop=loop[0], loop_end=loop[1], volume=sq.volume, modulated=modulated, bends=bends,
+                            skipped=skipped)
 
 
 # ---------------------------------------------------------------------------------------------------- scan
@@ -491,11 +684,22 @@ def _groups(d):
     return out
 
 
+SYSTEM_CNF_BOOT = re.compile(rb"BOOT\s*=\s*cdrom:\\*([A-Za-z]{4})[_-]")
+PAL_SERIALS = ("SCES", "SLES", "SCED", "SLED", "SCEE")
+
+
+def disc_rate(d):
+    """A disc's driver update rate (its VSync): RATE_PAL for a European serial in its SYSTEM.CNF (read in the first
+    megabyte), else RATE_NTSC (an archive, not a disc: NTSC)."""
+    m = SYSTEM_CNF_BOOT.search(bytes(d[0:0x100000]))
+    return RATE_PAL if m and m.group(1).decode("ascii").upper() in PAL_SERIALS else RATE_NTSC
+
+
 def scan(d, progress=None):
     """The musics in a game's file (a path, a discimage.Image or bytes: a disc image's sectors seen as their data, see
     discimage; read where needed, never whole): [dict(at, sq (Ssq), sq_bytes, hd_at, hd (Sshd), hd_bytes,
-    bd_bytes, coverage)] in file order, each music with its bank once (games keep copies); hd None: no bank found
-    for the music.
+    bd_bytes, coverage, rate)] in file order, each music with its bank once (games keep copies); hd None: no bank
+    found for the music; rate: the disc's driver update rate (disc_rate), for to_seq.
 
     A music's bank: one next to it (its HD or BD within SCAN_NEXT of the SQ) before any other, then the one with a
     tone for the most of its notes. A copy of a music with no bank next to it (a file of the SQ alone, played with a
@@ -512,6 +716,7 @@ def scan(d, progress=None):
     if not isinstance(d, discimage.Image):
         with discimage.Image(d) as img:
             return scan(img, progress)
+    rate = disc_rate(d)
     banks = []
     for at in d.find(b"SShd"):
         at -= 12
@@ -619,7 +824,7 @@ def scan(d, progress=None):
             side = min(sure, key=lambda s: abs(s[0] - at))[1] if sure else None
             chosen = max(top, key=lambda c: (c[2] == side, c[0], -c[1]))
         entry = dict(at=at, sq=sq, sq_bytes=d[at:at + sq.size], hd_at=None, hd=None, hd_bytes=b"", bd_bytes=b"",
-                     coverage=0.0)
+                     coverage=0.0, rate=rate)
         if chosen:
             hd_at, hd, _, bd_at, _, bd_split = chosen[3]
             entry.update(hd_at=hd_at, hd=hd, hd_bytes=d[hd_at:hd_at + hd.size],
@@ -694,7 +899,7 @@ def main():
             musics = scan(args[1])
             for n, m in enumerate(musics):
                 base = os.path.join(args[2], "%02d" % n)
-                data, info = to_seq(m["sq"])
+                data, info = to_seq(m["sq"], m["hd"], m["rate"])
                 with open(base + ".seq", "wb") as f:
                     f.write(data)
                 text = "no bank found"
@@ -706,7 +911,9 @@ def main():
                         f.write(vb)
                     text = "%d programs, %d samples, %d KB, a tone for %.1f%% of the notes%s" % (
                         len(vinfo["programs"]), vinfo["samples"], len(vb) // 1024, m["coverage"] * 100,
-                        "".join("; not converted: " + s for s in vinfo["skipped"]))
+                        "".join("; not converted: " + s for s in vinfo["skipped"] + info["skipped"]))
+                    if info["modulated"]:
+                        text += "; %d notes modulated (%d bends)" % (info["modulated"], info["bends"])
                 print("%02d at 0x%08X: %5.1f s, %5d notes; %s" % (n, m["at"], info["seconds"], info["notes"], text))
             print("%d musics in %s" % (len(musics), args[2]))
             return 0
@@ -719,9 +926,13 @@ def main():
                                                                     for p, s in files)))
             print("%d musics in %s" % (len(musics), args[2]))
             return 0
-        if len(args) == 3 and args[0] == "seq":
+        if 3 <= len(args) <= 5 and args[0] == "seq":
+            hd = None
+            if len(args) >= 4:
+                with open(args[3], "rb") as f:
+                    hd = f.read()
             with open(args[1], "rb") as f:
-                data, info = to_seq(f.read())
+                data, info = to_seq(f.read(), hd, int(args[4]) if len(args) == 5 else RATE_NTSC)
             with open(args[2], "wb") as f:
                 f.write(data)
             print("%s: %d bytes, %s" % (args[2], len(data), info))

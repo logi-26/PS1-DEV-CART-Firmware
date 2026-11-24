@@ -441,15 +441,36 @@ As psx-spx describes (sizes of the HD and its BD, `SShd` at 0Ch, 28 offsets to d
 - Velocity tables (data block 1) are 1:1 in every bank of the three games.
 - Bend range: the tone's byte D (or the program's byte 4, with flag bit 4), in semitones.
 
-**Modulation** (flag bit 5; data block 2's "breath waves"), as the driver runs it on each voice:
+**Modulation** (flag bit 5; data block 2's "breath waves"), as the driver runs it on each voice (Ape Escape,
+`SCES_015.64`: update at 8009CEF8h, key on at 8009CA78h, controllers 1 and 2 at 8009EE30h and 8009EF08h):
 
-- The wave: the tone's byte E (or the program's byte 5, with flag bit 6) picks one of block 2's waves (64 bytes,
-  80h the centre).
-- The speed: the SQ channel's byte C ("breath"). Each update the voice's phase grows by the speed; past 240 it starts
-  again at half the speed. The wave is read at phase / 4: only its first 60 values are used (as psx-spx noticed).
-- The depth: the SQ channel's byte 9 ("modulation"); a sound effect's voice starts at 7Fh.
-- The value: `wave × depth / 255 - (depth + 1) / 2 + 64`, a pitch bend value (64 the centre) added to the channel's
-  bend, so the modulation's width is the tone's bend range at full depth.
+- When: the driver's update runs from its VSync callback (8005CF54h, which also counts frames), so **50 times a
+  second on a PAL disc, 60 on an NTSC one**. Each frame it plays the frame's events, then updates every voice.
+- On or off: at key on, a tone with bit 5 is modulated if its channel's depth isn't 0. Controller 1 later turns it
+  on for **every** voice sounding on the channel, a tone without bit 5 too (with the wave its voice last had).
+- The wave: the tone's byte E (or the program's byte 5, with flag bit 6) picks one of block 2's waves (block 2: a
+  count - 1, then each wave's offset from the block; 64 bytes each, 80h the centre; Ape Escape's 8: sines, triangles,
+  and halves of them followed by 80h).
+- The speed: the SQ channel's byte C (16 in Ape Escape's headers). Controller 2's value v sets it to
+  `240 / (60 - 58 v / 127)` (integer divisions), on the channel and its sounding voices. Each update the voice's
+  phase (0 at key on) grows by the speed; at 240 or more it starts again at **half the speed**. The wave is read at
+  phase / 4: only its first 60 values are used (as psx-spx noticed). A cycle is so `60 - 58 v / 127` updates, from one
+  second on NTSC (psx-spx's "one cycle a second at the lowest speed") down to 2 updates.
+- The depth: the SQ channel's byte 9 (0 in Ape Escape's headers), set by controller 1 (its value, on the channel and
+  its sounding voices); a sound effect's voice starts at 7Fh.
+- The value: `wave × depth / 255 - (depth + 1) / 2 + 64`, given to the pitch routine (8009E674h) as a bend over a
+  range of **1 semitone**: at full depth, a semitone either way, whatever the tone's bend range. The channel's own
+  bend is added first, as the tone's range has it (into the note and its 1/16 semitones).
+- A program change sets the channel's bend back to 64.
+
+The converter writes it as pitch bends (sshd.to_seq with the bank): the newest note of the channel leads (a SEQ's bend
+is the channel's), its bends go on through a second of release, and a tone with modulation and no bend range gets 1
+semitone in the VAB. A special case is left out: with speed 120 (controller 2 at 127) and a driver setting at 60
+(800F76BEh, not identified), the phase stands still one update in 7.
+
+The sound tester plays it too on an SQ played with its HD (soundtest.c ModUpdate: each note its own phase,
+through its release, at the console's frame rate): there each layer of a note keeps its own wave, which a SEQ's
+channel bend can't (the converter reports such notes).
 
 **Data blocks 3 and 4** (sound effects): block 3 is a two-level table (an upper bound, then each set's offset; the
 driver uses the offsets from the start of block 3 with their low bit masked: it is a flag), each set's sequences
@@ -685,7 +706,6 @@ are made of tracks looping over different lengths that drift against each other:
 | Format | Unknown | How it could be settled |
 |---|---|---|
 | AAD | How much the squared volume curve changes balances | Listen side by side with the game; read SPU voice volumes from a snapshot |
-| SQ/HD | The rate of the driver's updates (modulation speed in time: psx-spx's "one cycle a second at the lowest speed" would mean 240 a second) | Read the driver's timer setup, or SPU pitch registers |
 | SQ/HD | The effect sequences' commands (data block 3) | The driver's effect sequence interpreter (`driver.psflib`) |
 | AKAO | What the commands VGMTrans leaves unknown do (E0h-E2h, FEh 13h, 1Ch, 1Fh in Vagrant Story...) and the exact note release in version 3 | The driver's code (its command table: FF7 80049AA8h; Vagrant Story and FF8 at the start of their 400-word tables, 800301A0h / 80052258h) |
 | AKAO | Whether a slurred or legato note restarts its vibrato | The note start code (FF7 80031500h) |
@@ -695,7 +715,7 @@ are made of tracks looping over different lengths that drift against each other:
 Settled since the first version of this page: the fine-tune unit (the same tables and code in all four games), the
 header bytes (read or not by the games' code; the older layout's version field), the reverb fields (libspu's types
 and depth), `FNSa` / `FMSa` (the sound effect sets, 1.5); and from Ape Escape's sound driver: the tone flags (bits 2
-and 3 unused, the noise flag), modulation, which tones a note plays and that a note with no tone is silent, data
+and 3 unused, the noise flag), modulation (and its update rate: the VSync), which tones a note plays and that a note with no tone is silent, data
 block 4 and block 3's tables; from Dragoon's RAM in an emulator: that it plays a music with its bank alone, and
 which music a battle plays.
 
@@ -714,8 +734,8 @@ which music a battle plays.
 - **Sound effect sets → VAB + SEQ** (`gui/aad.py`): program n is effect n (its tone and wave; a shared wave once),
   and a SEQ plays each effect once, half a second apart, to hear them in the tester.
 - **SQ/HD → SEQ + VAB** (`gui/sshd.py`): the samples are copied; the delta times moved, the 1-byte bend widened,
-  BPM tempo converted; drum kits become a program with one tone per note. Not converted: modulation, noise, sound
-  effects. A music with no bank of its own (Dragoon) takes a copy of it packed with a bank that has all its
+  BPM tempo converted; drum kits become a program with one tone per note; modulation becomes pitch bends
+  (2.2). Not converted: noise, sound effects. A music with no bank of its own (Dragoon) takes a copy of it packed with a bank that has all its
   notes, else the first bank after it that has them all (a guess: see Part 4), else the bank with the most. A bank's BD is the nearest place to its HD, after or before it (Arc the Lad III), where each of its
   samples starts. A program of more than 16 tones of one key each keeps its first 16 (a VAB's limit; the notes
   left out are listed).

@@ -236,7 +236,9 @@ set in **Settings**. The tools `ps1transfer` runs on the PS1 (model viewer, TIM 
       each with its bank, listed with its length and notes and played with a double click. Disc images: .bin / .img
       (2352-byte sectors, Mode 2 or Mode 1), .iso (2048), .cue (its data track: one .bin or a .bin a track; 2048,
       2336 or 2352-byte sectors) and .ecm (also a .cue's .bin given as .bin.ecm). The disc image is read where
-      needed, never loaded whole, an .ecm decoded where needed (`discimage.py`). Not converted: the modulation of some SQ/HD tones, the
+      needed, never loaded whole, an .ecm decoded where needed (`discimage.py`). SQ/HD modulation becomes pitch
+      bends (50 updates a second for a PAL disc, 60 otherwise; the single-file tab has a PAL switch); the tester
+      plays it too on the game's own SQ + HD + BD (each layer of a note with its own wave). Not converted: the
       sound effects, the games' interactive commands (Crystal Dynamics: channels muted and unmuted by the game, all
       played).
     The **VAB Editor** tab tunes the bank (the VAB, or VH + VB, of the sound files) on the console, like Sony's

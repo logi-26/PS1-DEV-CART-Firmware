@@ -49,12 +49,13 @@ def block(flags, fill=0x11):
     return bytes((0x0C, flags)) + bytes((fill,)) * 14
 
 
-def tone(lo, hi, root, fine, adpcm, flags=0, vol=100, pan=64, bend=2, adsr=0x5FC080FF):
-    return struct.pack("<BBBbHIBBBBBB", lo, hi, root, fine, adpcm, adsr, 0, vol, pan, bend, 0x7F, flags)
+def tone(lo, hi, root, fine, adpcm, flags=0, vol=100, pan=64, bend=2, adsr=0x5FC080FF, breath=0x7F):
+    return struct.pack("<BBBbHIBBBBBB", lo, hi, root, fine, adpcm, adsr, 0, vol, pan, bend, breath, flags)
 
 
-def hd_file(programs, bd_size):
-    """An HD: programs {number: (type byte, [tone bytes], first note, last note)}."""
+def hd_file(programs, bd_size, waves=()):
+    """An HD: programs {number: (type byte, [tone bytes], first note, last note)}, waves: data block 2's breath waves
+    (64 bytes each)."""
     count = max(programs) + 1
     table, data = [0xFFFF] * count, b""
     for n in sorted(programs):
@@ -63,9 +64,14 @@ def hd_file(programs, bd_size):
         data += bytes((kind, 110, 60, 0, 12, 0x7F, first, last)) + b"".join(tones)
     block0 = struct.pack("<H%dH" % count, count - 1, *table) + data
     velocity = bytes(2) + bytes(range(128))
-    offsets = [0x80, 0x80 + len(block0)] + [0xFFFFFFFF] * 26
-    size = 0x80 + len(block0) + len(velocity)
-    return struct.pack("<III4s28I", size, bd_size, 0, b"SShd", *offsets) + block0 + velocity
+    block2 = b""
+    if waves:                                   # (as Ape Escape's: a count - 1, the offsets, the waves from 20h)
+        block2 = struct.pack("<H%dH" % len(waves), len(waves) - 1, *(0x20 + i * 64 for i in range(len(waves))))
+        block2 = block2.ljust(0x20, b"\0") + b"".join(waves)
+    offsets = [0x80, 0x80 + len(block0), 0x80 + len(block0) + len(velocity) if waves else 0xFFFFFFFF]
+    offsets += [0xFFFFFFFF] * 25
+    size = 0x80 + len(block0) + len(velocity) + len(block2)
+    return struct.pack("<III4s28I", size, bd_size, 0, b"SShd", *offsets) + block0 + velocity + block2
 
 
 # Samples: A at 0 (3 blocks, looping), B at 0x30 (2 blocks), C at 0x50 (1 block); 0x10 bytes never used after them
@@ -141,6 +147,113 @@ class SqTests(unittest.TestCase):
         sq = sshd.Ssq(sq_file([((0x90, 60, 100), 240)], end=False))
         self.assertFalse(sq.ended)
         self.assertEqual(240, sq.ticks)
+
+
+class ModulationTests(unittest.TestCase):
+    """The modulation (tone flag bit 5, controllers 1 and 2) written as pitch bends, as Ape Escape's driver runs it
+    (sshd's module text): 50 updates a second here (a PAL disc), 960 ticks a second (tempo 120, 480 per quarter)."""
+
+    SQUARE = bytes([0xFF] * 30 + [0x00] * 34)               # (wave 0: up for a phase under 120, down above)
+    MOD_HD = hd_file({0: (0x00, [tone(0, 127, 60, 0, 0, flags=0x20, bend=2, breath=0)], 0, 0),
+                      1: (0x00, [tone(0, 127, 60, 0, 0, flags=0x20, bend=0, breath=0)], 0, 0),
+                      2: (0x00, [tone(0, 127, 60, 0, 0, bend=2)], 0, 0)}, len(BD), waves=[SQUARE])
+    # At depth 127: wave FFh moves the pitch 15/16 semitone up, 00h a semitone down (over a bend range of 2: 8192 +
+    # 15 x 256, 8192 - 16 x 256)
+    UP, DOWN = 12032, 4096
+
+    @staticmethod
+    def bends(data, ch=0):
+        events, _ = audioconv._seq_events(audioconv.seq_tracks(data)[0][4])
+        return [(t, d[1] | d[2] << 7) for t, k, d in events if k == "ev" and d[0] == 0xE0 | ch]
+
+    def convert(self, events, programs=(0,), hd=None, rate=sshd.RATE_PAL):
+        return sshd.to_seq(sq_file(events, programs=programs), self.MOD_HD if hd is None else hd, rate)
+
+    def test_speed_and_depth(self):
+        self.assertEqual((4, 14, 15, 16, 24, 120), tuple(sshd.mod_speed(v) for v in (0, 95, 97, 100, 110, 127)))
+
+    def test_square_wave(self):
+        # Speed 16 (the header's): phases 16-112 up (updates 1-7, the first in the key on's frame), 128-224 down
+        # (8-14), then 8 (15) up, 120 (22) down: update n at the end of frame n (19.2 n ticks); the bends go on for a
+        # second after the note off, then the centre
+        data, info = self.convert([((0xB0, 1, 127), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 1920)])
+        self.assertEqual(1, info["modulated"])
+        b = self.bends(data)
+        self.assertEqual([(0, self.UP), (153, self.DOWN), (288, self.UP), (422, self.DOWN)], b[:4])
+        self.assertEqual((1920, 8192), b[-1])
+        self.assertTrue(all(v in (self.UP, self.DOWN) for _, v in b[:-1]))
+        self.assertEqual(info["bends"], len(b))
+
+    def test_ntsc_rate(self):
+        data, _ = self.convert([((0xB0, 1, 127), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 0)],
+                               rate=sshd.RATE_NTSC)
+        self.assertEqual([(0, self.UP), (128, self.DOWN), (240, self.UP)], self.bends(data)[:3])
+
+    def test_no_depth_no_bends(self):
+        # The flag alone (the header's depth 0, as most of Ape Escape's musics): what a SEQ without the bank has
+        sq = sq_file([((0x90, 60, 100), 960), ((0x80, 60, 0), 0)])
+        data, info = sshd.to_seq(sq, self.MOD_HD, sshd.RATE_PAL)
+        self.assertEqual(sshd.to_seq(sq)[0], data)
+        self.assertEqual(0, info["modulated"])
+
+    def test_depth_while_sounding(self):
+        # Controller 1 during a note: its modulation from then, its phase from 0
+        data, info = self.convert([((0x90, 60, 100), 480), ((0xB0, 1, 127), 480), ((0x80, 60, 0), 0)])
+        self.assertEqual(1, info["modulated"])
+        self.assertEqual([(480, self.UP), (614, self.DOWN)], self.bends(data)[:2])
+
+    def test_fastest_speed(self):
+        # Controller 2 at 127: speed 120, the phase 120 (down: the key on's frame), then 60 (up), 180 (down)... each update
+        data, _ = self.convert([((0xB0, 1, 127), 0), ((0xB0, 2, 127), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 0)])
+        self.assertEqual([(0, self.DOWN), (38, self.UP), (57, self.DOWN), (76, self.UP)], self.bends(data)[:4])
+
+    def test_half_depth(self):
+        # Depth 64: FFh x 64 / 255 - 32 = 32 (+8/16), 0 - 32 (-8/16)
+        data, _ = self.convert([((0xB0, 1, 64), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 0)])
+        self.assertEqual([(0, 8192 + 8 * 256), (153, 8192 - 8 * 256)], self.bends(data)[:2])
+
+    def test_with_the_channel_bend(self):
+        # Bend 96 over a range of 2: a semitone up, plus the modulation
+        data, _ = self.convert([((0xE0, 96), 0), ((0xB0, 1, 127), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 0)])
+        self.assertEqual([(0, 96 << 7), (0, 8192 + 31 * 256), (153, 8192)], self.bends(data)[:3])
+
+    def test_tone_without_bend_range(self):
+        # Its VAB tone gets a range of 1 semitone for the bends
+        data, _ = self.convert([((0xB0, 1, 127), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 0)], programs=(1,))
+        self.assertEqual([(0, 8192 + 15 * 512), (153, 0)], self.bends(data)[:2])
+        bank = vabmod.Vab(*sshd.to_vab(self.MOD_HD, BD)[:2])
+        self.assertEqual([(2, 2), (1, 1), (2, 2)], [(t["pbmin"], t["pbmax"]) for p in (0, 1, 2)
+                                                    for t in bank.tones(p)])
+
+    def test_tone_without_modulation(self):
+        # Controller 1 reaching a note of a tone without the flag: not modulated (the driver: with a leftover wave)
+        data, info = self.convert([((0xB0, 1, 127), 0), ((0x90, 60, 100), 480), ((0xB0, 1, 100), 480),
+                                   ((0x80, 60, 0), 0)], programs=(2,))
+        self.assertEqual([], self.bends(data))
+        self.assertEqual(0, info["modulated"])
+        self.assertIn("1 notes of tones without it", info["skipped"][0])
+
+    def test_new_note_leads(self):
+        # A modulated note then a plain one on the channel (another program): the bends back to the centre for it
+        data, _ = self.convert([((0xB0, 1, 127), 0), ((0x90, 60, 100), 480), ((0x80, 60, 0), 0),
+                                ((0xC0, 2), 0), ((0x90, 62, 100), 480), ((0x80, 62, 0), 0)])
+        b = self.bends(data)
+        self.assertEqual((480, 8192), b[-1])
+        self.assertTrue(all(t < 480 for t, _ in b[:-1]))
+
+    def test_played_by_the_console_player(self):
+        data, _ = self.convert([((0xB0, 1, 127), 0), ((0x90, 60, 100), 960), ((0x80, 60, 0), 0)])
+        h = run_bytes(data, play_ms=2000, repeat=0)
+        self.assertIsNone(h.problem())
+        self.assertEqual([60], [n[3] for n in h.notes])
+
+    def test_disc_rate(self):
+        cnf = b"\0" * 0x1000 + b"BOOT=cdrom:\\SCES_015.64;1\r\nTCB=4\r\n"
+        self.assertEqual(sshd.RATE_PAL, sshd.disc_rate(cnf))
+        self.assertEqual(sshd.RATE_NTSC, sshd.disc_rate(cnf.replace(b"SCES", b"SCUS")))
+        self.assertEqual(sshd.RATE_NTSC, sshd.disc_rate(b"BOOT = cdrom:SLPS_019.83;1"))
+        self.assertEqual(sshd.RATE_PAL, sshd.disc_rate(b"BOOT = cdrom:\\\\SLES-012.34;1"))
+        self.assertEqual(sshd.RATE_NTSC, sshd.disc_rate(b"no system.cnf here"))
 
 
 class HdTests(unittest.TestCase):
@@ -454,10 +567,11 @@ class NativeTests(unittest.TestCase):
                     f.write(data)
             return run_sound(paths[0], hd=paths[1], bd=paths[2], **kw)
 
-    def converted(self, sq, hd, bd, **kw):
+    def converted(self, sq, hd, bd, rate=None, **kw):
+        """rate: the music converted with its bank (the modulation as bends, at rate updates a second)."""
         import tempfile
         vh, vb, _ = sshd.to_vab(hd, bd)
-        seq, _ = sshd.to_seq(sq)
+        seq, _ = sshd.to_seq(sq, hd, rate) if rate else sshd.to_seq(sq)
         with tempfile.TemporaryDirectory() as folder:
             paths = []
             for name, data in (("m.seq", seq), ("m.vh", vh), ("m.vb", vb)):
@@ -479,6 +593,48 @@ class NativeTests(unittest.TestCase):
                 self.assertIn((1, 60, 3), voices)
                 self.assertEqual(2, voices.count((1, 60, 3)))
                 self.assertNotIn((2, 37, 5), voices)
+
+    # Modulation (ModulationTests' bank): depth and speed set, a note; the depth changed while one sounds; a bend before
+    # a note; the tone without bend range; a tone without modulation the depth reaches; a program change (the bend
+    # back to the centre) and a note after it
+    MOD_MUSIC = sq_file([((0xB0, 1, 127), 0), ((0xB0, 2, 100), 0), ((0x90, 60, 100), 700), ((0x80, 60, 0), 100),
+                         ((0x90, 62, 100), 300), ((0xB0, 1, 50), 400), ((0x80, 62, 0), 50),
+                         ((0xE0, 96), 0), ((0x90, 64, 100), 500), ((0x80, 64, 0), 300),
+                         ((0xC1, 1), 0), ((0xB1, 1, 90), 0), ((0x91, 55, 100), 600), ((0x81, 55, 0), 0),
+                         ((0xC2, 2), 0), ((0xB2, 1, 127), 0), ((0x92, 57, 100), 300), ((0x82, 57, 0), 0),
+                         ((0xC0, 0), 0), ((0x90, 65, 100), 500), ((0x80, 65, 0), 1000)], programs=(0, 1, 2))
+
+    @staticmethod
+    def pitches(h):
+        """The pitch of each note held (its key not released), each frame it changed: [(frame, channel, note, pitch)].
+        (A released note: the SQ + HD's modulation goes on through its release, a SEQ's bends reach the notes held
+        only.)"""
+        return [tuple(int(x) for x in (l.split()[1], l.split()[3], l.split()[4], l.split()[5]))
+                for l in h.raw.splitlines() if l.startswith("PITCH ") and l.split()[6] == "1"]
+
+    def test_modulation_same_as_converted(self):
+        # The console's player on the SQ + HD (its ModUpdate) and on the SEQ + VAB made with the modulation as bends:
+        # the same pitches, frame by frame (PAL: the converter's 50 updates a second are the frames exactly)
+        hd = ModulationTests.MOD_HD
+        native = self.play(self.MOD_MUSIC, hd, BD, play_ms=6000, repeat=0, frame_us=20000, pitch_log=True)
+        conv = self.converted(self.MOD_MUSIC, hd, BD, rate=sshd.RATE_PAL, play_ms=6000, repeat=0, frame_us=20000,
+                              pitch_log=True)
+        self.assertIsNone(native.problem())
+        self.assertIsNone(conv.problem())
+        a, b = self.pitches(native), self.pitches(conv)
+        self.assertGreater(len(a), 20)                          # (the notes move)
+        self.assertEqual(a, b)
+        # The tone without modulation (channel 2) stays at one pitch; the others move each way
+        self.assertEqual(1, len({p for f, c, n, p in a if c == 2}))
+        for ch in (0, 1):
+            self.assertGreaterEqual(len({p for f, c, n, p in a if c == ch}), 2)
+
+    def test_modulation_only_with_the_hd(self):
+        # The same music on a VAB made from the bank without the bends: no pitch moves (the tester's modulation is
+        # the SQ + HD's only: a SEQ has it in its bends)
+        conv = self.converted(self.MOD_MUSIC, ModulationTests.MOD_HD, BD, play_ms=6000, repeat=0, frame_us=20000,
+                              pitch_log=True)
+        self.assertEqual(len({(c, n) for f, c, n, p in self.pitches(conv)}), len(self.pitches(conv)))
 
     def test_running_status_after_tempo(self):
         sq = sq_file([((0x90, 60, 100), 240), ((60, 0), 0), ((0xFF, 0x51, 100, 0), 0), ((62, 90), 120),
@@ -533,7 +689,15 @@ class CorpusTests(unittest.TestCase):
                 if not hd:
                     continue
                 with open(hd, "rb") as f, open(hd[:-2] + "bd", "rb") as g:
-                    vh, vb, _ = sshd.to_vab(f.read(), g.read())
+                    hd_bytes = f.read()
+                    vh, vb, _ = sshd.to_vab(hd_bytes, g.read())
+                # With its bank (the modulation as bends): the same music but for the pitch bends, the same length
+                mod_data, mod_info = sshd.to_seq(sq, hd_bytes, sshd.RATE_PAL)
+                mod_events, mod_ticks = audioconv._seq_events(audioconv.seq_tracks(mod_data)[0][4])
+                self.assertEqual(sq.ticks, mod_ticks)
+                not_bend = lambda evs: [(t, k, d) for t, k, d in evs if k != "ev" or d[0] & 0xF0 != 0xE0]
+                self.assertEqual(not_bend(events), not_bend(mod_events))
+                self.assertEqual(mod_data == data, mod_info["modulated"] == 0)
                 bank = vabmod.Vab(vh, vb)
                 self.assertEqual(len(vb), sum(bank.vag_sizes()))
                 prog, silent, notes = {}, [], 0

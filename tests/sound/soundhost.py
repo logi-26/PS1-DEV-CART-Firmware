@@ -83,8 +83,9 @@ class HostResult:
 
 
 def run(seq_path, vh=None, vb=None, timeout=60, hd=None, bd=None, **opts):
-    """seqhost on a SEQ (or SQ) file: opts track, frame_us, play_ms, seek, repeat, tempo, transpose, mute, guard; the
-    bank: vh + vb, or hd + bd (Sony's later bank as the game has it)."""
+    """seqhost on a SEQ (or SQ) file: opts track, frame_us, play_ms, seek, repeat, tempo, transpose, mute, guard,
+    pitch_log (PITCH lines: frame voice channel note pitch); the bank: vh + vb, or hd + bd (Sony's later bank as the
+    game has it)."""
     exe = build_host.build()
     cmd = [exe]
     if vh and vb:
@@ -92,9 +93,9 @@ def run(seq_path, vh=None, vb=None, timeout=60, hd=None, bd=None, **opts):
     elif hd and bd:
         cmd += ["--hd", hd, "--bd", bd]
     for key, value in opts.items():
-        if key == "guard":
+        if key in ("guard", "pitch_log"):
             if value:
-                cmd.append("--guard")
+                cmd.append("--" + key.replace("_", "-"))
         elif value is not None:
             cmd += ["--" + key.replace("_", "-"), str(value)]
     cmd.append(seq_path)

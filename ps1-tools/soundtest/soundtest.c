@@ -474,14 +474,19 @@ static VagAtr	*FindTone(int prog, int note, int from, int *next)
 // -, bend range, breath, a kit's first and last notes, then its tones (16 bytes: key range, root, fine tune in 1/16
 // semitones (signed, added), sample (BD offset / 8, FFFFh none), ADSR registers, -, volume, pan, bend range, breath,
 // flags: 1 priority, 2 noise, 16 the program's bend range, 32 modulation, 64 the program's breath, 128 reverb).
-// Unlike a VAB, a program has any number of tones (a drum kit: one a note), and the velocity table is used. Not played:
-// the noise and the modulation (breath waves): the tone's sample, as the conversion to a VAB.
+// Unlike a VAB, a program has any number of tones (a drum kit: one a note), and the velocity table is used. The
+// modulation (flag 32, data block 2's breath waves) is played as Ape Escape's driver plays it (ModUpdate). Not played:
+// the noise (the tone's sample, as the conversion to a VAB).
 
 #define	HD_TONES_MAX	1024
+#define	HD_WAVE_SIZE	64		// A breath wave's bytes (80h the centre; the first 60 read)
 
 static VabHdr	hd_vab;
 static ProgAtr	hd_progs[128];
 static VagAtr	hd_tones[HD_TONES_MAX];
+static int16_t	hd_breath[HD_TONES_MAX];	// Each tone's breath wave (flag 32), -1: no modulation
+static const uint8_t	*hd_waves;			// Data block 2 (a count - 1, each wave's offset from the block), NULL: none
+static int		hd_wave_count;
 
 static uint32_t	Le32(const uint8_t *p)
 {
@@ -495,7 +500,7 @@ static int	Le16(const uint8_t *p)
 
 static int	LoadHd(uint8_t *hd, uint8_t *bd, uint32_t bd_size)
 {
-	uint32_t	size, programs_at, velocity_at, po, adpcm;
+	uint32_t	size, programs_at, velocity_at, waves_at, po, adpcm;
 	int			count, n, t, ntones, first, kit, n_tones = 0, n_vags = 0, i;
 
 	if (memcmp(hd + 12, "SShd", 4))
@@ -503,8 +508,24 @@ static int	LoadHd(uint8_t *hd, uint8_t *bd, uint32_t bd_size)
 	size = Le32(hd);
 	programs_at = Le32(hd + 16);
 	velocity_at = Le32(hd + 20);
+	waves_at = Le32(hd + 24);
 	if ((programs_at == 0xFFFFFFFF) || (programs_at + 2 > size))
 		return (0);
+	hd_waves = NULL;
+	hd_wave_count = 0;
+	if ((waves_at != 0xFFFFFFFF) && (waves_at + 2 <= size))	// (each wave's offset and its 64 bytes in the HD)
+	{
+		hd_waves = hd + waves_at;
+		hd_wave_count = Le16(hd_waves) + 1;
+		if (waves_at + 2 + hd_wave_count * 2 > size)
+			hd_wave_count = 0;
+		for (i = 0; i < hd_wave_count; i++)
+			if (waves_at + Le16(hd_waves + 2 + i * 2) + HD_WAVE_SIZE > size)
+			{
+				hd_wave_count = i;
+				break;
+			}
+	}
 	memset(&hd_vab, 0, sizeof(hd_vab));
 	memcpy(hd_vab.form, "pBAV", 4);
 	hd_vab.mvol = 127;
@@ -575,6 +596,14 @@ static int	LoadHd(uint8_t *hd, uint8_t *bd, uint32_t bd_size)
 				vag_adrs[i = ++n_vags] = SPU_DATA_ADRS + adpcm;
 			}
 			a->vag = i;
+			hd_breath[n_tones] = -1;
+			if (q[15] & 32)		// Modulation: its wave the tone's (or with flag 64 the program's)
+			{
+				int	w = (q[15] & 64) ? p[5] : q[14];
+
+				if (w < hd_wave_count)
+					hd_breath[n_tones] = w;
+			}
 			n_tones++;
 		}
 		if (n_tones > first)
@@ -619,16 +648,23 @@ typedef struct
 	VagAtr	*tone;
 	uint32_t	age;
 	int		bend;		// Pitch bend of the note (-8192..8191): 0 at its key on, the channel's bends while it sounds
+	// An HD tone's modulation (ModUpdate): on, its wave (NULL: the tone has none), depth, speed, phase, value (64:
+	// none)
+	int		mod;
+	const uint8_t	*mod_wave;
+	int		mod_depth, mod_speed, mod_phase, mod_value;
 } Voice;
 
 typedef struct
 {
 	int		prog, volume, pan, bend, sustain;
 	int		expression;	// Controller 11 (0-127), on top of the volume (e.g. LSD: Dream Emulator's swells)
+	int		mod_depth, mod_speed;	// An SQ's modulation (its header's bytes 9 and C, controllers 1 and 2)
 } Channel;
 
 static Voice	voices[VOICES];
 static Channel	channels[16];
+static int		seq_sq;				// (the SEQ player's: the music is an SQ)
 static uint32_t	voice_age;
 static int		master_volume = 100;	// Triangle/Square
 
@@ -668,10 +704,85 @@ static void	VoicePitch(int v)
 	Voice	*vo = &voices[v];
 	int		bend = vo->bend;
 	int		range = (bend < 0) ? vo->tone->pbmin : vo->tone->pbmax;
-	int		cents = (PlayedNote(vo->channel, vo->note) - vo->tone->center) * 100 + vo->tone->shift * 100 / 128 +
-					bend * range * 100 / 8192;
+	int		cents = (PlayedNote(vo->channel, vo->note) - vo->tone->center) * 100 + vo->tone->shift * 100 / 128;
 
+	if (vo->mod)		// (as the driver, in 1/16 semitones: the bend over the tone's range, the modulation a semitone
+		cents += (bend * range / 512 + ((vo->mod_value - 64) >> 2)) * 100 / 16;	// either way at full depth)
+	else
+		cents += bend * range * 100 / 8192;
 	SPU_VOICE(v)[2] = PitchCents(44100, cents);
+}
+
+// An HD tone's modulation, as Ape Escape's sound driver runs it (SCES_015.64 8009CEF8h, from its VSync callback: once
+// a frame, after the frame's events; gui/docs/game-music-formats.md 2.2). At key on the phase is 0 and the depth and
+// speed the channel's; a tone with a wave is modulated if the depth isn't 0 (controller 1 turns it on later). Each
+// update the phase grows by the speed (past 240: half the speed), and the pitch moves by wave[phase / 4] x depth / 255
+// - (depth + 1) / 2 (64 the centre, 1/64 semitone). Only an SQ played with its HD: a SEQ made from one has the
+// modulation in its bends already.
+#define	MOD_PLAYED(_c_)		(bank_hd && seq_sq && ((_c_) >= 0))
+
+static const uint8_t	*ModWave(VagAtr *tone)
+{
+	int	w;
+
+	if (!bank_hd || (tone < hd_tones) || (tone >= hd_tones + HD_TONES_MAX) || ((w = hd_breath[tone - hd_tones]) < 0))
+		return (NULL);
+	return (hd_waves + Le16(hd_waves + 2 + w * 2));
+}
+
+static int	ModStep(Voice *vo)
+{
+	int	speed = vo->mod_speed & 0xFFF, phase = vo->mod_phase + speed;
+
+	return ((phase >= 240) ? speed >> 1 : phase);
+}
+
+static void	ModUpdateVoice(Voice *vo)
+{
+	vo->mod_phase = ModStep(vo);
+	vo->mod_value = vo->mod_wave[vo->mod_phase >> 2] * vo->mod_depth / 255 - ((vo->mod_depth + 1) >> 1) + 64;
+}
+
+// Once a frame: every modulated voice sounding
+static void	ModUpdate(void)
+{
+	int	v;
+
+	for (v = 0; v < VOICES - 1; v++)
+		if (voices[v].mod && voices[v].tone)
+		{
+			if (!voices[v].on && !SPU_VOICE(v)[6])		// (its sound ended)
+			{
+				voices[v].mod = 0;
+				continue;
+			}
+			ModUpdateVoice(&voices[v]);
+			VoicePitch(v);
+		}
+}
+
+// Controller 1 (depth) or 2 (speed: its value v sets 240 / (60 - 58 v / 127)) on a channel and its voices sounding
+static void	ModController(int c, int cc, int value)
+{
+	int	v;
+
+	if (cc == 1)
+		channels[c].mod_depth = value;
+	else
+		channels[c].mod_speed = 240 / (60 - 58 * value / 127);
+	for (v = 0; v < VOICES - 1; v++)
+		if ((voices[v].channel == c) && voices[v].tone && (voices[v].on || SPU_VOICE(v)[6]))
+		{
+			if (cc == 2)
+				voices[v].mod_speed = channels[c].mod_speed;
+			else if (voices[v].mod_wave)	// (a tone without a wave: the driver's leftover wave, not known)
+			{
+				if (!voices[v].mod)
+					voices[v].bend = channels[c].bend;	// (the driver: a modulated voice has the channel's bend)
+				voices[v].mod = 1;
+				voices[v].mod_depth = value;
+			}
+		}
 }
 
 // Reverb of a voice: as its tone (VAB tone mode 4: reverb, as libsnd), all or no notes, or the SEQ channels chosen
@@ -807,6 +918,20 @@ static void	NoteOn(int channel, int prog, int note, int velocity)
 		voices[v].tone = tone;
 		voices[v].age = ++voice_age;
 		voices[v].bend = 0;
+		voices[v].mod = 0;
+		voices[v].mod_wave = MOD_PLAYED(channel) ? ModWave(tone) : NULL;
+		voices[v].mod_phase = 0;
+		voices[v].mod_value = 64;
+		if (voices[v].mod_wave)
+		{
+			voices[v].mod_depth = channels[channel].mod_depth;
+			voices[v].mod_speed = channels[channel].mod_speed;
+			if (voices[v].mod_depth)		// (its first update: ModUpdate in this frame, before the key on is sent)
+			{
+				voices[v].mod = 1;
+				voices[v].bend = channels[channel].bend;	// (the driver: a modulated voice has the channel's bend)
+			}
+		}
 		VoiceVolume(v);
 		VoicePitch(v);
 		SPU_VOICE(v)[3] = vag_adrs[tone->vag] / 8;
@@ -958,12 +1083,15 @@ static void	SeqStart(void)
 		channels[i].pan = 64;
 		channels[i].bend = 0;
 		channels[i].sustain = 0;
+		channels[i].mod_depth = channels[i].mod_speed = 0;
 	}
-	if (seq_sq)		// An SQ: each channel's program, volume and pan from its header (16 bytes a channel)
-		for (i = 0; i < 16; i++)
+	if (seq_sq)		// An SQ: each channel's program, volume and pan from its header (16 bytes a channel), its
+		for (i = 0; i < 16; i++)	// modulation's depth and speed (bytes 9 and C)
 		{
 			uint8_t	*h = seq_sq_head + 16 + i * 16;
 
+			channels[h[1] & 15].mod_depth = h[9];
+			channels[h[1] & 15].mod_speed = h[12];
 			if (h[2] != 0xFF)
 			{
 				channels[h[1] & 15].prog = h[2] & 127;
@@ -1100,6 +1228,8 @@ static int	SeqEvent(void)
 			}
 			else if ((d1 == 120) || (d1 == 123))	// All sounds / notes off
 				NoteOff(c, -1);
+			else if (((d1 == 1) || (d1 == 2)) && MOD_PLAYED(c))	// An SQ's modulation depth, speed
+				ModController(c, d1, d2);
 			else if ((d1 == 99) && (d2 == 20))		// Loop start (the next delta time), its count next
 			{
 				seq_loop_ptr = seq_ptr;
@@ -1134,6 +1264,8 @@ static int	SeqEvent(void)
 			break;
 		case 0xC0:	// Program change
 			channels[c].prog = d1;
+			if (MOD_PLAYED(c))
+				channels[c].bend = 0;		// (the driver: the channel's bend back to the centre, for its next notes)
 			break;
 		case 0xE0:	// Pitch bend (an SQ: 1 byte, 0-127, 64 the centre)
 			if (seq_sq)
@@ -1162,7 +1294,7 @@ static int	SeqEvent(void)
 }
 
 // Once per frame: the ticks of a frame (tempo and resolution), the events that are due
-static void	SeqUpdate(void)
+static void	SeqFrame(void)
 {
 	uint32_t	ticks;
 	int			n, events;
@@ -1220,6 +1352,13 @@ static void	SeqUpdate(void)
 				break;
 		}
 	}
+}
+
+// Once per frame: the frame's events, then the modulated voices (as the SQ games' driver)
+static void	SeqUpdate(void)
+{
+	SeqFrame();
+	ModUpdate();
 }
 
 // The channels with notes in the music and its length (read once, as SeqEvent without playing)

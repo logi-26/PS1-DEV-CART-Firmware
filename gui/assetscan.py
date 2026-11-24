@@ -466,7 +466,7 @@ def game_music(d, where="RAM"):
         musics = []
     for m in musics:
         try:
-            seq, info = sshd.to_seq(m["sq"])
+            seq, info = sshd.to_seq(m["sq"], m["hd"], m["rate"])
             parts, text = {".seq": seq}, "SQ/HD music, %s, %d notes" % (_seconds(info), info["notes"])
             if m["hd"]:
                 vh, vb, vinfo = sshd.to_vab(m["hd"], m["bd_bytes"])

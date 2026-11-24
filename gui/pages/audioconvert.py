@@ -919,6 +919,9 @@ class ConvertTab(tb.Frame):
         self.sq_out = FileField(tab, self.app, "sound.conv.sq.out", "SEQ file", mode="save",
                                 filetypes=[("SEQ", "*.seq")])
         self.sq_out.pack(fill="x", pady=2)
+        self.sq_pal = tb.BooleanVar(value=False)
+        tb.Checkbutton(tab, text="A PAL game's files (its modulation runs at 50 updates a second, not 60)",
+                       variable=self.sq_pal, bootstyle="round-toggle").pack(anchor="w", pady=(4, 0))
         row = tb.Frame(tab)
         row.pack(fill="x", pady=(6, 0))
         tb.Button(row, text="Convert", bootstyle="success", command=self.convert_sq).pack(side="left")
@@ -939,6 +942,7 @@ class ConvertTab(tb.Frame):
         for f in (self.sq_src, self.sq_hd, self.sq_bd, self.sq_out):
             if f.get():
                 f.remember()
+        rate = sshd.RATE_PAL if self.sq_pal.get() else sshd.RATE_NTSC
 
         def work(progress):
             with open(src, "rb") as f:
@@ -947,7 +951,8 @@ class ConvertTab(tb.Frame):
                 bank = sshd.Sshd(f.read())
             with open(bd, "rb") as f:
                 vh, vb, vinfo = sshd.to_vab(bank, f.read())
-            data, info = sshd.to_seq(sq)
+            data, info = sshd.to_seq(sq, bank, rate)
+            info["rate"] = rate
             files = [base + ".vh", base + ".vb", out]
             for path, b in zip(files, (vh, vb, data)):
                 with open(path, "wb") as f:
@@ -980,8 +985,12 @@ class ConvertTab(tb.Frame):
             minutes, seconds, info["notes"], ", ".join(str(c + 1) for c in info["channels"]), loop, info["tempo"]),
             "Bank: programs %s, %d tones, %d samples; a tone for %.1f%% of the notes." % (
                 ", ".join(str(p) for p in vinfo["programs"]), vinfo["tones"], vinfo["samples"], coverage * 100)]
-        if vinfo["skipped"]:
-            lines.append("Not converted: " + "; ".join(vinfo["skipped"]) + ".")
+        if info.get("modulated"):
+            lines.append("Modulation: %d notes, written as %d pitch bends (at %d updates a second)." % (
+                info["modulated"], info["bends"], info.get("rate", sshd.RATE_NTSC)))
+        skipped = vinfo["skipped"] + info.get("skipped", [])
+        if skipped:
+            lines.append("Not converted: " + "; ".join(skipped) + ".")
         return "\n".join(lines)
 
     def build_scan(self, tab):
@@ -1051,7 +1060,7 @@ class ConvertTab(tb.Frame):
                 base = os.path.join(out, "%02d" % n)
                 if original:                    # (the game's own files, not changed)
                     sshd.write_original(m, base)
-                data, info = sshd.to_seq(m["sq"])
+                data, info = sshd.to_seq(m["sq"], m["hd"], m["rate"])
                 with open(base + ".seq", "wb") as f:
                     f.write(data)
                 files, bank, skipped = [base + ".seq"], "none found", ""
@@ -1069,7 +1078,7 @@ class ConvertTab(tb.Frame):
                     files = [base + ".vh", base + ".vb", base + ".seq"]
                     bank = "%d programs, %d samples (%d KB)" % (len(vinfo["programs"]), vinfo["samples"],
                                                                len(vb) // 1024)
-                    skipped = "; ".join(vinfo["skipped"])
+                    skipped = "; ".join(vinfo["skipped"] + info["skipped"])
                 if original and m["hd"]:        # (played as the game has them: the tester plays SQ + HD + BD)
                     files = [base + ".hd", base + ".bd", base + ".sq"]
                 rows.append(("%02d" % n, "SQ/HD", info, bank, m["coverage"] if vinfo else None, skipped, files))

@@ -37,7 +37,11 @@ python -m unittest tests/sound/test_seq_player.py tests/sound/test_converters.py
     with a bank loaded before it; Arc the Lad III's BD before its HD (BD, SQ, HD), the BD nearest the HD on either
     side
   - a program of more than 16 tones of one key each (Arc the Lad III): the first 16 kept, the rest reported
-  - the real files of `PS1_SSHD_CORPUS` (folders of `name.sq` + `name.hd` + `name.bd`), each converted
+  - modulation (Ape Escape's driver): the bends the converter writes (waves, depth, speed, the channel's bend, 50
+    or 60 updates a second), and the console's player on the SQ + HD (its ModUpdate) giving the held notes the
+    same pitch each frame as on the converted SEQ + VAB (`seqhost --pitch-log`)
+  - the real files of `PS1_SSHD_CORPUS` (folders of `name.sq` + `name.hd` + `name.bd`), each converted (with its
+    bank: only pitch bends change)
 - `test_aad.py`
   - Crystal Dynamics' SND bank + SMP samples → VAB (Gex 2's, Gex 3's, Akuji's and Soul Reaver's layouts), their
     musics → SEQ: the loop (labels, loop commands), tracks looping apart (Soul Reaver: the SEQ's loop where they

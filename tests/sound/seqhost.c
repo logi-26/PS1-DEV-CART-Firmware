@@ -13,6 +13,7 @@
 *	--repeat 0|1			at the end: played again (1, stops at the first restart) or stopped (0)
 *	--tempo PCT --transpose N --mute MASK		the effects (fx_tempo, fx_transpose, fx_mute)
 *	--guard					the file put just before a page that can't be read: a read past its end is a CRASH line
+*	--pitch-log				each frame, the voices sounding whose pitch changed: PITCH frame voice ch note pitch held
 *
 * Prints: TRACKS n, TRACK i resolution tempo size, SCAN len_us channels, then while playing NOTE wall_us music_us ch note
 * vel (each note on read), VOICE ch note prog center shift pitch voll volr (each voice keyed for it), RESTART wall_us,
@@ -154,7 +155,8 @@ int	main(int argc, char **argv)
 {
 	const char	*vh_path = NULL, *vb_path = NULL, *seq_path = NULL, *hd_path = NULL, *bd_path = NULL;
 	uint32_t	size, vh_size, vb_size, hd_size, bd_size, play_ms = 600000, i;
-	int			track = 0, seek = -1, guard = 0, was_playing;
+	int			track = 0, seek = -1, guard = 0, pitch_log = 0, was_playing;
+	uint16_t	last_pitch[VOICES] = {0};
 	uint8_t		*seq, *vh, *vb;
 
 	setvbuf(stdout, NULL, _IOFBF, 1 << 16);
@@ -176,6 +178,7 @@ int	main(int argc, char **argv)
 		else if (!strcmp(a, "--transpose"))	fx_transpose = atoi(v), i++;
 		else if (!strcmp(a, "--mute"))		fx_mute = strtoul(v, NULL, 0), i++;
 		else if (!strcmp(a, "--guard"))		guard = 1;
+		else if (!strcmp(a, "--pitch-log"))	pitch_log = 1;
 		else if (!strcmp(a, "--echo") && (i + 4 < (uint32_t)argc))
 		{
 			// --echo TYPE DELAY FEEDBACK REV_CHANNELS: the reverb registers of TYPE with libspu's delay time and
@@ -262,6 +265,14 @@ int	main(int argc, char **argv)
 		was_playing = seq_playing;
 		SeqUpdate();
 		HostSpuKeys();
+		if (pitch_log)
+			for (i = 0; i < VOICES - 1; i++)
+				if (host_spu[i * 8 + 6] && voices[i].tone && (host_spu[i * 8 + 2] != last_pitch[i]))
+				{
+					last_pitch[i] = host_spu[i * 8 + 2];
+					printf("PITCH %u %u %d %d %u %d\n", host_frames, i, voices[i].channel, voices[i].note, last_pitch[i],
+						   voices[i].on);
+				}
 		host_progress++;
 		host_wall_us += frame_us;		// (real time: the tempo effect changes the music's)
 		if (host_restarts != restarts)
