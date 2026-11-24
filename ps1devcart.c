@@ -53,7 +53,7 @@ static volatile uint32_t	*chain_boot = (volatile uint32_t *)CHAIN_BOOT_ADRS;	// 
 // after the kernel hook: 0x8000DF80 chain boot, 0x8000DF88 the PicoStation screen's last selection (sdbrowser.h
 // SD_LAST_ADRS), 0x8000DF8C this (100 bytes), 0x8000DFF0 the menu's
 // buttons from the computer (MENU_PAD_ADRS, 8 bytes), 0x8000DFF8 a disc's BIOS Load (the debug monitor's
-// MON_DISC_LOAD_ADRS), 0x8000DFFC free.
+// MON_DISC_LOAD_ADRS), 0x8000DFFC the computer's reset marker (RESET_RUN_ADRS).
 #define	PICO_GAME_ADRS		0x8000DF8C
 #define	PICO_GAME_MAGIC		0x454D4147	// "GAME"
 #define	PICO_GAME_NAME		96
@@ -63,6 +63,13 @@ typedef struct
 	char		name[PICO_GAME_NAME];
 } PicoGame;
 static volatile PicoGame	*pico_game = (volatile PicoGame *)PICO_GAME_ADRS;	// (up to 0x8000DFF0)
+
+// The computer resets the PS1 to start something (a program, a PSX tool of the Manager...): ps1transfer writes this
+// marker just before its reset command (its ps1transfer.h has the same). The menu that starts then doesn't open the
+// PicoStation screen (OPT_PICO_START): what the computer sends comes at once, not after the screen showed. Read and
+// cleared at every start; a power on, the console's RESET button or the Manager's Reset alone don't set it.
+#define	RESET_RUN_ADRS		0x8000DFFC
+#define	RESET_RUN_MAGIC		0x4E555255	// "URUN"
 
 extern uint8_t	_binary_kernel_hook_bin_start[];
 extern uint32_t	*_binary_kernel_hook_bin_size;
@@ -929,9 +936,12 @@ int main(void)
 	bool	safe_mode;
 	// Started again by the PicoStation menu (the game mounted): read and cleared first, a failed boot isn't retried
 	bool	chain = (chain_boot[0] == CHAIN_BOOT_MAGIC) && (chain_boot[1] == ~CHAIN_BOOT_MAGIC);
+	// Reset by the computer to start something: the PicoStation screen not opened (RESET_RUN_ADRS)
+	bool	computer_run = (*(volatile uint32_t *)RESET_RUN_ADRS == RESET_RUN_MAGIC);
 
 	chain_boot[0] = 0;
 	chain_boot[1] = 0;
+	*(volatile uint32_t *)RESET_RUN_ADRS = 0;
 	MenuPadClear();		// (no buttons from the computer before the menu)
 
 	// PSn00bSDK: ResetGraph() (in InitDisplay) calls ResetCallback() and installs its VBlank/DMA handlers only if the
@@ -1035,9 +1045,10 @@ int main(void)
 	}
 
 	// The PicoStation screen at once (its option OPEN AT POWER ON: OPT_PICO_START), unless a button is held (this
-	// menu), after a chain boot, without the PicoStation's menu disc in the drive, or with a game it mounted (a reset
-	// during the game: START + SELECT boots it again, MenuHint; the drive isn't read meanwhile)
-	if (!chain && (saver_cfg[SAVER_OPTS] & OPT_PICO_START) && (pico_game->magic != PICO_GAME_MAGIC))
+	// menu), after a chain boot, after a reset by the computer to start something (RESET_RUN_ADRS), without the
+	// PicoStation's menu disc in the drive, or with a game it mounted (a reset during the game: START + SELECT boots it
+	// again, MenuHint; the drive isn't read meanwhile)
+	if (!chain && !computer_run && (saver_cfg[SAVER_OPTS] & OPT_PICO_START) && (pico_game->magic != PICO_GAME_MAGIC))
 	{
 		int		i;
 

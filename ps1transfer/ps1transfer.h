@@ -120,6 +120,11 @@ extern struct ftdi_context *ftdi;
 
 #define	DISC_ID_MAGIC			0x43534944
 
+// Written just before a reset that something follows (a program started...): the menu then doesn't open the
+// PicoStation screen at power on (see ps1devcart.c: RESET_RUN_ADRS)
+#define	RESET_RUN_ADRS			0x8000DFFC
+#define	RESET_RUN_MAGIC			0x4E555255	// "URUN"
+
 #define	DEVICE_ID_SIZE			16
 
 // Bytes read ahead: what USB_ReadByteNoWait took in one go (all that was waiting: one byte at a time, a driver call

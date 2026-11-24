@@ -1004,12 +1004,21 @@ int main(int argc, char *argv[])
 		// (each one: the packet sent again). Its data read until it is quiet (it has given up waiting for an
 		// acknowledgment, about 1-2 seconds), then the reset again.
 		printf("Resetting the PS1...\n");
-		for (i = 0; !USB_Process('R', NULL, 0, 0); i++)
+		for (i = 0; ; i++)
 		{
-			uint8_t	c;
-			int		quiet = 0;
-			time_t	start = time(NULL);
+			uint8_t		c;
+			int			quiet = 0;
+			time_t		start;
+			uint32_t	marker = RESET_RUN_MAGIC;
 
+			// Something follows the reset (a program, a tool...): the menu told not to open the PicoStation screen first
+			// (its OPEN AT POWER ON option). A reset alone (-r) leaves it to open as at power on. (Not checked: a program
+			// with an old kernel hook that refuses it is still reset.)
+			if (cmd != CMD_UNKNOWN)
+				USB_Process('U', (uint8_t *)&marker, RESET_RUN_ADRS, 4);
+			if (USB_Process('R', NULL, 0, 0))
+				break;
+			start = time(NULL);
 			if (i == 3)
 				goto USB_error;
 			printf("The PS1 didn't take the reset: waiting until it is quiet (a transfer stopped?)...\n");
