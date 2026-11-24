@@ -318,10 +318,10 @@ class App(tb.Window):
 
     def dialog(self, title):
         """A window of the app's (the icon, the dark title bar), modal."""
-        win = tb.Toplevel(self, title=title, iconphoto=None)
+        # (ttkbootstrap 2: the first argument is the title, the parent is master=)
+        win = tb.Toplevel(title=title, iconphoto=None, master=self, transient=self)
         if self.icons:
             win.iconphoto(False, *self.icons)
-        win.transient(self)
         title_bar_dark(win)
         win.grab_set()
         return win

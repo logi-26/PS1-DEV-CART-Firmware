@@ -16,11 +16,14 @@ This Source Code Form is subject to the terms of the Mozilla Public License, v. 
 If a copy of the MPL was not distributed with this file,
 You can obtain one at https://mozilla.org/MPL/2.0/.
 """
+import io
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
+import tkinter
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +35,7 @@ sys.path.insert(0, PCTOOLS)
 os.environ["PICOSTATION_SETTINGS"] = os.path.join(TMP, "picostation_settings.json")
 
 from PIL import Image                                         # noqa: E402
+import ttkbootstrap as tb                                     # noqa: E402
 
 import picostation_covers as covers                           # noqa: E402
 import picostation_ids as ids                                 # noqa: E402
@@ -353,6 +357,115 @@ class Window(unittest.TestCase):
             self.assertEqual(b"PSID" + serial.encode() + b"\0", data[ids.COVER_IMAGE:], path)
         self.assertEqual(("Cover", "Yes"), (game.cover, game.id_state))
         self.assertEqual("disabled", str(app.btn_save_cov.cget("state")))
+
+
+def make_game_db(folder, covers_of):
+    """A PSIO game database (psio_assist.db's tables): games' titles, covers (PNG) for the IDs given."""
+    path = os.path.join(folder, "psio_assist.db")
+    db = sqlite3.connect(path)
+    db.execute("create table games (game_id text, name text)")
+    db.execute("create table covers (game_id text, psio blob)")
+    for serial, color in covers_of.items():
+        png = io.BytesIO()
+        Image.new("RGB", (80, 84), color).save(png, "PNG")
+        db.execute("insert into games values (?, ?)", (manager.plain_id(serial), "Title of " + serial))
+        db.execute("insert into covers values (?, ?)", (manager.plain_id(serial), png.getvalue()))
+    db.commit()
+    db.close()
+    return path
+
+
+class Dialogs(unittest.TestCase):
+    """The app's own windows opened, answered as a user would (the whole card's lists, a cheat's window)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sd = make_card()
+        cls.app = open_app(cls.sd)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.destroy()
+        shutil.rmtree(cls.sd, ignore_errors=True)
+
+    def answer(self, act):
+        """act(window) on the dialog the next call opens (it waits for it to close); its title kept."""
+        seen = []
+
+        def find():
+            wins = [w for w in self.app.winfo_children() if isinstance(w, tkinter.Toplevel) and w.winfo_exists()
+                    and w.winfo_viewable()]
+            if not wins:
+                self.app.after(50, find)
+                return
+            win = wins[-1]
+            seen.append((win.title(), str(win.master)))
+            act(win)
+        self.app.after(100, find)
+        return seen
+
+    @staticmethod
+    def widgets(win, kind):
+        out, todo = [], [win]
+        while todo:
+            w = todo.pop(0)
+            todo += w.winfo_children()
+            if isinstance(w, kind):
+                out.append(w)
+        return out
+
+    def press(self, win, start):
+        """The dialog's button whose text starts with start, pressed (or the window closed if it is disabled)."""
+        for b in self.widgets(win, tb.Button):
+            if b.cget("text").startswith(start):
+                if str(b.cget("state")) != "disabled":
+                    b.invoke()
+                    return
+        win.destroy()
+
+    def test_missing_covers_then_ids(self):
+        app = self.app
+        app.open_db(make_game_db(new_dir("gamedb"), {"SLUS_000.01": (200, 0, 0), "SLUS_000.03": (0, 0, 200)}))
+        self.assertIsNotNone(app.db)
+        seen = self.answer(lambda win: self.press(win, "Write"))
+        app.fill_covers()
+        self.assertEqual([("Missing covers", str(app))], seen)
+        by_name = {g.name: g for g in app.games}
+        self.assertEqual("Cover", by_name["Alpha (USA)"].cover)
+        self.assertEqual("Cover", by_name["Gamma"].cover)
+        for d in by_name["Gamma"].discs:                        # (each disc's cover, with its own ID)
+            self.assertTrue(os.path.exists(d.cov))
+        self.assertTrue(os.path.exists(by_name["Gamma"].folder_cov))
+        self.assertEqual("Missing", by_name["Beta"].cover)     # (not in the database)
+        # A cover without its ID (made by another tool): the second button adds it, the image kept
+        beta = by_name["Beta"]
+        image = covers.to_cov(Image.new("RGB", (128, 128), (0, 160, 0)))
+        with open(beta.discs[0].cov, "wb") as f:
+            f.write(image)
+        seen = self.answer(lambda win: self.press(win, "Write"))
+        app.write_ids()
+        self.assertEqual([("Game IDs", str(app))], seen)
+        with open(beta.discs[0].cov, "rb") as f:
+            self.assertEqual(image + b"PSIDSLES_000.02\0", f.read())
+        # Nothing left to do: the list says so, its button can't be pressed
+        seen = self.answer(lambda win: self.press(win, "Write"))
+        app.write_ids()
+        self.assertEqual([("Game IDs", str(app))], seen)
+
+    def test_cheat_window(self):
+        app = self.app
+
+        def fill(win):
+            self.widgets(win, tb.Entry)[0].insert(0, "Max money")
+            self.widgets(win, tkinter.Text)[0].insert("1.0", "80012345 270F\n80012347 0000")
+            self.press(win, "OK")
+        seen = self.answer(fill)
+        result = app.cheat_dialog(None)
+        self.assertEqual([("Cheat", str(app))], seen)
+        self.assertEqual(("Max money", [(0x80012345, 0x270F), (0x80012347, 0)], False), result)
+        seen = self.answer(lambda win: self.press(win, "Cancel"))
+        self.assertIsNone(app.cheat_dialog(manager.Cheat("Lives", [(0x80010000, 9)])))
+        self.assertEqual([("Cheat", str(app))], seen)
 
 
 class Selftest(unittest.TestCase):
